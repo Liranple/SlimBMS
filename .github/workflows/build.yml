@@ -6,6 +6,9 @@ on:
     tags: ["v*"]
   workflow_dispatch:      # allow manual runs from the Actions tab
 
+permissions:
+  contents: write      # allow attaching the exe to a Release on tag builds
+
 jobs:
   build:
     runs-on: windows-latest
