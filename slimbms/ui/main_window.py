@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+import threading
+
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
@@ -13,18 +15,40 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QScrollArea,
     QToolBar,
     QVBoxLayout,
     QWidget,
 )
 
-from .. import bms_io
+from .. import __version__, bms_io, updater
 from ..audio import AudioPlayer
 from ..model import KEY_MODES, Project
 from ..timing import TimeMap
 from .chart_view import ChartView, LaneHeader
 from .metadata_dialog import MetadataDialog
+
+
+class _Worker(QObject):
+    """Runs a function on a daemon thread and delivers the result to the UI
+    thread via a queued signal."""
+
+    done = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, fn):
+        super().__init__()
+        self._fn = fn
+
+    def start(self) -> None:
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self) -> None:
+        try:
+            self.done.emit(self._fn())
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
 
 PREVIEW_FPS = 60
 # Where the playhead sits within the viewport (fraction from the top). Notes
@@ -55,8 +79,6 @@ class MainWindow(QMainWindow):
         self._bgm_path: Optional[str] = None   # full path for playback
         self._timemap: Optional[TimeMap] = None
         self._preview_active = False
-        self._loop_a: Optional[float] = None
-        self._loop_b: Optional[float] = None
         self._play_timer = QTimer(self)
         self._play_timer.setInterval(int(1000 / PREVIEW_FPS))
         self._play_timer.timeout.connect(self._on_play_tick)
@@ -64,10 +86,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("SlimBMS")
         self.resize(720, 900)
 
+        self._update_manual = False
         self._build_canvas()
         self._build_toolbar()
         self._build_menu()
         self._update_title()
+
+        # Silent update check shortly after launch.
+        QTimer.singleShot(1500, lambda: self.check_for_updates(manual=False))
 
     # -- construction ------------------------------------------------------- #
 
@@ -103,10 +129,9 @@ class MainWindow(QMainWindow):
         start_action.triggered.connect(self.go_to_start)
         tb.addAction(start_action)
 
-        back_action = QAction("◀ 1마디", self)
-        back_action.setToolTip("한 마디 뒤로 (←)")
-        back_action.setShortcut(Qt.Key_Left)
-        back_action.triggered.connect(lambda: self.seek_relative(-1))
+        back_action = QAction("− 1초", self)
+        back_action.setToolTip("1초 뒤로 (−)")
+        back_action.triggered.connect(lambda: self.seek_seconds(-1.0))
         tb.addAction(back_action)
 
         self.play_action = QAction("▶ 재생", self)
@@ -114,36 +139,27 @@ class MainWindow(QMainWindow):
         self.play_action.triggered.connect(self.toggle_play)
         tb.addAction(self.play_action)
 
-        fwd_action = QAction("1마디 ▶", self)
-        fwd_action.setToolTip("한 마디 앞으로 (→)")
-        fwd_action.setShortcut(Qt.Key_Right)
-        fwd_action.triggered.connect(lambda: self.seek_relative(1))
+        fwd_action = QAction("+ 1초", self)
+        fwd_action.setToolTip("1초 앞으로 (+)")
+        fwd_action.triggered.connect(lambda: self.seek_seconds(1.0))
         tb.addAction(fwd_action)
 
         stop_action = QAction("■ 정지", self)
         stop_action.triggered.connect(self.stop_play)
         tb.addAction(stop_action)
-        tb.addSeparator()
 
-        # A-B loop (repeat a section).
-        set_a = QAction("A", self)
-        set_a.setToolTip("현재 위치를 반복 시작점으로 ([)")
-        set_a.setShortcut(Qt.Key_BracketLeft)
-        set_a.triggered.connect(self.set_loop_a)
-        tb.addAction(set_a)
-        set_b = QAction("B", self)
-        set_b.setToolTip("현재 위치를 반복 끝점으로 (])")
-        set_b.setShortcut(Qt.Key_BracketRight)
-        set_b.triggered.connect(self.set_loop_b)
-        tb.addAction(set_b)
-        self.loop_action = QAction("🔁 반복", self)
-        self.loop_action.setCheckable(True)
-        self.loop_action.setToolTip("A-B 구간 반복 켜기/끄기 (\\)")
-        self.loop_action.setShortcut(Qt.Key_Backslash)
-        tb.addAction(self.loop_action)
-        clear_loop = QAction("구간 해제", self)
-        clear_loop.triggered.connect(self.clear_loop)
-        tb.addAction(clear_loop)
+        # Seek shortcuts: + / = go forward 1s, - goes back 1s. Kept off the
+        # arrow keys, which are reserved for moving selected notes.
+        for key in (Qt.Key_Plus, Qt.Key_Equal):
+            act = QAction(self)
+            act.setShortcut(key)
+            act.triggered.connect(lambda checked=False: self.seek_seconds(1.0))
+            self.addAction(act)
+        for key in (Qt.Key_Minus, Qt.Key_Underscore):
+            act = QAction(self)
+            act.setShortcut(key)
+            act.triggered.connect(lambda checked=False: self.seek_seconds(-1.0))
+            self.addAction(act)
         tb.addSeparator()
 
         tb.addWidget(QLabel(" 스냅 "))
@@ -156,10 +172,10 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
         tb.addWidget(QLabel(" 줌 "))
-        zoom_out = QAction("−", self)
+        zoom_out = QAction("축소", self)
         zoom_out.triggered.connect(lambda: self.view.set_zoom(self.view.measure_px - 30))
         tb.addAction(zoom_out)
-        zoom_in = QAction("＋", self)
+        zoom_in = QAction("확대", self)
         zoom_in.triggered.connect(lambda: self.view.set_zoom(self.view.measure_px + 30))
         tb.addAction(zoom_in)
 
@@ -192,6 +208,10 @@ class MainWindow(QMainWindow):
         song_menu = m.addMenu("곡")
         self._add(song_menu, "곡 정보 편집…", self.edit_metadata)
         self._add(song_menu, "BGM 오디오 선택…", self.choose_bgm)
+
+        help_menu = m.addMenu("도움말")
+        self._add(help_menu, "업데이트 확인…", lambda: self.check_for_updates(manual=True))
+        self._add(help_menu, "정보", self.show_about)
 
     def _add(self, menu, text, slot, shortcut=None) -> None:
         act = QAction(text, self)
@@ -260,17 +280,16 @@ class MainWindow(QMainWindow):
         self.view.set_playhead(None)
 
     def go_to_start(self) -> None:
-        self._seek_to(0.0)
+        self._seek_audio(0.0)
 
-    def seek_relative(self, d_measures: float) -> None:
-        cur = self._current_chart_pos()
-        self._seek_to(cur + d_measures)
+    def seek_seconds(self, d_seconds: float) -> None:
+        self._seek_audio(self.audio.position() + d_seconds)
 
-    def _seek_to(self, chart_pos: float) -> None:
-        chart_pos = max(0.0, min(float(self.project.measures), chart_pos))
-        secs = self._ensure_timemap().audio_seconds(chart_pos)
-        self.audio.seek(secs)
+    def _seek_audio(self, seconds: float) -> None:
+        seconds = max(0.0, seconds)
+        self.audio.seek(seconds)
         self._preview_active = True
+        chart_pos = self._ensure_timemap().chart_pos(seconds)
         self.view.set_playhead(chart_pos)
         self._follow_playhead(chart_pos)
 
@@ -279,11 +298,6 @@ class MainWindow(QMainWindow):
             return
         pos = self.audio.position()
         chart_pos = self._timemap.chart_pos(pos)
-        # A-B loop: jump back to A when we reach B.
-        if (self.loop_action.isChecked() and self._loop_a is not None
-                and self._loop_b is not None and chart_pos >= self._loop_b):
-            self._seek_to(self._loop_a)
-            return
         # Stop at the end of the timeline (or audio).
         if chart_pos >= self.project.measures or (
             self.audio.duration and pos >= self.audio.duration
@@ -292,29 +306,6 @@ class MainWindow(QMainWindow):
             return
         self.view.set_playhead(chart_pos)
         self._follow_playhead(chart_pos)
-
-    # -- A-B loop ----------------------------------------------------------- #
-
-    def set_loop_a(self) -> None:
-        self._loop_a = self._current_chart_pos()
-        if self._loop_b is not None and self._loop_b <= self._loop_a:
-            self._loop_b = None
-        self.view.set_loop(self._loop_a, self._loop_b)
-
-    def set_loop_b(self) -> None:
-        b = self._current_chart_pos()
-        if self._loop_a is not None and b <= self._loop_a:
-            QMessageBox.information(self, "구간 반복",
-                                    "반복 끝점(B)은 시작점(A)보다 뒤여야 합니다.")
-            return
-        self._loop_b = b
-        self.view.set_loop(self._loop_a, self._loop_b)
-
-    def clear_loop(self) -> None:
-        self._loop_a = None
-        self._loop_b = None
-        self.loop_action.setChecked(False)
-        self.view.set_loop(None, None)
 
     def _viewport_chart_pos(self) -> float:
         """Chart position currently at the playhead line in the viewport."""
@@ -446,6 +437,84 @@ class MainWindow(QMainWindow):
             self, "BGM 설정됨",
             f"BGM 파일명: {self.project.bgm_file}\n"
             "이 파일을 .bms와 같은 폴더에 두어야 게임에서 재생됩니다." + note)
+
+    # -- updates ------------------------------------------------------------ #
+
+    def show_about(self) -> None:
+        QMessageBox.information(
+            self, "SlimBMS 정보",
+            f"SlimBMS v{__version__}\n무키음 4K/5K/6K BMS 채보 에디터")
+
+    def check_for_updates(self, manual: bool) -> None:
+        self._update_manual = manual
+        worker = self._update_checker = _Worker(updater.check_latest)
+        worker.done.connect(self._on_update_checked)
+        worker.failed.connect(lambda msg: self._on_update_checked(None))
+        worker.start()
+
+    def _on_update_checked(self, info) -> None:
+        manual = self._update_manual
+        self._update_manual = False
+        if info is None:
+            if manual:
+                QMessageBox.warning(self, "업데이트 확인",
+                                    "업데이트 정보를 가져오지 못했습니다. 인터넷 연결을 확인하세요.")
+            return
+        if not updater.is_newer(info.tag):
+            if manual:
+                QMessageBox.information(self, "업데이트 확인",
+                                        f"이미 최신 버전입니다 (v{__version__}).")
+            return
+
+        notes = (info.notes or "").strip()
+        if len(notes) > 500:
+            notes = notes[:500] + "…"
+        msg = f"새 버전 {info.tag} 이 있습니다. (현재 v{__version__})\n"
+        if notes:
+            msg += f"\n{notes}\n"
+        msg += "\n지금 업데이트할까요?"
+        if QMessageBox.question(self, "업데이트", msg,
+                                QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.Yes) != QMessageBox.Yes:
+            return
+        self._begin_update(info)
+
+    def _begin_update(self, info) -> None:
+        if not info.exe_url:
+            QMessageBox.warning(self, "업데이트", "릴리스에서 설치 파일(.exe)을 찾지 못했습니다.")
+            return
+        if not updater.is_frozen():
+            QMessageBox.information(
+                self, "업데이트",
+                f"새 버전 {info.tag} 이 있습니다.\n"
+                "지금은 소스 코드로 실행 중이라 자동 적용은 exe에서만 됩니다.\n"
+                "GitHub 릴리스 페이지에서 받을 수 있습니다.")
+            return
+
+        self._progress = QProgressDialog("업데이트를 내려받는 중…", "취소", 0, 0, self)
+        self._progress.setWindowTitle("업데이트")
+        self._progress.setWindowModality(Qt.ApplicationModal)
+        self._progress.setMinimumDuration(0)
+        self._progress.setCancelButton(None)  # download can't be cancelled midway
+        self._progress.show()
+
+        worker = self._download_worker = _Worker(
+            lambda: updater.download_new_exe(info.exe_url))
+        worker.done.connect(self._on_update_downloaded)
+        worker.failed.connect(self._on_update_failed)
+        worker.start()
+
+    def _on_update_downloaded(self, new_exe: str) -> None:
+        self._progress.close()
+        QMessageBox.information(
+            self, "업데이트",
+            "다운로드가 끝났습니다. 프로그램을 재시작하여 업데이트를 적용합니다.")
+        self.stop_play()
+        updater.swap_and_restart(new_exe)  # exits the process
+
+    def _on_update_failed(self, msg: str) -> None:
+        self._progress.close()
+        QMessageBox.critical(self, "업데이트 실패", f"업데이트 중 오류가 발생했습니다:\n{msg}")
 
     # -- helpers ------------------------------------------------------------ #
 

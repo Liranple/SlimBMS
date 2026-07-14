@@ -32,8 +32,21 @@ music track — no per-note keysounds to manage.
 - **Left click** a lane cell to place a note; click it again (or **right click**)
   to remove it.
 - **Snap** (toolbar): choose the grid resolution (1/4 … 1/32, plus triplets).
-- **Zoom** (toolbar `−` / `＋`): change vertical spacing.
+- **Zoom** (toolbar 확대 / 축소): change vertical spacing.
 - **곡 → 곡 정보 편집**: title, artist, genre, BPM, measure count.
+
+### Playback / preview
+
+- **Space** — play / pause. The chart scrolls in sync and a red playhead sweeps.
+- **`+`** — seek 1 second forward, **`-`** — 1 second back (arrow keys are
+  reserved for moving selected notes).
+- **Home** (⏮) — jump to the start.
+
+### Updating
+
+The app checks GitHub for a newer release on launch (and via **도움말 → 업데이트
+확인**). If one exists it offers to download and restart into it automatically —
+no manual re-download needed.
 - **곡 → BGM 오디오 선택**: pick the background audio file. Keep that file next
   to the exported `.bms` so the game can find it.
 
