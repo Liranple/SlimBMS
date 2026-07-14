@@ -25,6 +25,7 @@ C_TEXT = QColor("#c8c8d0")
 C_NOTE_WHITE = QColor("#eef0f4")
 C_NOTE_BLUE = QColor("#5aa0ff")
 C_NOTE_BGM = QColor("#ffb347")
+C_PLAYHEAD = QColor("#ff4d6d")
 
 BEATS_PER_MEASURE = 4
 
@@ -40,6 +41,7 @@ class ChartView(QWidget):
         self.measure_px = 150         # zoom: vertical pixels per measure
         self.snap_div = 8             # snap grid: 1/snap_div of a measure
         self.v_pad = 24
+        self.playhead: Optional[float] = None  # absolute chart pos, or None
         self.columns, self.groups, self._width = L.build_layout()
         self.setMouseTracking(True)
         self._apply_size()
@@ -92,7 +94,19 @@ class ChartView(QWidget):
         self._paint_horizontal_lines(p)
         self._paint_separators(p)
         self._paint_notes(p)
+        self._paint_playhead(p)
         p.end()
+
+    def set_playhead(self, absolute: Optional[float]) -> None:
+        self.playhead = absolute
+        self.update()
+
+    def _paint_playhead(self, p: QPainter) -> None:
+        if self.playhead is None:
+            return
+        y = int(self.y_for(self.playhead))
+        p.setPen(QPen(C_PLAYHEAD, 2))
+        p.drawLine(L.LEFT_MARGIN, y, self.groups[-1].x1, y)
 
     def _paint_lane_backgrounds(self, p: QPainter) -> None:
         top = self.v_pad

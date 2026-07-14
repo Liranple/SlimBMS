@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
@@ -20,9 +20,16 @@ from PySide6.QtWidgets import (
 )
 
 from .. import bms_io
+from ..audio import AudioPlayer
 from ..model import KEY_MODES, Project
+from ..timing import TimeMap
 from .chart_view import ChartView, LaneHeader
 from .metadata_dialog import MetadataDialog
+
+PREVIEW_FPS = 60
+# Where the playhead sits within the viewport (fraction from the top). Notes
+# scroll upward, so keeping it low leaves upcoming notes visible above it.
+PLAYHEAD_VIEWPORT_FRACTION = 0.72
 
 # Snap options shown in the toolbar: label -> denominator (fraction of a measure)
 SNAP_OPTIONS = [
@@ -42,6 +49,14 @@ class MainWindow(QMainWindow):
         self.project = project or Project()
         self.project_path: Optional[str] = None
         self._dirty = False
+
+        # Playback / preview.
+        self.audio = AudioPlayer()
+        self._bgm_path: Optional[str] = None   # full path for playback
+        self._timemap: Optional[TimeMap] = None
+        self._play_timer = QTimer(self)
+        self._play_timer.setInterval(int(1000 / PREVIEW_FPS))
+        self._play_timer.timeout.connect(self._on_play_tick)
 
         self.setWindowTitle("SlimBMS")
         self.resize(720, 900)
@@ -78,6 +93,15 @@ class MainWindow(QMainWindow):
         tb = QToolBar("도구")
         tb.setMovable(False)
         self.addToolBar(tb)
+
+        self.play_action = QAction("▶ 재생", self)
+        self.play_action.setShortcut(Qt.Key_Space)
+        self.play_action.triggered.connect(self.toggle_play)
+        tb.addAction(self.play_action)
+        stop_action = QAction("■ 정지", self)
+        stop_action.triggered.connect(self.stop_play)
+        tb.addAction(stop_action)
+        tb.addSeparator()
 
         tb.addWidget(QLabel(" 스냅 "))
         self.snap_combo = QComboBox()
@@ -149,9 +173,67 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"SlimBMS — {song} — {name}{star}")
 
     def _reload_view(self) -> None:
+        self.stop_play()
         self.view.project = self.project
         self.view.refresh()
         self._update_title()
+
+    # -- playback / preview ------------------------------------------------- #
+
+    def toggle_play(self) -> None:
+        if self.audio.playing:
+            self._pause_play()
+        else:
+            self._start_play()
+
+    def _start_play(self) -> None:
+        self._timemap = TimeMap(self.project)
+        # Resume from the paused position (0 when stopped -> starts at the top of
+        # the song). "Play from cursor" can be layered on later.
+        self.audio.play(self.audio.position())
+        self.play_action.setText("⏸ 일시정지")
+        self._play_timer.start()
+
+    def _pause_play(self) -> None:
+        self.audio.pause()
+        self._play_timer.stop()
+        self.play_action.setText("▶ 재생")
+
+    def stop_play(self) -> None:
+        self.audio.stop()
+        self._play_timer.stop()
+        self.play_action.setText("▶ 재생")
+        self.view.set_playhead(None)
+
+    def _on_play_tick(self) -> None:
+        if self._timemap is None:
+            return
+        pos = self.audio.position()
+        chart_pos = self._timemap.chart_pos(pos)
+        # Stop at the end of the timeline (or audio).
+        if chart_pos >= self.project.measures or (
+            self.audio.duration and pos >= self.audio.duration
+        ):
+            self.stop_play()
+            return
+        self.view.set_playhead(chart_pos)
+        self._follow_playhead(chart_pos)
+
+    def _viewport_chart_pos(self) -> float:
+        """Chart position currently at the playhead line in the viewport."""
+        vbar = self.scroll.verticalScrollBar()
+        vp_h = self.scroll.viewport().height()
+        y_in_view = vbar.value() + vp_h * PLAYHEAD_VIEWPORT_FRACTION
+        absolute = self.project.measures - (y_in_view - self.view.v_pad) / self.view.measure_px
+        return max(0.0, absolute)
+
+    def _follow_playhead(self, chart_pos: float) -> None:
+        vbar = self.scroll.verticalScrollBar()
+        vp_h = self.scroll.viewport().height()
+        y = self.view.y_for(chart_pos)
+        target = int(y - vp_h * PLAYHEAD_VIEWPORT_FRACTION)
+        target = max(vbar.minimum(), min(vbar.maximum(), target))
+        vbar.setValue(target)
 
     # -- file actions ------------------------------------------------------- #
 
@@ -259,11 +341,14 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self.project.bgm_file = os.path.basename(path)
+        self._bgm_path = path
+        loaded = self.audio.load(path)
         self._on_changed()
+        note = "" if loaded else "\n\n(이 환경에서는 오디오 장치가 없어 재생 미리보기는 실제 PC에서만 됩니다.)"
         QMessageBox.information(
             self, "BGM 설정됨",
             f"BGM 파일명: {self.project.bgm_file}\n"
-            "이 파일을 .bms와 같은 폴더에 두어야 게임에서 재생됩니다.")
+            "이 파일을 .bms와 같은 폴더에 두어야 게임에서 재생됩니다." + note)
 
     # -- helpers ------------------------------------------------------------ #
 

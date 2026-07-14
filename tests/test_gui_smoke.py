@@ -47,6 +47,17 @@ def main() -> int:
     from slimbms import bms_io
     text = bms_io.export_bms(view.project, 5)
     assert "#TITLE Smoke" in text
+
+    # Preview playback advances the playhead even without an audio device
+    # (the clock runs off a monotonic timer; audio degrades gracefully).
+    import time
+    win._start_play()
+    time.sleep(0.05)
+    win._on_play_tick()
+    assert view.playhead is not None and view.playhead >= 0, "playhead should be set"
+    win.stop_play()
+    assert view.playhead is None, "stop should clear the playhead"
+
     print("GUI smoke test PASSED")
     return 0
 
