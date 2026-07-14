@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from ..model import KEY_MODES, lanes_for
+from ..model import DISPLAY_LABELS, DISPLAY_MODES, lanes_for
 
 LEFT_MARGIN = 48   # room for measure numbers
 LANE_W = 30
@@ -43,12 +43,12 @@ def build_layout() -> Tuple[List[Column], List[Group], int]:
     groups.append(Group("BGM", start, x))
     x += GROUP_GAP
 
-    for km in KEY_MODES:
+    for km in DISPLAY_MODES:
         start = x
         for lane in range(lanes_for(km)):
             columns.append(Column("key", km, lane, x))
             x += LANE_W
-        groups.append(Group(f"{km}K", start, x))
+        groups.append(Group(DISPLAY_LABELS[km], start, x))
         x += GROUP_GAP
 
     total_width = x - GROUP_GAP + RIGHT_PAD

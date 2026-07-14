@@ -7,7 +7,7 @@ from fractions import Fraction
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from slimbms.model import KEY_CHANNELS, Note, Project  # noqa: E402
+from slimbms.model import IMPORT_MODE, KEY_CHANNELS, Note, Project  # noqa: E402
 from slimbms import bms_io  # noqa: E402
 
 
@@ -70,12 +70,17 @@ def test_export_only_selected_key_mode():
     assert not any(line.startswith("#00015:") for line in text4.splitlines())
 
 
-def test_bms_roundtrip_preserves_notes():
+def test_bms_import_lands_in_import_lane():
+    # Exporting a key mode then importing routes every note into the dedicated
+    # import lane group. Timing positions and BGM/metadata must be preserved.
     p = make_project()
     for km in (4, 5, 6):
         text = bms_io.export_bms(p, km)
         back = bms_io.parse_bms(text)
-        assert back.charts[km] == p.charts[km], f"key mode {km} mismatch"
+        assert not back.charts[km], "notes should not land back in the key-mode chart"
+        orig_positions = {(n.measure, n.pos) for n in p.charts[km]}
+        import_positions = {(n.measure, n.pos) for n in back.charts[IMPORT_MODE]}
+        assert import_positions == orig_positions, f"key mode {km} timing mismatch"
         assert back.bgm == p.bgm
         assert back.title == p.title
         assert back.bpm == p.bpm
@@ -96,11 +101,14 @@ def test_project_json_roundtrip():
         assert back.charts[km] == p.charts[km]
 
 
-def test_infer_key_mode_from_channels():
-    # Build a raw BMS with a 6K-only channel and no hint.
-    lines = ["#TITLE X", "#00018:01"]  # channel 18 -> 6K lane 5
+def test_import_channels_map_to_import_lanes():
+    # Channels 16/18/19 (which don't fit the 6-lane 6K group) must still load
+    # into the import lane instead of being dropped.
+    lines = ["#TITLE X", "#00016:01", "#00018:01", "#00019:01"]
     p = bms_io.parse_bms("\n".join(lines))
-    assert p.charts[6], "expected notes to land in the 6K chart"
+    lanes = {n.lane for n in p.charts[IMPORT_MODE]}
+    assert lanes == {5, 6, 7}, f"expected import lanes 5,6,7, got {lanes}"
+    assert not p.charts[6], "nothing should land in the 6K chart on import"
 
 
 if __name__ == "__main__":

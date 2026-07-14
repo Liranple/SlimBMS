@@ -84,7 +84,7 @@ class MainWindow(QMainWindow):
         self._play_timer.timeout.connect(self._on_play_tick)
 
         self.setWindowTitle("SlimBMS")
-        self.resize(720, 900)
+        self.resize(1000, 900)
 
         self._update_manual = False
         self._build_canvas()

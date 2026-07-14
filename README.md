@@ -63,6 +63,13 @@ another BMS player. Defined in `slimbms/model.py` (`KEY_CHANNELS`):
 
 BGM objects use channel `01`.
 
+### Importing a .bms
+
+Loading a `.bms` puts every key object into a dedicated **불러오기 (import)**
+lane group (A1~A8) to the right of the 6K group, so charts with more channels
+than 6K (scratch, keys 6/7, …) load without losing notes. That group is a
+reference/staging area — you copy from it into the 4K/5K/6K charts as needed.
+
 ## Running from source
 
 ```bash

@@ -16,7 +16,9 @@ from math import gcd
 from typing import Dict, List, Optional
 
 from .model import (
+    ALL_MODES,
     BGM_CHANNEL,
+    IMPORT_MODE,
     KEY_CHANNELS,
     KEY_MODES,
     OBJ_VALUE,
@@ -126,16 +128,14 @@ def _parse_objects(data: str) -> List[Fraction]:
 def parse_bms(text: str) -> Project:
     """Parse a ``.bms`` chart into a :class:`Project`.
 
-    The chart's key mode is taken from the ``#SLIMBMS_KEYMODE`` hint when
-    present, otherwise inferred from the highest lane used.
+    All key objects are loaded into the dedicated import lane group (A1~A8) so
+    nothing is lost regardless of how many channels the source uses; the BGM
+    object and metadata are read normally.
     """
     project = Project()
-    channel_to_lane: Dict[str, Dict[str, int]] = {}
-    for km, chans in KEY_CHANNELS.items():
-        channel_to_lane[str(km)] = {ch: lane for lane, ch in enumerate(chans)}
+    # Channel -> import lane index (A1~A8).
+    import_lane = {ch: lane for lane, ch in enumerate(KEY_CHANNELS[IMPORT_MODE])}
 
-    hinted_mode: Optional[int] = None
-    used_channels: set[str] = set()
     # measure -> channel -> list of positions
     body: Dict[int, Dict[str, List[Fraction]]] = {}
     max_measure = 0
@@ -156,11 +156,6 @@ def parse_bms(text: str) -> Project:
                 project.bpm = float(line[5:].strip())
             except ValueError:
                 pass
-        elif upper.startswith("#SLIMBMS_KEYMODE "):
-            try:
-                hinted_mode = int(line.split()[1])
-            except (ValueError, IndexError):
-                pass
         elif upper.startswith(f"#WAV{BGM_WAV_INDEX}"):
             project.bgm_file = line[len("#WAV") + len(BGM_WAV_INDEX):].strip()
         elif len(line) >= 7 and line[6] == ":" and line[1:6].isalnum():
@@ -175,33 +170,19 @@ def parse_bms(text: str) -> Project:
             if not positions:
                 continue
             body.setdefault(measure, {}).setdefault(channel, []).extend(positions)
-            used_channels.add(channel)
             max_measure = max(max_measure, measure)
 
-    # Decide key mode.
-    key_mode = hinted_mode if hinted_mode in KEY_MODES else _infer_key_mode(used_channels)
     project.measures = max(16, max_measure + 1)
-
-    lane_map = channel_to_lane[str(key_mode)]
     for measure, chans in body.items():
         for channel, positions in chans.items():
             if channel == BGM_CHANNEL:
                 for pos in positions:
                     project.bgm.add(Note(measure, pos, 0))
-            elif channel in lane_map:
-                lane = lane_map[channel]
+            elif channel in import_lane:
+                lane = import_lane[channel]
                 for pos in positions:
-                    project.charts[key_mode].add(Note(measure, pos, lane))
+                    project.charts[IMPORT_MODE].add(Note(measure, pos, lane))
     return project
-
-
-def _infer_key_mode(used_channels: set[str]) -> int:
-    """Guess the key mode from which key channels appear."""
-    best = 4
-    for km, chans in KEY_CHANNELS.items():
-        if any(ch in used_channels for ch in chans):
-            best = max(best, km)
-    return best
 
 
 # --------------------------------------------------------------------------- #
@@ -224,7 +205,7 @@ def project_to_dict(project: Project) -> dict:
         "bgm_file": project.bgm_file,
         "measures": project.measures,
         "bgm": notes(project.bgm),
-        "charts": {str(km): notes(project.charts[km]) for km in KEY_MODES},
+        "charts": {str(km): notes(project.charts[km]) for km in ALL_MODES},
     }
 
 
@@ -241,7 +222,7 @@ def project_from_dict(data: dict) -> Project:
         project.bgm.add(Note(m, Fraction(num, den), lane))
     for km_str, objs in data.get("charts", {}).items():
         km = int(km_str)
-        if km in KEY_MODES:
+        if km in ALL_MODES:
             for m, num, den, lane in objs:
                 project.charts[km].add(Note(m, Fraction(num, den), lane))
     return project

@@ -16,15 +16,32 @@ from typing import Dict, List, Set
 # Constants
 # --------------------------------------------------------------------------- #
 
-KEY_MODES = (4, 5, 6)
+KEY_MODES = (4, 5, 6)          # editable / exportable key modes
+IMPORT_MODE = 8                # dedicated "import" lane group (A1~A8)
+ALL_MODES = (4, 5, 6, IMPORT_MODE)   # everything the project stores
+DISPLAY_MODES = (4, 5, 6, IMPORT_MODE)  # left-to-right order in the editor
 
-# Lane index -> BMS object channel, per key mode (1P visible channels).
-# These are kept as a plain, easy-to-edit table. No keysounds are used, so the
-# exact channel numbers only matter if a chart is opened in another BMS player.
+# Lane index -> BMS object channel, per mode (1P visible channels).
+# The IMPORT_MODE group carries all eight 1P object channels (A1~A8 in uBMSC)
+# so any loaded .bms lands here without losing notes. No keysounds are used, so
+# the exact channel numbers only matter for interoperability with other players.
 KEY_CHANNELS: Dict[int, List[str]] = {
     4: ["11", "12", "13", "14"],
     5: ["11", "12", "13", "14", "15"],
     6: ["11", "12", "13", "14", "15", "18"],
+    IMPORT_MODE: ["11", "12", "13", "14", "15", "16", "18", "19"],
+}
+
+# Per-lane colour code for each mode: 'W' white, 'B' blue, 'G' grey (import).
+LANE_COLORS: Dict[int, str] = {
+    4: "WBBW",
+    5: "WBWBW",
+    6: "WBWWBW",
+    IMPORT_MODE: "GGGGGGGG",
+}
+
+DISPLAY_LABELS: Dict[int, str] = {
+    4: "4K", 5: "5K", 6: "6K", IMPORT_MODE: "불러오기",
 }
 
 # Channel used for the background-music object (whole-song audio start timing).
@@ -80,7 +97,7 @@ class Project:
     bgm_file: str = ""            # audio filename, e.g. "song.ogg"
     measures: int = 16           # number of measures in the timeline
     charts: Dict[int, Set[Note]] = field(
-        default_factory=lambda: {k: set() for k in KEY_MODES}
+        default_factory=lambda: {k: set() for k in ALL_MODES}
     )
     bgm: Set[Note] = field(default_factory=set)  # BGM objects (lane 0)
 

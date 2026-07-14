@@ -9,7 +9,7 @@ from PySide6.QtCore import QRect, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-from ..model import Project
+from ..model import LANE_COLORS, Project
 from . import layout as L
 
 # Colours (dark theme).
@@ -24,8 +24,18 @@ C_GROUP_SEP = QColor("#55556a")
 C_TEXT = QColor("#c8c8d0")
 C_NOTE_WHITE = QColor("#eef0f4")
 C_NOTE_BLUE = QColor("#5aa0ff")
+C_NOTE_GREY = QColor("#9aa0ac")
 C_NOTE_BGM = QColor("#ffb347")
 C_PLAYHEAD = QColor("#ff4d6d")
+
+# Note colour by lane code.
+NOTE_COLOR = {"W": C_NOTE_WHITE, "B": C_NOTE_BLUE, "G": C_NOTE_GREY}
+# Pale lane background tint by lane code (kept faint so the grid stays visible).
+LANE_TINT = {
+    "W": QColor(255, 255, 255, 12),
+    "B": QColor(90, 160, 255, 26),
+    "G": QColor(150, 160, 175, 20),
+}
 
 BEATS_PER_MEASURE = 4
 
@@ -109,13 +119,20 @@ class ChartView(QWidget):
         p.drawLine(L.LEFT_MARGIN, y, self.groups[-1].x1, y)
 
     def _paint_lane_backgrounds(self, p: QPainter) -> None:
-        top = self.v_pad
-        bottom = self.height() - self.v_pad
+        top = int(self.v_pad)
+        height = int(self.height() - 2 * self.v_pad)
+        # Base group backgrounds (subtle alternating shade).
         for i, g in enumerate(self.groups):
-            p.fillRect(
-                QRect(g.x0, int(top), g.x1 - g.x0, int(bottom - top)),
-                C_GROUP_BG_A if i % 2 == 0 else C_GROUP_BG_B,
-            )
+            p.fillRect(QRect(g.x0, top, g.x1 - g.x0, height),
+                       C_GROUP_BG_A if i % 2 == 0 else C_GROUP_BG_B)
+        # Per-lane colour tint (pale, so grid lines remain visible).
+        for col in self.columns:
+            if col.kind != "key":
+                continue
+            code = LANE_COLORS.get(col.key_mode, "")
+            if col.lane < len(code):
+                p.fillRect(QRect(col.x, top, L.LANE_W, height),
+                           LANE_TINT[code[col.lane]])
 
     def _paint_horizontal_lines(self, p: QPainter) -> None:
         x0 = L.LEFT_MARGIN
@@ -165,17 +182,25 @@ class ChartView(QWidget):
             p.drawLine(g.x0, int(top), g.x0, int(bottom))
             p.drawLine(g.x1, int(top), g.x1, int(bottom))
 
-    def _note_rect(self, x: int, y: float) -> QRect:
-        h = max(6, self.measure_px // 24)
-        return QRect(x + 2, int(y - h / 2), L.LANE_W - 3, h)
+    def _note_rect(self, x: int, absolute: float) -> QRect:
+        """A note fills the grid cell above its timing line, sized to the
+        current snap so it fits the grid exactly at any zoom level."""
+        cell_h = max(3, int(round(self.measure_px / self.snap_div)))
+        y_line = int(round(self.y_for(absolute)))
+        return QRect(x + 1, y_line - cell_h + 1, L.LANE_W - 2, cell_h - 1)
+
+    def _note_color(self, key_mode: int, lane: int) -> QColor:
+        code = LANE_COLORS.get(key_mode, "")
+        if lane < len(code):
+            return NOTE_COLOR[code[lane]]
+        return C_NOTE_WHITE
 
     def _paint_notes(self, p: QPainter) -> None:
         p.setPen(Qt.NoPen)
         # BGM objects.
         bgm_col = self.columns[0]
         for n in self.project.bgm:
-            y = self.y_for(n.absolute)
-            p.fillRect(self._note_rect(bgm_col.x, y), C_NOTE_BGM)
+            p.fillRect(self._note_rect(bgm_col.x, n.absolute), C_NOTE_BGM)
         # Key notes.
         col_index = {}
         for col in self.columns:
@@ -186,9 +211,7 @@ class ChartView(QWidget):
                 x = col_index.get((km, n.lane))
                 if x is None:
                     continue
-                y = self.y_for(n.absolute)
-                colour = C_NOTE_BLUE if n.lane % 2 == 1 else C_NOTE_WHITE
-                p.fillRect(self._note_rect(x, y), colour)
+                p.fillRect(self._note_rect(x, n.absolute), self._note_color(km, n.lane))
 
     # -- mouse -------------------------------------------------------------- #
 
