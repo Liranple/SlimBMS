@@ -54,6 +54,9 @@ class MainWindow(QMainWindow):
         self.audio = AudioPlayer()
         self._bgm_path: Optional[str] = None   # full path for playback
         self._timemap: Optional[TimeMap] = None
+        self._preview_active = False
+        self._loop_a: Optional[float] = None
+        self._loop_b: Optional[float] = None
         self._play_timer = QTimer(self)
         self._play_timer.setInterval(int(1000 / PREVIEW_FPS))
         self._play_timer.timeout.connect(self._on_play_tick)
@@ -94,13 +97,53 @@ class MainWindow(QMainWindow):
         tb.setMovable(False)
         self.addToolBar(tb)
 
+        start_action = QAction("⏮", self)
+        start_action.setToolTip("처음으로 (Home)")
+        start_action.setShortcut(Qt.Key_Home)
+        start_action.triggered.connect(self.go_to_start)
+        tb.addAction(start_action)
+
+        back_action = QAction("◀ 1마디", self)
+        back_action.setToolTip("한 마디 뒤로 (←)")
+        back_action.setShortcut(Qt.Key_Left)
+        back_action.triggered.connect(lambda: self.seek_relative(-1))
+        tb.addAction(back_action)
+
         self.play_action = QAction("▶ 재생", self)
         self.play_action.setShortcut(Qt.Key_Space)
         self.play_action.triggered.connect(self.toggle_play)
         tb.addAction(self.play_action)
+
+        fwd_action = QAction("1마디 ▶", self)
+        fwd_action.setToolTip("한 마디 앞으로 (→)")
+        fwd_action.setShortcut(Qt.Key_Right)
+        fwd_action.triggered.connect(lambda: self.seek_relative(1))
+        tb.addAction(fwd_action)
+
         stop_action = QAction("■ 정지", self)
         stop_action.triggered.connect(self.stop_play)
         tb.addAction(stop_action)
+        tb.addSeparator()
+
+        # A-B loop (repeat a section).
+        set_a = QAction("A", self)
+        set_a.setToolTip("현재 위치를 반복 시작점으로 ([)")
+        set_a.setShortcut(Qt.Key_BracketLeft)
+        set_a.triggered.connect(self.set_loop_a)
+        tb.addAction(set_a)
+        set_b = QAction("B", self)
+        set_b.setToolTip("현재 위치를 반복 끝점으로 (])")
+        set_b.setShortcut(Qt.Key_BracketRight)
+        set_b.triggered.connect(self.set_loop_b)
+        tb.addAction(set_b)
+        self.loop_action = QAction("🔁 반복", self)
+        self.loop_action.setCheckable(True)
+        self.loop_action.setToolTip("A-B 구간 반복 켜기/끄기 (\\)")
+        self.loop_action.setShortcut(Qt.Key_Backslash)
+        tb.addAction(self.loop_action)
+        clear_loop = QAction("구간 해제", self)
+        clear_loop.triggered.connect(self.clear_loop)
+        tb.addAction(clear_loop)
         tb.addSeparator()
 
         tb.addWidget(QLabel(" 스냅 "))
@@ -180,6 +223,14 @@ class MainWindow(QMainWindow):
 
     # -- playback / preview ------------------------------------------------- #
 
+    def _ensure_timemap(self) -> TimeMap:
+        # Rebuilt on demand so BPM / BGM-offset edits always take effect.
+        self._timemap = TimeMap(self.project)
+        return self._timemap
+
+    def _current_chart_pos(self) -> float:
+        return self._ensure_timemap().chart_pos(self.audio.position())
+
     def toggle_play(self) -> None:
         if self.audio.playing:
             self._pause_play()
@@ -187,9 +238,9 @@ class MainWindow(QMainWindow):
             self._start_play()
 
     def _start_play(self) -> None:
-        self._timemap = TimeMap(self.project)
-        # Resume from the paused position (0 when stopped -> starts at the top of
-        # the song). "Play from cursor" can be layered on later.
+        self._ensure_timemap()
+        self._preview_active = True
+        # Resume from the current position (0 when stopped -> top of the song).
         self.audio.play(self.audio.position())
         self.play_action.setText("⏸ 일시정지")
         self._play_timer.start()
@@ -198,18 +249,41 @@ class MainWindow(QMainWindow):
         self.audio.pause()
         self._play_timer.stop()
         self.play_action.setText("▶ 재생")
+        # Keep the playhead visible where we paused so seeking has a reference.
+        self.view.set_playhead(self._current_chart_pos())
 
     def stop_play(self) -> None:
         self.audio.stop()
         self._play_timer.stop()
         self.play_action.setText("▶ 재생")
+        self._preview_active = False
         self.view.set_playhead(None)
+
+    def go_to_start(self) -> None:
+        self._seek_to(0.0)
+
+    def seek_relative(self, d_measures: float) -> None:
+        cur = self._current_chart_pos()
+        self._seek_to(cur + d_measures)
+
+    def _seek_to(self, chart_pos: float) -> None:
+        chart_pos = max(0.0, min(float(self.project.measures), chart_pos))
+        secs = self._ensure_timemap().audio_seconds(chart_pos)
+        self.audio.seek(secs)
+        self._preview_active = True
+        self.view.set_playhead(chart_pos)
+        self._follow_playhead(chart_pos)
 
     def _on_play_tick(self) -> None:
         if self._timemap is None:
             return
         pos = self.audio.position()
         chart_pos = self._timemap.chart_pos(pos)
+        # A-B loop: jump back to A when we reach B.
+        if (self.loop_action.isChecked() and self._loop_a is not None
+                and self._loop_b is not None and chart_pos >= self._loop_b):
+            self._seek_to(self._loop_a)
+            return
         # Stop at the end of the timeline (or audio).
         if chart_pos >= self.project.measures or (
             self.audio.duration and pos >= self.audio.duration
@@ -218,6 +292,29 @@ class MainWindow(QMainWindow):
             return
         self.view.set_playhead(chart_pos)
         self._follow_playhead(chart_pos)
+
+    # -- A-B loop ----------------------------------------------------------- #
+
+    def set_loop_a(self) -> None:
+        self._loop_a = self._current_chart_pos()
+        if self._loop_b is not None and self._loop_b <= self._loop_a:
+            self._loop_b = None
+        self.view.set_loop(self._loop_a, self._loop_b)
+
+    def set_loop_b(self) -> None:
+        b = self._current_chart_pos()
+        if self._loop_a is not None and b <= self._loop_a:
+            QMessageBox.information(self, "구간 반복",
+                                    "반복 끝점(B)은 시작점(A)보다 뒤여야 합니다.")
+            return
+        self._loop_b = b
+        self.view.set_loop(self._loop_a, self._loop_b)
+
+    def clear_loop(self) -> None:
+        self._loop_a = None
+        self._loop_b = None
+        self.loop_action.setChecked(False)
+        self.view.set_loop(None, None)
 
     def _viewport_chart_pos(self) -> float:
         """Chart position currently at the playhead line in the viewport."""

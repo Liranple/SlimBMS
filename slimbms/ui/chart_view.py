@@ -26,6 +26,8 @@ C_NOTE_WHITE = QColor("#eef0f4")
 C_NOTE_BLUE = QColor("#5aa0ff")
 C_NOTE_BGM = QColor("#ffb347")
 C_PLAYHEAD = QColor("#ff4d6d")
+C_LOOP_BAND = QColor(90, 160, 255, 40)
+C_LOOP_EDGE = QColor("#5aa0ff")
 
 BEATS_PER_MEASURE = 4
 
@@ -42,6 +44,8 @@ class ChartView(QWidget):
         self.snap_div = 8             # snap grid: 1/snap_div of a measure
         self.v_pad = 24
         self.playhead: Optional[float] = None  # absolute chart pos, or None
+        self.loop_a: Optional[float] = None    # loop start (absolute chart pos)
+        self.loop_b: Optional[float] = None    # loop end (absolute chart pos)
         self.columns, self.groups, self._width = L.build_layout()
         self.setMouseTracking(True)
         self._apply_size()
@@ -94,12 +98,36 @@ class ChartView(QWidget):
         self._paint_horizontal_lines(p)
         self._paint_separators(p)
         self._paint_notes(p)
+        self._paint_loop(p)
         self._paint_playhead(p)
         p.end()
 
     def set_playhead(self, absolute: Optional[float]) -> None:
         self.playhead = absolute
         self.update()
+
+    def set_loop(self, a: Optional[float], b: Optional[float]) -> None:
+        self.loop_a = a
+        self.loop_b = b
+        self.update()
+
+    def _paint_loop(self, p: QPainter) -> None:
+        if self.loop_a is None and self.loop_b is None:
+            return
+        x0 = L.LEFT_MARGIN
+        x1 = self.groups[-1].x1
+        if self.loop_a is not None and self.loop_b is not None:
+            y_a = int(self.y_for(self.loop_a))
+            y_b = int(self.y_for(self.loop_b))
+            top, bottom = min(y_a, y_b), max(y_a, y_b)
+            p.fillRect(QRect(x0, top, x1 - x0, bottom - top), C_LOOP_BAND)
+        p.setPen(QPen(C_LOOP_EDGE, 1, Qt.DashLine))
+        for edge, label in ((self.loop_a, "A"), (self.loop_b, "B")):
+            if edge is None:
+                continue
+            y = int(self.y_for(edge))
+            p.drawLine(x0, y, x1, y)
+            p.drawText(QRect(x1 - 18, y - 14, 16, 12), Qt.AlignRight, label)
 
     def _paint_playhead(self, p: QPainter) -> None:
         if self.playhead is None:
