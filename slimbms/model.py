@@ -1,0 +1,114 @@
+"""Data model for SlimBMS.
+
+A :class:`Project` holds one song's metadata plus three independent charts
+(one per key mode: 4K / 5K / 6K) that share the same BGM audio and timing.
+Notes carry no keysounds — the sound of the song comes entirely from a single
+BGM audio file placed on the BGM lane.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from fractions import Fraction
+from typing import Dict, List, Set
+
+# --------------------------------------------------------------------------- #
+# Constants
+# --------------------------------------------------------------------------- #
+
+KEY_MODES = (4, 5, 6)
+
+# Lane index -> BMS object channel, per key mode (1P visible channels).
+# These are kept as a plain, easy-to-edit table. No keysounds are used, so the
+# exact channel numbers only matter if a chart is opened in another BMS player.
+KEY_CHANNELS: Dict[int, List[str]] = {
+    4: ["11", "12", "13", "14"],
+    5: ["11", "12", "13", "14", "15"],
+    6: ["11", "12", "13", "14", "15", "18"],
+}
+
+# Channel used for the background-music object (whole-song audio start timing).
+BGM_CHANNEL = "01"
+
+# All notes reference this single WAV index. For a keysound-less chart every
+# object simply points at the one BGM audio; the value is a presence marker.
+OBJ_VALUE = "01"
+BGM_WAV_INDEX = "01"
+
+
+def lanes_for(key_mode: int) -> int:
+    """Number of lanes for a key mode."""
+    return len(KEY_CHANNELS[key_mode])
+
+
+# --------------------------------------------------------------------------- #
+# Note
+# --------------------------------------------------------------------------- #
+
+@dataclass(frozen=True)
+class Note:
+    """A single object at a snapped time position within a lane.
+
+    ``pos`` is the fractional position inside the measure in ``[0, 1)`` — e.g.
+    ``Fraction(1, 4)`` is the second beat of a 4/4 measure. Using an exact
+    :class:`~fractions.Fraction` means positions round-trip through BMS output
+    without floating-point drift.
+    """
+
+    measure: int
+    pos: Fraction
+    lane: int  # 0-based lane within its key mode; 0 for BGM objects
+
+    @property
+    def absolute(self) -> Fraction:
+        """Position measured in whole measures from the song start."""
+        return self.measure + self.pos
+
+
+# --------------------------------------------------------------------------- #
+# Project
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class Project:
+    """One song: shared metadata + three key-mode charts + BGM objects."""
+
+    title: str = ""
+    artist: str = ""
+    genre: str = ""
+    bpm: float = 120.0
+    bgm_file: str = ""            # audio filename, e.g. "song.ogg"
+    measures: int = 16           # number of measures in the timeline
+    charts: Dict[int, Set[Note]] = field(
+        default_factory=lambda: {k: set() for k in KEY_MODES}
+    )
+    bgm: Set[Note] = field(default_factory=set)  # BGM objects (lane 0)
+
+    # -- note editing ------------------------------------------------------- #
+
+    def toggle_note(self, key_mode: int, measure: int, pos: Fraction, lane: int) -> bool:
+        """Add the note if absent, remove it if present. Returns the new state
+        (``True`` = note now exists)."""
+        note = Note(measure, pos, lane)
+        chart = self.charts[key_mode]
+        if note in chart:
+            chart.discard(note)
+            return False
+        chart.add(note)
+        return True
+
+    def toggle_bgm(self, measure: int, pos: Fraction) -> bool:
+        note = Note(measure, pos, 0)
+        if note in self.bgm:
+            self.bgm.discard(note)
+            return False
+        self.bgm.add(note)
+        return True
+
+    def clear_key_mode(self, key_mode: int) -> None:
+        self.charts[key_mode].clear()
+
+    # -- convenience -------------------------------------------------------- #
+
+    def note_count(self, key_mode: int) -> int:
+        return len(self.charts[key_mode])
