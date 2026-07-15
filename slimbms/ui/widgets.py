@@ -74,8 +74,8 @@ class CollapsibleSection(QWidget):
         outer.addWidget(self.content)
 
         self._anim = QPropertyAnimation(self.content, b"maximumHeight", self)
-        self._anim.setDuration(170)
-        self._anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._anim.setDuration(210)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
         self._anim.finished.connect(self._on_anim_done)
 
     # -- content ------------------------------------------------------------ #
@@ -92,19 +92,19 @@ class CollapsibleSection(QWidget):
         self._expanded = not self._expanded
         self.header.setArrowType(Qt.DownArrow if self._expanded else Qt.RightArrow)
         self._anim.stop()
-        start = self.content.maximumHeight()
+        # Animate over the *actual* content height in both directions (when open
+        # the max height is uncapped, so read sizeHint, not maximumHeight).
+        full = self.content.sizeHint().height()
         if self._expanded:
-            # Uncap first so sizeHint reflects the real content height.
-            self.content.setMaximumHeight(_UNLIMITED)
-            end = self.content.sizeHint().height()
-            self.content.setMaximumHeight(start)
+            start, end = 0, full
         else:
-            end = 0
+            start, end = full, 0
+        self.content.setMaximumHeight(start)
         self._anim.setStartValue(start)
         self._anim.setEndValue(end)
         self._anim.start()
 
     def _on_anim_done(self) -> None:
-        # Remove the cap while open so the section can grow with its content.
+        # Uncap while open so the section can still grow with its content.
         if self._expanded:
             self.content.setMaximumHeight(_UNLIMITED)

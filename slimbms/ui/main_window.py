@@ -7,7 +7,7 @@ from typing import Optional
 
 import threading
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSettings, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QDialog,
@@ -38,6 +38,7 @@ from ..model import KEY_MODES, Project
 from ..timing import TimeMap
 from .appicon import build_icon
 from .chart_view import ChartView, LaneHeader
+from .toolbar_icons import make_icon
 from .widgets import CollapsibleSection, NoWheelDoubleSpinBox, NoWheelSpinBox
 
 
@@ -484,42 +485,46 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self) -> None:
         tb = QToolBar("도구")
         tb.setMovable(False)
+        tb.setToolButtonStyle(Qt.ToolButtonIconOnly)   # drawn icons (uniform set)
+        tb.setIconSize(QSize(18, 18))
         self.addToolBar(tb)
 
         # File actions up front for quick access: open / save / import / export.
-        for label, slot in (
-            ("📂 열기", self.open_project),
-            ("💾 저장", self.save_project),
-            ("📥 가져오기", self.import_bms),
-            ("📤 내보내기", self.export_bms),
+        for name, label, slot in (
+            ("open", "열기", self.open_project),
+            ("save", "저장", self.save_project),
+            ("import", "가져오기", self.import_bms),
+            ("export", "내보내기", self.export_bms),
         ):
-            act = QAction(label, self)
+            act = QAction(make_icon(name), label, self)
             act.triggered.connect(lambda checked=False, s=slot: s())
             tb.addAction(act)
         tb.addSeparator()
 
-        # Transport buttons: compact media glyphs only, to keep the row short.
+        # Transport buttons — one consistent drawn icon set.
         # Shortcuts here are the defaults; the user can remap them (편집 → 설정).
-        self.start_action = QAction("⏮", self)
+        self.start_action = QAction(make_icon("first"), "처음", self)
         self.start_action.triggered.connect(self.go_to_start)
         tb.addAction(self.start_action)
 
-        self.back_action = QAction("⏪", self)
+        self.back_action = QAction(make_icon("back"), "1초 뒤로", self)
         self.back_action.triggered.connect(lambda: self.seek_seconds(-1.0))
         tb.addAction(self.back_action)
 
-        self.play_action = QAction("▶", self)
+        self._icon_play = make_icon("play")
+        self._icon_pause = make_icon("pause")
+        self.play_action = QAction(self._icon_play, "재생", self)
         self.play_action.triggered.connect(self.toggle_play)
         tb.addAction(self.play_action)
         play_btn = tb.widgetForAction(self.play_action)
         if play_btn is not None:
             play_btn.setObjectName("Primary")
 
-        self.fwd_action = QAction("⏩", self)
+        self.fwd_action = QAction(make_icon("forward"), "1초 앞으로", self)
         self.fwd_action.triggered.connect(lambda: self.seek_seconds(1.0))
         tb.addAction(self.fwd_action)
 
-        stop_action = QAction("⏹", self)
+        stop_action = QAction(make_icon("stop"), "정지", self)
         stop_action.triggered.connect(self.stop_play)
         tb.addAction(stop_action)
 
@@ -554,6 +559,12 @@ class MainWindow(QMainWindow):
             km_group.addAction(act)
             tb.addAction(act)
             self._km_actions[km] = act
+
+        # Mode / key-mode buttons keep their text labels (no icon).
+        for act in (self.add_mode_action, self.edit_mode_action, *self._km_actions.values()):
+            btn = tb.widgetForAction(act)
+            if btn is not None:
+                btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
 
         # No hover tooltips on any toolbar button: an empty tip just falls back
         # to the button text, so swallow the ToolTip event on each button.
@@ -869,7 +880,7 @@ class MainWindow(QMainWindow):
             self.audio.resume()
         else:
             self.audio.play(self.audio.position())
-        self.play_action.setText("⏸")
+        self.play_action.setIcon(self._icon_pause)
         self._play_timer.start()
         self.view.set_live(True)
         self.view.setFocus()   # so recording keys reach the canvas
@@ -877,7 +888,7 @@ class MainWindow(QMainWindow):
     def _begin_countin(self) -> None:
         self._counting_in = True
         self._countin_left = 3          # first beat plays now, three more follow
-        self.play_action.setText("⏸")
+        self.play_action.setIcon(self._icon_pause)
         self.statusBar().showMessage("카운트인…")
         self.audio.play_click(accent=True)
         interval = int(60000.0 / max(1.0, self.project.bpm))
@@ -905,7 +916,7 @@ class MainWindow(QMainWindow):
     def _pause_play(self) -> None:
         self.audio.pause()
         self._play_timer.stop()
-        self.play_action.setText("▶")
+        self.play_action.setIcon(self._icon_play)
         self.view.set_live(False)
         self._on_mode_changed(self.view.mode)
         # Keep the playhead visible where we paused so seeking has a reference.
@@ -915,7 +926,7 @@ class MainWindow(QMainWindow):
         self._cancel_countin()
         self.audio.stop()
         self._play_timer.stop()
-        self.play_action.setText("▶")
+        self.play_action.setIcon(self._icon_play)
         self._preview_active = False
         self.view.set_live(False)
         self._on_mode_changed(self.view.mode)
