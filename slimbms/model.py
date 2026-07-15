@@ -109,7 +109,8 @@ class Project:
     genre: str = ""
     bpm: float = 120.0           # base BPM, in effect from the song start
     level: int = 1               # play level / difficulty
-    bgm_file: str = ""            # audio filename, e.g. "song.ogg"
+    bgm_file: str = ""            # audio filename, e.g. "song.ogg" (portable)
+    bgm_path: str = ""            # full audio path, to auto-reconnect on open
     measures: int = 16           # number of measures in the timeline
     charts: Dict[int, Set[Note]] = field(
         default_factory=lambda: {k: set() for k in ALL_MODES}

@@ -362,6 +362,7 @@ def project_to_dict(project: Project) -> dict:
         "bpm": project.bpm,
         "level": project.level,
         "bgm_file": project.bgm_file,
+        "bgm_path": project.bgm_path,
         "measures": project.measures,
         "bpm_changes": sorted([p.numerator, p.denominator, b]
                               for p, b in project.bpm_changes.items()),
@@ -378,6 +379,7 @@ def project_from_dict(data: dict) -> Project:
         bpm=float(data.get("bpm", 120.0)),
         level=int(data.get("level", 1)),
         bgm_file=data.get("bgm_file", ""),
+        bgm_path=data.get("bgm_path", ""),
         measures=int(data.get("measures", 16)),
     )
     def to_note(row) -> Note:

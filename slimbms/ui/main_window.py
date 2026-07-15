@@ -1070,11 +1070,9 @@ class MainWindow(QMainWindow):
         if not self._dirty:
             return
         try:
+            # The .slbms now stores the full audio path (bgm_path), so the
+            # recovery copy can reconnect the BGM on its own.
             bms_io.save_project(self.project, self._recovery_path())
-            # Remember the audio path too — the .slbms only stores the filename,
-            # so recovery needs the full path to reload the BGM.
-            QSettings("SlimBMS", "SlimBMS").setValue(
-                "recovery/bgm_path", self._bgm_path or "")
         except Exception:  # noqa: BLE001 — best effort, never interrupt editing
             pass
 
@@ -1083,7 +1081,6 @@ class MainWindow(QMainWindow):
             os.remove(self._recovery_path())
         except OSError:
             pass
-        QSettings("SlimBMS", "SlimBMS").remove("recovery/bgm_path")
 
     def _check_recovery(self) -> None:
         path = self._recovery_path()
@@ -1105,11 +1102,7 @@ class MainWindow(QMainWindow):
             self.project_path = None
             self._dirty = True
             self._reload_view()
-            # Reload the BGM audio from the remembered path (the project only
-            # kept the filename).
-            bgm_path = QSettings("SlimBMS", "SlimBMS").value("recovery/bgm_path", "")
-            if bgm_path and os.path.exists(bgm_path):
-                self._apply_bgm(bgm_path)
+            self._auto_load_bgm()   # the recovery .slbms keeps the full path
         else:
             self._clear_recovery()
 
@@ -1183,6 +1176,7 @@ class MainWindow(QMainWindow):
         self.project_path = path
         self._dirty = False
         self._reload_view()
+        self._auto_load_bgm()   # reconnect the audio automatically
 
     def save_project(self) -> None:
         if not self.project_path:
@@ -1275,10 +1269,29 @@ class MainWindow(QMainWindow):
             f"BGM 파일명: {self.project.bgm_file}\n"
             "이 파일을 .bms와 같은 폴더에 두어야 게임에서 재생됩니다." + note)
 
+    def _auto_load_bgm(self) -> None:
+        """Reconnect the project's BGM audio after open/recovery: try the saved
+        full path, then the audio filename next to the project, then the last
+        BGM folder. Silent no-op if none exist (won't nag)."""
+        name = self.project.bgm_file
+        if not name:
+            return
+        candidates = [self.project.bgm_path]
+        if self.project_path:
+            candidates.append(os.path.join(os.path.dirname(self.project_path), name))
+        d = self._dir_for("bgm")
+        if d:
+            candidates.append(os.path.join(d, name))
+        for c in candidates:
+            if c and os.path.exists(c):
+                self._apply_bgm(c)
+                return
+
     def _apply_bgm(self, path: str) -> bool:
         """Load an audio file as the BGM: register it, decode, build the
         waveform and pre-stretch. Used by the file dialog and by recovery."""
         self.project.bgm_file = os.path.basename(path)
+        self.project.bgm_path = path
         self._bgm_path = path
         loaded = self.audio.load(path)
         self.sb_bgm_label.setText(self.project.bgm_file)
