@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from fractions import Fraction
 from typing import Optional
 
@@ -49,6 +50,8 @@ LANE_TINT = {
 }
 
 FREE_DIV = 192  # placement resolution when snap is off / Shift held
+HIT_FLASH_SEC = 0.18   # how long a note's hit flash lasts
+HIT_MAX_STEP = 0.15    # ignore playhead jumps bigger than this (seeks, not playback)
 
 C_SELECT = QColor("#6fd0ff")            # accent for the selected key mode
 C_SELECT_TINT = QColor(111, 208, 255, 20)  # faint fill over its lanes
@@ -83,6 +86,7 @@ class ChartView(QWidget):
         self.snap_on = True
         self.v_pad = 24
         self.playhead: Optional[float] = None  # absolute chart pos, or None
+        self._hits = {}               # (mode, Note) -> monotonic time it crossed the playhead
         self.record_offset_measures = 0.0  # recording latency comp, in measures
         self._wave = None             # normalised peak envelope (numpy array)
         self._wave_bps = 200          # buckets per second in _wave
@@ -182,6 +186,7 @@ class ChartView(QWidget):
         self.live_playing = on
         if not on:
             self._rec_pending.clear()  # stop growing any held-key long notes
+            self._hits.clear()
         self.update()
 
     def set_selected_km(self, key_mode: int) -> None:
@@ -261,12 +266,42 @@ class ChartView(QWidget):
         self._paint_separators(p)
         self._paint_selected_group(p)
         self._paint_notes(p)
+        self._paint_hits(p)
         self._paint_selection(p)
         self._paint_hover(p)
         self._paint_drag(p)
         self._paint_bpm_changes(p)
         self._paint_playhead(p)
         p.end()
+
+    def _paint_hits(self, p: QPainter) -> None:
+        """Flash notes that just crossed the playhead — a bright pop that fades."""
+        if not self._hits:
+            return
+        now = time.monotonic()
+        bgmx = self.columns[0].x
+        colx = self._col_x()
+        p.setBrush(Qt.NoBrush)
+        expired = []
+        for (mode, n), t in self._hits.items():
+            inten = 1.0 - (now - t) / HIT_FLASH_SEC
+            if inten <= 0:
+                expired.append((mode, n))
+                continue
+            if mode == "bgm":
+                x, w = bgmx, self.bgm_w
+            else:
+                x, w = colx.get((mode, n.lane)), self.lane_w
+            if x is None:
+                continue
+            rect = self._note_rect(x, n.absolute, w)
+            grow = int(3 * inten)          # the pop expands outward as it fades
+            r = rect.adjusted(-grow, -grow, grow, grow)
+            p.fillRect(r, QColor(255, 255, 255, int(150 * inten)))
+            p.setPen(QPen(QColor(255, 255, 255, int(230 * inten)), 2))
+            p.drawRect(r)
+        for k in expired:
+            del self._hits[k]
 
     def _paint_waveform(self, p: QPainter) -> None:
         """Draw the BGM's amplitude envelope down the BGM lane, mapped through
@@ -318,8 +353,29 @@ class ChartView(QWidget):
             p.drawText(tag, Qt.AlignCenter, label)
 
     def set_playhead(self, absolute: Optional[float]) -> None:
+        prev = self.playhead
         self.playhead = absolute
+        # Flash notes the playhead just crossed (only during smooth playback —
+        # skip big jumps from seeking).
+        if (self.live_playing and absolute is not None and prev is not None
+                and 0 < absolute - prev <= HIT_MAX_STEP):
+            self._register_hits(prev, absolute)
         self.update()
+
+    def _register_hits(self, prev: float, cur: float) -> None:
+        now = time.monotonic()
+        for m in range(int(prev), int(cur) + 1):
+            for km, chart in self.project.charts.items():
+                for n in self._taps_by_measure.get(km, {}).get(m, ()):
+                    if prev < n.absolute <= cur:
+                        self._hits[(km, n)] = now
+            for n in self._bgm_by_measure.get(m, ()):
+                if prev < n.absolute <= cur:
+                    self._hits[("bgm", n)] = now
+        for km, longs in self._longs.items():
+            for n in longs:
+                if prev < n.absolute <= cur:
+                    self._hits[(km, n)] = now
 
     def _paint_playhead(self, p: QPainter) -> None:
         if self.playhead is None:
