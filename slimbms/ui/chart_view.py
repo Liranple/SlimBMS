@@ -5,8 +5,8 @@ from __future__ import annotations
 from fractions import Fraction
 from typing import Optional
 
-from PySide6.QtCore import QRect, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen
+from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QPolygon
 from PySide6.QtWidgets import QWidget
 
 from ..model import (
@@ -34,6 +34,7 @@ C_NOTE_BLUE = QColor("#5aa0ff")
 C_NOTE_GREY = QColor("#9aa0ac")
 C_NOTE_BGM = QColor("#ffb347")
 C_PLAYHEAD = QColor("#ff4d6d")
+C_CONFLICT = QColor("#ff4d4d")   # notes that overlap another note in the same lane
 
 # Note colour by lane code.
 NOTE_COLOR = {"W": C_NOTE_WHITE, "B": C_NOTE_BLUE, "G": C_NOTE_GREY}
@@ -342,6 +343,32 @@ class ChartView(QWidget):
             return NOTE_COLOR[code[lane]]
         return C_NOTE_WHITE
 
+    @staticmethod
+    def _overlaps(a: Note, b: Note) -> bool:
+        """True when two notes in the same lane collide: their bodies overlap,
+        or they start on the same line (a tap sitting on a long note's head, or
+        two notes stacked at the same time). Back-to-back long notes that merely
+        touch at one endpoint are *not* flagged."""
+        return (a.absolute < b.end_absolute and b.absolute < a.end_absolute) \
+            or a.absolute == b.absolute
+
+    def _conflicting_notes(self):
+        """Set of ``(key_mode, Note)`` for every note that overlaps another note
+        in the same lane, so they can be flagged. O(n²) per lane, but a lane
+        holds few notes."""
+        bad = set()
+        for km, chart in self.project.charts.items():
+            by_lane = {}
+            for n in chart:
+                by_lane.setdefault(n.lane, []).append(n)
+            for notes in by_lane.values():
+                for i in range(len(notes)):
+                    for j in range(i + 1, len(notes)):
+                        if self._overlaps(notes[i], notes[j]):
+                            bad.add((km, notes[i]))
+                            bad.add((km, notes[j]))
+        return bad
+
     def _paint_notes(self, p: QPainter) -> None:
         p.setPen(Qt.NoPen)
         # BGM objects (always taps).
@@ -353,12 +380,44 @@ class ChartView(QWidget):
         for col in self.columns:
             if col.kind == "key":
                 col_index[(col.key_mode, col.lane)] = col.x
+        conflicts = self._conflicting_notes()
         for km, chart in self.project.charts.items():
             for n in chart:
                 x = col_index.get((km, n.lane))
                 if x is None:
                     continue
                 self._paint_note(p, x, n, self._note_color(km, n.lane))
+                if (km, n) in conflicts:
+                    self._paint_conflict(p, x, n)
+
+    def _paint_conflict(self, p: QPainter, x: int, note: Note) -> None:
+        """Flag a note that overlaps another in its lane: a red outline around
+        its whole span plus a small warning triangle at the top corner."""
+        rect = self._sel_rect(x, note)
+        p.setPen(QPen(C_CONFLICT, 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(rect.adjusted(1, 1, -1, -1))
+
+        # Warning badge (a red triangle with a white "!") pinned to the top-right
+        # corner of the span, clamped so it fits inside a narrow lane.
+        bs = max(8, min(12, self.lane_w - 2))
+        bx = rect.right() - bs
+        by = rect.top()
+        tri = QPolygon([
+            QPoint(bx, by + bs),
+            QPoint(bx + bs, by + bs),
+            QPoint(bx + bs // 2, by),
+        ])
+        p.setPen(Qt.NoPen)
+        p.setBrush(C_CONFLICT)
+        p.drawPolygon(tri)
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(max(6, bs - 5))
+        p.setFont(font)
+        p.setPen(QPen(QColor("#ffffff"), 1))
+        p.drawText(QRect(bx, by, bs, bs), Qt.AlignHCenter | Qt.AlignBottom, "!")
+        p.setBrush(Qt.NoBrush)
 
     def _hover_color(self, col) -> QColor:
         if col.kind == "bgm":

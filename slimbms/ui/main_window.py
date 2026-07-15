@@ -7,8 +7,8 @@ from typing import Optional
 
 import threading
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtCore import QObject, QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
@@ -54,6 +54,113 @@ class _Worker(QObject):
             self.done.emit(self._fn())
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
+
+class DragValue(QWidget):
+    """A compact 'drag to adjust' control, like a volume knob: press and slide
+    the mouse left or right to change a numeric value in fixed steps. An icon
+    sits on the left and the current value is shown on the right. Vertical
+    movement is ignored, so the mouse only needs to travel sideways."""
+
+    changed = Signal(float)
+    PX_PER_STEP = 14   # horizontal pixels the mouse travels for one step
+
+    def __init__(self, icon: str, minimum: float, maximum: float,
+                 step: float, value: float, parent=None):
+        super().__init__(parent)
+        self._icon = icon
+        self._min = float(minimum)
+        self._max = float(maximum)
+        self._step = float(step)
+        self._value = self._quant(value)
+        self._drag_x = None
+        self._drag_val = self._value
+        self.setCursor(Qt.SizeHorCursor)
+        self.setFixedHeight(30)
+        self.setMinimumWidth(160)
+
+    def _quant(self, v: float) -> float:
+        v = round(v / self._step) * self._step
+        return max(self._min, min(self._max, v))
+
+    def value(self) -> float:
+        return self._value
+
+    def set_value(self, v: float, notify: bool = True) -> None:
+        v = self._quant(v)
+        if abs(v - self._value) < 1e-9:
+            return
+        self._value = v
+        self.update()
+        if notify:
+            self.changed.emit(v)
+
+    def step_by(self, n: int) -> None:
+        self.set_value(self._value + n * self._step)
+
+    # -- interaction -------------------------------------------------------- #
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self._drag_x = event.position().x()
+            self._drag_val = self._value
+            event.accept()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag_x is None:
+            return
+        dx = event.position().x() - self._drag_x   # sideways travel only
+        steps = round(dx / self.PX_PER_STEP)
+        self.set_value(self._drag_val + steps * self._step)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._drag_x = None
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        self.step_by(1 if event.angleDelta().y() > 0 else -1)
+        event.accept()
+
+    # -- painting ----------------------------------------------------------- #
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self.width(), self.height()
+        cy = h / 2
+
+        # Icon on the left.
+        icon_font = QFont()
+        icon_font.setPointSize(14)
+        p.setFont(icon_font)
+        p.setPen(QColor("#9fb4c8"))
+        p.drawText(QRect(0, 0, 22, h), Qt.AlignCenter, self._icon)
+
+        # Current value on the right.
+        val_font = QFont()
+        val_font.setPointSize(9)
+        val_font.setBold(True)
+        p.setFont(val_font)
+        p.setPen(QColor("#e6ecf2"))
+        p.drawText(QRect(w - 46, 0, 46, h),
+                   Qt.AlignRight | Qt.AlignVCenter, f"{self._value:.2f}")
+
+        # Groove between icon and value, with a filled portion and a round handle.
+        gx0, gx1 = 28, w - 52
+        if gx1 <= gx0:
+            p.end()
+            return
+        span = self._max - self._min
+        frac = (self._value - self._min) / span if span > 0 else 0.0
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#31313b"))
+        p.drawRoundedRect(QRect(gx0, int(cy) - 3, gx1 - gx0, 6), 3, 3)
+        fill_w = int((gx1 - gx0) * frac)
+        p.setBrush(QColor("#6fd0ff"))
+        p.drawRoundedRect(QRect(gx0, int(cy) - 3, fill_w, 6), 3, 3)
+        p.setBrush(QColor("#dbe7f2"))
+        p.drawEllipse(QPoint(gx0 + fill_w, int(cy)), 6, 6)
+        p.end()
+
 
 PREVIEW_FPS = 60
 # Where the playhead sits within the viewport (fraction from the top). Notes
@@ -195,23 +302,16 @@ class MainWindow(QMainWindow):
         outer.addWidget(self._hline())
 
         # -- Zoom ----------------------------------------------------------- #
+        # Two 'drag to adjust' controls (↕ vertical, ↔ horizontal). Drag the
+        # value sideways to zoom in steps of 0.25; 1.00 is the default scale.
         outer.addWidget(self._section("확대/축소"))
-        zrow_v = QHBoxLayout()
-        zrow_v.setSpacing(6)
-        zrow_v.addWidget(QLabel("상하"))
-        zrow_v.addWidget(self._zoom_btn("－", lambda: self._zoom_step(-1)))
-        zrow_v.addWidget(self._zoom_btn("＋", lambda: self._zoom_step(1)))
-        zrow_v.addStretch(1)
-        outer.addLayout(zrow_v)
-
-        zrow_h = QHBoxLayout()
-        zrow_h.setSpacing(6)
-        zrow_h.addWidget(QLabel("좌우"))
-        zrow_h.addWidget(self._zoom_btn("－", lambda: self._lane_zoom_step(-1)))
-        zrow_h.addWidget(self._zoom_btn("＋", lambda: self._lane_zoom_step(1)))
-        zrow_h.addStretch(1)
-        outer.addLayout(zrow_h)
-        outer.addWidget(self._hint("Ctrl+휠: 상하 · Alt+휠: 좌우"))
+        self.zoom_v = DragValue("↕", 0.25, 4.0, 0.25, 1.0)
+        self.zoom_v.changed.connect(self._apply_zoom_v)
+        outer.addWidget(self.zoom_v)
+        self.zoom_h = DragValue("↔", 0.5, 2.75, 0.25, 1.0)
+        self.zoom_h.changed.connect(self._apply_zoom_h)
+        outer.addWidget(self.zoom_h)
+        outer.addWidget(self._hint("↕/↔ 값을 좌우로 드래그 · Ctrl+휠: ↕ · Alt+휠: ↔"))
 
         outer.addWidget(self._hline())
 
@@ -232,12 +332,6 @@ class MainWindow(QMainWindow):
         label = QLabel(text)
         label.setObjectName("Section")
         return label
-
-    def _zoom_btn(self, text: str, cb) -> QPushButton:
-        btn = QPushButton(text)
-        btn.setFixedWidth(42)
-        btn.clicked.connect(lambda checked=False: cb())
-        return btn
 
     def _hint(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -474,22 +568,33 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "편집 모드 — 클릭·드래그 선택 · 방향키 이동 · Ctrl+C/X/V · ` 좌우반전 · Delete 삭제")
 
+    # Pixel size at zoom factor 1.00 (matches the view's defaults).
+    V_ZOOM_BASE = 150   # vertical: pixels per measure
+    H_ZOOM_BASE = 30    # horizontal: pixels per lane (== layout.LANE_W)
+
     def _zoom_step(self, direction: int) -> None:
+        # Ctrl+wheel nudges the vertical drag control, which applies the zoom.
+        self.zoom_v.step_by(direction)
+
+    def _lane_zoom_step(self, direction: int) -> None:
+        # Alt+wheel nudges the horizontal drag control.
+        self.zoom_h.step_by(direction)
+
+    def _apply_zoom_v(self, factor: float) -> None:
         # Vertical zoom while keeping the chart position at the viewport centre.
         vbar = self.scroll.verticalScrollBar()
         vp_h = self.scroll.viewport().height()
-        center_y = vbar.value() + vp_h / 2
-        center_abs = self.view.absolute_at(center_y)
-        self.view.set_zoom(self.view.measure_px + direction * 30)
+        center_abs = self.view.absolute_at(vbar.value() + vp_h / 2)
+        self.view.set_zoom(int(round(self.V_ZOOM_BASE * factor)))
         vbar.setValue(int(self.view.y_for(center_abs) - vp_h / 2))
 
-    def _lane_zoom_step(self, direction: int) -> None:
+    def _apply_zoom_h(self, factor: float) -> None:
         # Horizontal (lane width) zoom, keeping the same relative scroll centre.
         hbar = self.scroll.horizontalScrollBar()
         vp_w = self.scroll.viewport().width()
         old_w = max(1, self.view._width)
         center_frac = (hbar.value() + vp_w / 2) / old_w
-        self.view.set_lane_width(self.view.lane_w + direction * 6)
+        self.view.set_lane_width(int(round(self.H_ZOOM_BASE * factor)))
         self.header.set_lane_width(self.view.lane_w)
         hbar.setValue(int(self.view._width * center_frac - vp_w / 2))
 
