@@ -637,8 +637,12 @@ class MainWindow(QMainWindow):
     def _start_play(self) -> None:
         self._ensure_timemap()
         self._preview_active = True
-        # Resume from the current position (0 when stopped -> top of the song).
-        self.audio.play(self.audio.position())
+        # Un-pause in place when we were paused (no re-seek, so the audio stays
+        # in sync); otherwise start/seek to the current position.
+        if self.audio.paused:
+            self.audio.resume()
+        else:
+            self.audio.play(self.audio.position())
         self.play_action.setText("⏸ 일시정지")
         self._play_timer.start()
         self.view.set_live(True)

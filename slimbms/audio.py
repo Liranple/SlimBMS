@@ -21,6 +21,7 @@ class AudioPlayer:
         self.path: Optional[str] = None
         self.duration = 0.0            # seconds, 0 if unknown
         self._playing = False
+        self._paused = False           # stream is paused and can unpause (no re-seek)
         self._anchor_pos = 0.0         # audio seconds at the anchor moment
         self._anchor_t = 0.0           # monotonic() at the anchor moment
         self._paused_pos = 0.0
@@ -65,10 +66,13 @@ class AudioPlayer:
     # -- transport ---------------------------------------------------------- #
 
     def play(self, at_seconds: float = 0.0) -> None:
+        """Start (or restart) playback from ``at_seconds`` — this seeks the audio
+        stream, so use :meth:`resume` for un-pausing to avoid a re-seek."""
         at_seconds = max(0.0, at_seconds)
         self._anchor_pos = at_seconds
         self._anchor_t = time.monotonic()
         self._playing = True
+        self._paused = False
         if self.available and self.loaded:
             try:
                 self._pygame.mixer.music.play(start=at_seconds)
@@ -84,22 +88,41 @@ class AudioPlayer:
             return
         self._paused_pos = self.position()
         self._playing = False
+        self._paused = True
         if self.available and self.loaded:
             try:
-                self._pygame.mixer.music.stop()
+                self._pygame.mixer.music.pause()   # halt in place; no re-seek
             except Exception:  # noqa: BLE001
                 pass
+
+    def resume(self) -> None:
+        """Resume a paused stream WITHOUT re-seeking, so the audio continues
+        exactly where it stopped and no start-up latency accumulates across
+        pause/resume cycles. Falls back to a fresh seek if nothing is paused."""
+        if not self._paused:
+            self.play(self._paused_pos)
+            return
+        self._anchor_pos = self._paused_pos
+        self._anchor_t = time.monotonic()
+        self._playing = True
+        self._paused = False
+        if self.available and self.loaded:
+            try:
+                self._pygame.mixer.music.unpause()
+            except Exception:  # noqa: BLE001
+                self.play(self._paused_pos)   # last-resort re-seek
 
     def toggle(self) -> bool:
         """Play/pause; returns the new playing state."""
         if self._playing:
             self.pause()
         else:
-            self.play(self._paused_pos)
+            self.resume()
         return self._playing
 
     def stop(self) -> None:
         self._playing = False
+        self._paused = False
         self._paused_pos = 0.0
         if self.available and self.loaded:
             try:
@@ -112,13 +135,20 @@ class AudioPlayer:
         if self._playing:
             self.play(seconds)
         else:
+            # A real seek is needed on next play, so drop the un-pausable state.
             self._paused_pos = seconds
+            self._paused = False
 
     # -- clock -------------------------------------------------------------- #
 
     @property
     def playing(self) -> bool:
         return self._playing
+
+    @property
+    def paused(self) -> bool:
+        """True when a stream is paused and can be resumed without a re-seek."""
+        return self._paused
 
     def position(self) -> float:
         """Current playback position in seconds."""
