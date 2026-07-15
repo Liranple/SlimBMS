@@ -141,10 +141,12 @@ QComboBox QAbstractItemView {{
 }}
 
 /* Sidebar ---------------------------------------------------------------- */
-QWidget#Sidebar {{
-    background: {PANEL};
-    border-left: 1px solid {BORDER};
-}}
+QScrollArea#SidebarScroll {{ background: {PANEL}; border: none; border-left: 1px solid {BORDER}; }}
+QScrollArea#SidebarScroll > QWidget > QWidget {{ background: {PANEL}; }}
+QWidget#Sidebar {{ background: {PANEL}; }}
+QWidget#SectionContent {{ background: {PANEL}; }}
+/* Labels never paint their own dark rectangle — keep them on the surface. */
+QLabel {{ background: transparent; }}
 QLabel#Section {{
     color: {ACCENT};
     font-size: 8.5pt;
@@ -154,6 +156,24 @@ QLabel#Section {{
 }}
 QLabel#Hint {{ color: {TEXT_DIM}; font-size: 9pt; }}
 QFrame#HLine {{ background: {BORDER}; border: none; max-height: 1px; }}
+
+/* Collapsible section headers (act as the dividers between groups). */
+QToolButton#SectionHeader {{
+    background: {FIELD};
+    color: {ACCENT};
+    font-size: 8.5pt;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-align: left;
+    border: none;
+    border-top: 1px solid {BORDER};
+    border-bottom: 1px solid {BORDER};
+    border-radius: 0;
+    padding: 8px 10px;
+    margin: 0;
+}}
+QToolButton#SectionHeader:hover {{ background: {BORDER}; }}
+QToolButton#SectionHeader:focus {{ border: 1px solid {ACCENT}; }}
 
 /* Menus ------------------------------------------------------------------ */
 QMenuBar {{ background: {PANEL}; color: {TEXT}; border-bottom: 1px solid {BORDER}; }}

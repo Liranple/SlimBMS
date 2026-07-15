@@ -7,15 +7,17 @@ from typing import Optional
 
 import threading
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QPainter
 from PySide6.QtWidgets import (
-    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QKeySequenceEdit,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -36,6 +38,7 @@ from ..model import KEY_MODES, Project
 from ..timing import TimeMap
 from .appicon import build_icon
 from .chart_view import ChartView, LaneHeader
+from .widgets import CollapsibleSection, NoWheelDoubleSpinBox, NoWheelSpinBox
 
 
 class _Worker(QObject):
@@ -120,8 +123,7 @@ class DragValue(QWidget):
         self._drag_x = None
 
     def wheelEvent(self, event) -> None:  # noqa: N802
-        self.step_by(1 if event.angleDelta().y() > 0 else -1)
-        event.accept()
+        event.ignore()   # no wheel adjustment; let the sidebar scroll instead
 
     # -- painting ----------------------------------------------------------- #
 
@@ -163,6 +165,44 @@ class DragValue(QWidget):
         p.setBrush(QColor("#dbe7f2"))
         p.drawEllipse(QPoint(gx0 + fill_w, int(cy)), 6, 6)
         p.end()
+
+
+class KeybindingsDialog(QDialog):
+    """Lets the user reassign the app's configurable shortcuts."""
+
+    def __init__(self, key_actions, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("단축키 설정")
+        self.setMinimumWidth(340)
+        self._edits = {}
+        self._defaults = {k: d for k, (_a, _l, d) in key_actions.items()}
+
+        v = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(8)
+        for key, (act, label, _default) in key_actions.items():
+            edit = QKeySequenceEdit(act.shortcut())
+            self._edits[key] = edit
+            form.addRow(label, edit)
+        v.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+            | QDialogButtonBox.RestoreDefaults)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.RestoreDefaults).clicked.connect(
+            self._restore_defaults)
+        v.addWidget(buttons)
+
+    def _restore_defaults(self) -> None:
+        for key, edit in self._edits.items():
+            edit.setKeySequence(QKeySequence(self._defaults[key]))
+
+    def result_shortcuts(self):
+        return {key: edit.keySequence().toString()
+                for key, edit in self._edits.items()}
 
 
 PREVIEW_FPS = 60
@@ -207,6 +247,8 @@ class MainWindow(QMainWindow):
         self._build_canvas()
         self._build_toolbar()
         self._build_menu()
+        self._register_shortcuts()
+        self._load_shortcuts()
         self._update_title()
         self._on_mode_changed("add")
         self._set_keymode(KEY_MODES[0])
@@ -257,11 +299,11 @@ class MainWindow(QMainWindow):
         panel.setFixedWidth(300)
         outer = QVBoxLayout(panel)
         self._sidebar_panel = panel
-        outer.setContentsMargins(16, 14, 16, 14)
-        outer.setSpacing(10)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
         # -- Song info ------------------------------------------------------ #
-        outer.addWidget(self._section("곡 정보"))
+        info = CollapsibleSection("곡 정보")
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight)
         form.setHorizontalSpacing(10)
@@ -282,24 +324,23 @@ class MainWindow(QMainWindow):
         self.sb_genre.textEdited.connect(lambda t: self._set_meta("genre", t))
         form.addRow("장르", self.sb_genre)
 
-        self.sb_bpm = QDoubleSpinBox()
+        self.sb_bpm = NoWheelDoubleSpinBox()
         self.sb_bpm.setRange(1.0, 999.0)
         self.sb_bpm.setDecimals(2)
         self.sb_bpm.valueChanged.connect(lambda v: self._set_meta("bpm", v))
         form.addRow("BPM", self.sb_bpm)
 
-        self.sb_level = QSpinBox()
+        self.sb_level = NoWheelSpinBox()
         self.sb_level.setRange(0, 99)
         self.sb_level.valueChanged.connect(lambda v: self._set_meta("level", v))
         form.addRow("레벨", self.sb_level)
-        outer.addLayout(form)
-
-        outer.addWidget(self._hline())
+        info.add_layout(form)
+        outer.addWidget(info)
 
         # -- Grid ----------------------------------------------------------- #
         # Two plain number boxes: the LEFT is the snap basis (cells per measure
         # that notes land on); the RIGHT is a lighter reference grid.
-        outer.addWidget(self._section("격자"))
+        grid = CollapsibleSection("격자")
         self.sb_g1 = self._grid_box(16, self._apply_grids)   # snap basis
         self.sb_g2 = self._grid_box(4, self._apply_grids)    # reference
         grow = QHBoxLayout()
@@ -307,40 +348,33 @@ class MainWindow(QMainWindow):
         grow.addWidget(self._labeled("스냅 격자", self.sb_g1))
         grow.addWidget(self._labeled("보조 격자", self.sb_g2))
         grow.addStretch(1)
-        outer.addLayout(grow)
-
+        grid.add_layout(grow)
         self.sb_snap = QPushButton("격자 스냅 : 켜짐")
         self.sb_snap.setCheckable(True)
         self.sb_snap.setChecked(True)
         self.sb_snap.toggled.connect(self._toggle_snap)
-        outer.addWidget(self.sb_snap)
-        outer.addWidget(self._hint("Shift : 자유배치"))
-
-        outer.addWidget(self._hline())
+        grid.add_widget(self.sb_snap)
+        grid.add_widget(self._hint("Shift : 자유배치"))
+        outer.addWidget(grid)
 
         # -- Zoom ----------------------------------------------------------- #
-        # Two 'drag to adjust' controls (↕ vertical, ↔ horizontal). Drag the
-        # value sideways to zoom in steps of 0.25; 1.00 is the default scale.
-        outer.addWidget(self._section("확대/축소"))
+        zoom = CollapsibleSection("확대/축소")
         self.zoom_v = DragValue("↕", 0.25, 4.0, 0.25, 1.0)
         self.zoom_v.changed.connect(self._apply_zoom_v)
-        outer.addWidget(self.zoom_v)
+        zoom.add_widget(self.zoom_v)
         self.zoom_h = DragValue("↔", 0.5, 2.75, 0.25, 1.0)
         self.zoom_h.changed.connect(self._apply_zoom_h)
-        outer.addWidget(self.zoom_h)
-        outer.addWidget(self._hint("Ctrl+Wheel : ↕    Alt+Wheel : ↔"))
-
-        outer.addWidget(self._hline())
+        zoom.add_widget(self.zoom_h)
+        zoom.add_widget(self._hint("Ctrl+Wheel : ↕    Alt+Wheel : ↔"))
+        outer.addWidget(zoom)
 
         # -- Tempo changes -------------------------------------------------- #
-        outer.addWidget(self._section("BPM 변화"))
-        self.bpm_measure = QSpinBox()
+        tempo = CollapsibleSection("BPM 변화")
+        self.bpm_measure = NoWheelSpinBox()
         self.bpm_measure.setRange(0, 9999)
-        self.bpm_measure.setButtonSymbols(QSpinBox.NoButtons)
-        self.bpm_cell = QSpinBox()
+        self.bpm_cell = NoWheelSpinBox()
         self.bpm_cell.setRange(0, 15)          # position within the measure, in 1/16
-        self.bpm_cell.setButtonSymbols(QSpinBox.NoButtons)
-        self.bpm_value = QDoubleSpinBox()
+        self.bpm_value = NoWheelDoubleSpinBox()
         self.bpm_value.setRange(1.0, 999.0)
         self.bpm_value.setDecimals(2)
         self.bpm_value.setValue(120.0)
@@ -349,59 +383,62 @@ class MainWindow(QMainWindow):
         brow.addWidget(self._labeled("마디", self.bpm_measure))
         brow.addWidget(self._labeled("칸(1/16)", self.bpm_cell))
         brow.addWidget(self._labeled("BPM", self.bpm_value))
-        outer.addLayout(brow)
+        tempo.add_layout(brow)
         add_bpm = QPushButton("추가 / 변경")
         add_bpm.clicked.connect(self._add_bpm_change)
-        outer.addWidget(add_bpm)
+        tempo.add_widget(add_bpm)
         self.bpm_list = QListWidget()
         self.bpm_list.setMaximumHeight(84)
-        outer.addWidget(self.bpm_list)
+        tempo.add_widget(self.bpm_list)
         del_bpm = QPushButton("선택 삭제")
         del_bpm.clicked.connect(self._remove_bpm_change)
-        outer.addWidget(del_bpm)
-        outer.addWidget(self._hint("곡 시작 템포는 위 '곡 정보'의 BPM"))
-
-        outer.addWidget(self._hline())
+        tempo.add_widget(del_bpm)
+        tempo.add_widget(self._hint("곡 시작 템포는 위 '곡 정보'의 BPM"))
+        outer.addWidget(tempo)
 
         # -- Audio ---------------------------------------------------------- #
-        outer.addWidget(self._section("음원"))
-        # Playback speed gauge (drag like the zoom controls). 1.00 = normal.
-        outer.addWidget(self._hint("재생 속도  ( [ / ] )"))
+        audio = CollapsibleSection("음원")
+        audio.add_widget(self._hint("재생 속도"))
         self.speed = DragValue("×", 0.25, 2.0, 0.05, 1.0)
         self.speed.changed.connect(self._set_speed)
-        outer.addWidget(self.speed)
+        audio.add_widget(self.speed)
         self.sb_bgm_btn = QPushButton("음원 파일 등록")
         self.sb_bgm_btn.clicked.connect(self.choose_bgm)
-        outer.addWidget(self.sb_bgm_btn)
+        audio.add_widget(self.sb_bgm_btn)
         self.sb_bgm_label = QLabel("(없음)")
         self.sb_bgm_label.setObjectName("Hint")
         self.sb_bgm_label.setWordWrap(True)
-        outer.addWidget(self.sb_bgm_label)
-
-        outer.addWidget(self._hline())
+        audio.add_widget(self.sb_bgm_label)
+        outer.addWidget(audio)
 
         # -- Recording ------------------------------------------------------ #
-        outer.addWidget(self._section("녹음"))
-        self.rec_offset = QSpinBox()
+        rec = CollapsibleSection("녹음")
+        self.rec_offset = NoWheelSpinBox()
         self.rec_offset.setRange(-300, 300)
         self.rec_offset.setSingleStep(5)
         self.rec_offset.setSuffix(" ms")
         self.rec_offset.valueChanged.connect(self._update_record_offset)
-        outer.addWidget(self._labeled("녹음 오프셋 (입력 지연 보정)", self.rec_offset))
-        self.rec_countin = QCheckBox("카운트인 (재생 전 4박)")
-        outer.addWidget(self.rec_countin)
-        self.rec_metronome = QCheckBox("메트로놈")
-        outer.addWidget(self.rec_metronome)
-        outer.addWidget(self._hint("오프셋을 늘리면 노트가 더 이르게 기록됨"))
+        rec.add_widget(self._labeled("녹음 오프셋 (입력 지연 보정)", self.rec_offset))
+        self.rec_countin = QPushButton("카운트인 : 꺼짐")
+        self.rec_countin.setCheckable(True)
+        self.rec_countin.toggled.connect(
+            lambda on: self.rec_countin.setText("카운트인 : 켜짐" if on else "카운트인 : 꺼짐"))
+        rec.add_widget(self.rec_countin)
+        self.rec_metronome = QPushButton("메트로놈 : 꺼짐")
+        self.rec_metronome.setCheckable(True)
+        self.rec_metronome.toggled.connect(
+            lambda on: self.rec_metronome.setText("메트로놈 : 켜짐" if on else "메트로놈 : 꺼짐"))
+        rec.add_widget(self.rec_metronome)
+        rec.add_widget(self._hint("오프셋을 늘리면 노트가 더 이르게 기록됨"))
+        outer.addWidget(rec)
 
         outer.addStretch(1)
-        # Wrap in a scroll area so the (now taller) sidebar never clips its
-        # lower sections on a short window.
+        # Scrollable so the (tall) sidebar never clips its lower sections.
         scroll = QScrollArea()
         scroll.setObjectName("SidebarScroll")
         scroll.setWidget(panel)
-        scroll.setWidgetResizable(False)
-        scroll.setFixedWidth(318)
+        scroll.setWidgetResizable(True)
+        scroll.setFixedWidth(316)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         return scroll
@@ -436,8 +473,7 @@ class MainWindow(QMainWindow):
         return line
 
     def _grid_box(self, cells, cb):
-        n = QSpinBox()
-        n.setButtonSymbols(QSpinBox.NoButtons)   # plain number entry, no arrows
+        n = NoWheelSpinBox()
         n.setRange(1, 192)
         n.setValue(cells)
         n.setAlignment(Qt.AlignCenter)
@@ -463,61 +499,46 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
 
         # Transport buttons: compact media glyphs only, to keep the row short.
-        start_action = QAction("⏮", self)
-        start_action.setShortcut(Qt.Key_Home)
-        start_action.triggered.connect(self.go_to_start)
-        tb.addAction(start_action)
+        # Shortcuts here are the defaults; the user can remap them (편집 → 설정).
+        self.start_action = QAction("⏮", self)
+        self.start_action.triggered.connect(self.go_to_start)
+        tb.addAction(self.start_action)
 
-        back_action = QAction("⏪", self)
-        back_action.triggered.connect(lambda: self.seek_seconds(-1.0))
-        tb.addAction(back_action)
+        self.back_action = QAction("⏪", self)
+        self.back_action.triggered.connect(lambda: self.seek_seconds(-1.0))
+        tb.addAction(self.back_action)
 
         self.play_action = QAction("▶", self)
-        self.play_action.setShortcut(Qt.Key_Space)
         self.play_action.triggered.connect(self.toggle_play)
         tb.addAction(self.play_action)
         play_btn = tb.widgetForAction(self.play_action)
         if play_btn is not None:
             play_btn.setObjectName("Primary")
 
-        fwd_action = QAction("⏩", self)
-        fwd_action.triggered.connect(lambda: self.seek_seconds(1.0))
-        tb.addAction(fwd_action)
+        self.fwd_action = QAction("⏩", self)
+        self.fwd_action.triggered.connect(lambda: self.seek_seconds(1.0))
+        tb.addAction(self.fwd_action)
 
         stop_action = QAction("⏹", self)
         stop_action.triggered.connect(self.stop_play)
         tb.addAction(stop_action)
 
-        # Seek shortcuts: + / = go forward 1s, - goes back 1s. Kept off the
-        # arrow keys, which are reserved for moving selected notes.
-        for key in (Qt.Key_Plus, Qt.Key_Equal):
-            act = QAction(self)
-            act.setShortcut(key)
-            act.triggered.connect(lambda checked=False: self.seek_seconds(1.0))
-            self.addAction(act)
-        for key in (Qt.Key_Minus, Qt.Key_Underscore):
-            act = QAction(self)
-            act.setShortcut(key)
-            act.triggered.connect(lambda checked=False: self.seek_seconds(-1.0))
-            self.addAction(act)
-
         # [ / ] nudge the playback-speed gauge down / up (0.05 steps).
-        for key, step in ((Qt.Key_BracketLeft, -1), (Qt.Key_BracketRight, 1)):
-            act = QAction(self)
-            act.setShortcut(key)
-            act.triggered.connect(lambda checked=False, s=step: self.speed.step_by(s))
-            self.addAction(act)
+        self.speed_down_action = QAction(self)
+        self.speed_down_action.triggered.connect(lambda: self.speed.step_by(-1))
+        self.addAction(self.speed_down_action)
+        self.speed_up_action = QAction(self)
+        self.speed_up_action.triggered.connect(lambda: self.speed.step_by(1))
+        self.addAction(self.speed_up_action)
 
         tb.addSeparator()
         self.add_mode_action = QAction("추가", self)
         self.add_mode_action.setCheckable(True)
         self.add_mode_action.setChecked(True)
-        self.add_mode_action.setShortcut(Qt.Key_F3)
         self.add_mode_action.triggered.connect(lambda: self._set_mode("add"))
         tb.addAction(self.add_mode_action)
         self.edit_mode_action = QAction("편집", self)
         self.edit_mode_action.setCheckable(True)
-        self.edit_mode_action.setShortcut(Qt.Key_F2)
         self.edit_mode_action.triggered.connect(lambda: self._set_mode("edit"))
         tb.addAction(self.edit_mode_action)
 
@@ -563,8 +584,10 @@ class MainWindow(QMainWindow):
         self._add(file_menu, "종료", self.close)
 
         edit_menu = m.addMenu("편집")
-        self._add(edit_menu, "되돌리기", self.view.undo, QKeySequence.Undo)
-        self._add(edit_menu, "다시하기", self.view.redo, QKeySequence.Redo)
+        self.undo_action = self._add(edit_menu, "되돌리기", self.view.undo)
+        self.redo_action = self._add(edit_menu, "다시하기", self.view.redo)
+        edit_menu.addSeparator()
+        self._add(edit_menu, "설정…", self.open_keybindings)
 
         song_menu = m.addMenu("곡")
         self._add(song_menu, "음원 파일 등록", self.choose_bgm)
@@ -573,12 +596,44 @@ class MainWindow(QMainWindow):
         self._add(help_menu, "업데이트 확인", lambda: self.check_for_updates(manual=True))
         self._add(help_menu, "정보", self.show_about)
 
-    def _add(self, menu, text, slot, shortcut=None) -> None:
+    def _add(self, menu, text, slot, shortcut=None) -> QAction:
         act = QAction(text, self)
         act.triggered.connect(slot)
         if shortcut is not None:
             act.setShortcut(shortcut)
         menu.addAction(act)
+        return act
+
+    # -- configurable shortcuts --------------------------------------------- #
+
+    def _register_shortcuts(self) -> None:
+        # key -> (action, label, default sequence). Order = dialog display order.
+        self._key_actions = {
+            "play": (self.play_action, "재생 / 일시정지", "Space"),
+            "start": (self.start_action, "처음으로", "Home"),
+            "back": (self.back_action, "1초 뒤로", "-"),
+            "forward": (self.fwd_action, "1초 앞으로", "="),
+            "add_mode": (self.add_mode_action, "추가 모드", "F3"),
+            "edit_mode": (self.edit_mode_action, "편집 모드", "F2"),
+            "speed_down": (self.speed_down_action, "재생 속도 감소", "["),
+            "speed_up": (self.speed_up_action, "재생 속도 증가", "]"),
+            "undo": (self.undo_action, "되돌리기", "Ctrl+Z"),
+            "redo": (self.redo_action, "다시하기", "Ctrl+Y"),
+        }
+
+    def _load_shortcuts(self) -> None:
+        s = QSettings("SlimBMS", "SlimBMS")
+        for key, (act, _label, default) in self._key_actions.items():
+            seq = s.value(f"shortcuts/{key}", default)
+            act.setShortcut(QKeySequence(seq))
+
+    def open_keybindings(self) -> None:
+        dlg = KeybindingsDialog(self._key_actions, self)
+        if dlg.exec():
+            s = QSettings("SlimBMS", "SlimBMS")
+            for key, seq in dlg.result_shortcuts().items():
+                self._key_actions[key][0].setShortcut(QKeySequence(seq))
+                s.setValue(f"shortcuts/{key}", seq)
 
     # -- state -------------------------------------------------------------- #
 
