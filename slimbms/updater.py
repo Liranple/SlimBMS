@@ -120,18 +120,26 @@ def swap_and_restart(new_app_dir: str, tmp_root: str) -> None:
     current = os.path.abspath(sys.executable)
     app_dir = os.path.dirname(current)
     bat = os.path.join(tmp_root, "_slimbms_update.bat")
-    # A fixed short wait (this process is force-killed with os._exit right after
-    # launching the batch, so it is gone within that window) then robocopy the
-    # new files over the install folder and relaunch. Robocopy retries handle
-    # any file still briefly locked. No wait-loop, so this can never hang.
+    log = os.path.join(tmp_root, "update_log.txt")
+    # Delay with `ping`, NOT `timeout`: `timeout` needs a valid console input
+    # handle, which a windowed (no-console) app's spawned batch may not have, and
+    # it then hangs. `ping -n 4 127.0.0.1` is a stdin-free ~3s sleep that works
+    # in any context. robocopy output goes to a log; on failure the window stays
+    # open so the error is visible instead of silently stalling.
     script = (
         "@echo off\r\n"
         "title SlimBMS Update\r\n"
         "echo Updating SlimBMS, please wait...\r\n"
-        "timeout /t 3 /nobreak >nul\r\n"
-        f'robocopy "{new_app_dir}" "{app_dir}" /E /R:15 /W:1 /NJH /NJS >nul\r\n'
+        "ping -n 4 127.0.0.1 >nul\r\n"
+        f'robocopy "{new_app_dir}" "{app_dir}" /E /R:8 /W:2 >"{log}" 2>&1\r\n'
+        "if errorlevel 8 goto failed\r\n"
         f'start "" "{current}"\r\n'
-        'del "%~f0"\r\n'
+        "exit\r\n"
+        ":failed\r\n"
+        "echo.\r\n"
+        f'echo Update failed. Log file: {log}\r\n'
+        "echo Please reopen SlimBMS and try again, or reinstall from the release page.\r\n"
+        "pause\r\n"
     )
     with open(bat, "w", encoding="ascii") as fh:
         fh.write(script)
