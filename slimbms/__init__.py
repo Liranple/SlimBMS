@@ -1,3 +1,3 @@
 """SlimBMS — a slim, keysound-less BMS chart editor for 4K/5K/6K."""
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
