@@ -229,7 +229,7 @@ class MainWindow(QMainWindow):
         self.project = project or Project()
         self.project_path: Optional[str] = None
         self._dirty = False
-        self._last_dir = ""   # folder of the last open/save/export, reused by dialogs
+        self._last_dirs = {}  # per-operation last folder (open/save/import/export/bgm)
 
         # Playback / preview.
         self.audio = AudioPlayer()
@@ -1153,7 +1153,8 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "프로젝트 열기", self._last_dir, "SlimBMS 프로젝트 (*.slbms);;모든 파일 (*)")
+            self, "프로젝트 열기", self._dir_for("open"),
+            "SlimBMS 프로젝트 (*.slbms);;모든 파일 (*)")
         if not path:
             return
         try:
@@ -1161,7 +1162,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "열기 실패", str(exc))
             return
-        self._remember_dir(path)
+        self._remember_dir("open", path)
         self.project_path = path
         self._dirty = False
         self._reload_view()
@@ -1181,13 +1182,13 @@ class MainWindow(QMainWindow):
 
     def save_project_as(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
-            self, "프로젝트 저장", self._dialog_path(self._suggest_name(".slbms")),
+            self, "프로젝트 저장", self._dialog_path("save", self._suggest_name(".slbms")),
             "SlimBMS 프로젝트 (*.slbms)")
         if not path:
             return
         if not path.lower().endswith(".slbms"):
             path += ".slbms"
-        self._remember_dir(path)
+        self._remember_dir("save", path)
         self.project_path = path
         self.save_project()
 
@@ -1195,7 +1196,8 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "BMS 가져오기", self._last_dir, "BMS 채보 (*.bms *.bme *.bml);;모든 파일 (*)")
+            self, "BMS 가져오기", self._dir_for("import"),
+            "BMS 채보 (*.bms *.bme *.bml);;모든 파일 (*)")
         if not path:
             return
         try:
@@ -1204,7 +1206,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "가져오기 실패", str(exc))
             return
-        self._remember_dir(path)
+        self._remember_dir("import", path)
         self.project_path = None
         self._dirty = True
         self._reload_view()
@@ -1220,7 +1222,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, "BGM 없음",
                 "BGM 출력 시작 타이밍이 없습니다. BGM 레인에 시작 지점을 먼저 찍어주세요.")
-        default = self._dialog_path(self._suggest_name(f"_{km}k.bms"))
+        default = self._dialog_path("export", self._suggest_name(f"_{km}k.bms"))
         path, _ = QFileDialog.getSaveFileName(
             self, f"{km}K .bms 내보내기", default, "BMS 채보 (*.bms)")
         if not path:
@@ -1234,7 +1236,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "내보내기 실패", str(exc))
             return
-        self._remember_dir(path)
+        self._remember_dir("export", path)
         QMessageBox.information(
             self, "내보내기 완료",
             f"{km}K 채보를 저장했습니다:\n{path}\n\n노트 수: {self.project.note_count(km)}")
@@ -1243,11 +1245,11 @@ class MainWindow(QMainWindow):
 
     def choose_bgm(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "BGM 오디오 선택", self._last_dir,
+            self, "음원 파일 선택", self._dir_for("bgm"),
             "오디오 (*.wav *.ogg *.mp3 *.flac);;모든 파일 (*)")
         if not path:
             return
-        self._remember_dir(path)
+        self._remember_dir("bgm", path)
         self.project.bgm_file = os.path.basename(path)
         self._bgm_path = path
         loaded = self.audio.load(path)
@@ -1337,13 +1339,25 @@ class MainWindow(QMainWindow):
 
     # -- helpers ------------------------------------------------------------ #
 
-    def _dialog_path(self, name: str) -> str:
-        """A default path for a save dialog: the last-used folder + ``name`` so
-        the dialog opens where the user last saved, not the install directory."""
-        return os.path.join(self._last_dir, name) if self._last_dir else name
+    def _dir_for(self, key: str) -> str:
+        """The folder last used for the ``key`` operation (open/save/import/
+        export/bgm), remembered separately and persisted across sessions."""
+        d = self._last_dirs.get(key)
+        if d is None:
+            d = QSettings("SlimBMS", "SlimBMS").value(f"paths/{key}", "") or ""
+            self._last_dirs[key] = d
+        return d
 
-    def _remember_dir(self, path: str) -> None:
-        self._last_dir = os.path.dirname(path)
+    def _remember_dir(self, key: str, path: str) -> None:
+        d = os.path.dirname(path)
+        self._last_dirs[key] = d
+        QSettings("SlimBMS", "SlimBMS").setValue(f"paths/{key}", d)
+
+    def _dialog_path(self, key: str, name: str) -> str:
+        """Default path for a save dialog: the ``key`` operation's last folder +
+        ``name`` so it opens where that operation last wrote."""
+        d = self._dir_for(key)
+        return os.path.join(d, name) if d else name
 
     def _suggest_name(self, suffix: str) -> str:
         base = self.project.title.strip() or "untitled"
