@@ -312,20 +312,23 @@ class ChartView(QWidget):
         y_line = int(round(self.y_for(absolute)))
         return QRect(x + 1, y_line - cell_h + 1, L.LANE_W - 2, cell_h - 1)
 
-    def _ln_body_rect(self, x: int, note: Note) -> QRect:
-        """The connecting bar of a long note, spanning head to tail. Kept
-        narrower than the lane so the head/tail caps read as its ends."""
-        y_top = int(round(self.y_for(note.end_absolute)))
-        y_bot = int(round(self.y_for(note.absolute)))
-        return QRect(x + 5, y_top, L.LANE_W - 10, max(1, y_bot - y_top))
-
     def _paint_note(self, p: QPainter, x: int, note: Note, color: QColor) -> None:
+        head = self._note_rect(x, note.absolute)
         if note.is_long:
+            # One continuous full-width body from tail to head, plus a bright
+            # outline, so even a short hold reads as a single connected note and
+            # can't be mistaken for two separate taps.
+            tail = self._note_rect(x, note.end_absolute)
+            span = QRect(head.x(), tail.top(), head.width(), head.bottom() - tail.top())
             body = QColor(color)
-            body.setAlpha(110)
-            p.fillRect(self._ln_body_rect(x, note), body)
-            p.fillRect(self._note_rect(x, note.end_absolute), color)  # tail cap
-        p.fillRect(self._note_rect(x, note.absolute), color)          # head cap
+            body.setAlpha(64)
+            p.fillRect(span, body)
+            p.setPen(QPen(color, 2))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(span.adjusted(1, 1, -1, -1))
+            p.setPen(Qt.NoPen)
+            p.fillRect(tail, color)             # solid tail cap
+        p.fillRect(head, color)                 # solid head cap
 
     def _note_color(self, key_mode: int, lane: int) -> QColor:
         code = LANE_COLORS.get(key_mode, "")

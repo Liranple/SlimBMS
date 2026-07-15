@@ -57,17 +57,18 @@ def test_bms_export_contains_header_and_body():
     assert "#SLIMBMS_KEYMODE 5" in text
     # BGM object on channel 01, measure 000
     assert "#00001:" in text
-    # A 5K note used channel 15 (lane 4)
-    assert KEY_CHANNELS[5][4] == "15"
-    assert any(line.startswith("#00015:") for line in text.splitlines())
+    # 5K lane 4 maps to key 6 (channel 18); make_project put a note there.
+    assert KEY_CHANNELS[5][4] == "18"
+    assert any(line.startswith("#00018:") for line in text.splitlines())
 
 
 def test_export_only_selected_key_mode():
     p = make_project()
     text4 = bms_io.export_bms(p, 4)
-    # 4K has no lane 4 (would be channel 15); make sure 5K/6K notes didn't leak.
-    # channel 15 only exists for 5K/6K, so it must be absent from the 4K export.
-    assert not any(line.startswith("#00015:") for line in text4.splitlines())
+    # 4K never uses channels 11 or 19 (those are 6K's outer keys); make sure the
+    # 6K notes make_project placed there didn't leak into the 4K export.
+    assert not any(line.startswith("#00011:") for line in text4.splitlines())
+    assert not any(line.startswith("#00019:") for line in text4.splitlines())
 
 
 def test_bms_import_lands_in_import_lane():
@@ -111,15 +112,24 @@ def test_import_channels_map_to_import_lanes():
     assert not p.charts[6], "nothing should land in the 6K chart on import"
 
 
+def test_key_mode_channel_mapping():
+    # Locks the uBMSC-matching layout: both hands split around the centre key,
+    # scratch (16) unused. 4K=keys2,3,5,6  5K=keys2,3,4,5,6  6K=keys1,2,3,5,6,7.
+    assert KEY_CHANNELS[4] == ["12", "13", "15", "18"]
+    assert KEY_CHANNELS[5] == ["12", "13", "14", "15", "18"]
+    assert KEY_CHANNELS[6] == ["11", "12", "13", "15", "18", "19"]
+    assert "16" not in sum((KEY_CHANNELS[k] for k in (4, 5, 6)), [])
+
+
 def test_long_note_exports_on_ln_channel():
-    # A 4K long note in lane 0 (channel 11 -> LN channel 51) spanning half a
-    # measure emits a head at its start and a tail at its end on channel 51.
+    # A 4K long note in lane 0 (channel 12 -> LN channel 52) spanning half a
+    # measure emits a head at its start and a tail at its end on channel 52.
     p = Project(title="LN", bpm=120, measures=4)
     p.charts[4].add(Note(0, Fraction(1, 4), 0, Fraction(1, 2)))  # head 1/4, tail 3/4
     text = bms_io.export_bms(p, 4)
     assert "#LNTYPE 1" in text
-    ln = [line for line in text.splitlines() if line.startswith("#00051:")]
-    assert ln, "long note should use LN channel 51"
+    ln = [line for line in text.splitlines() if line.startswith("#00052:")]
+    assert ln, "long note should use LN channel 52"
     # Head at 1/4 and tail at 3/4 -> slots 1 and 3 of a length-4 data string.
     data = ln[0].split(":", 1)[1]
     assert data == "00010001", f"unexpected LN data {data!r}"
