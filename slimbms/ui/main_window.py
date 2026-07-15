@@ -308,6 +308,7 @@ class MainWindow(QMainWindow):
         self.view.mode_changed.connect(self._on_mode_changed)
         self.view.cursor_info.connect(self._show_cursor)
         self.view.scroll_h.connect(self._scroll_horizontal)
+        self.view.seek_requested.connect(self._seek_to_chart)
         self.scroll.setWidget(self.view)
         self.scroll.horizontalScrollBar().valueChanged.connect(self.header.set_x_offset)
         self.header.bgm_width_changed.connect(self._set_bgm_width)
@@ -731,6 +732,39 @@ class MainWindow(QMainWindow):
         setattr(self.project, field, value)
         self._on_changed()
 
+    # -- editor/session settings (persisted in .slbms) ---------------------- #
+
+    def _capture_editor_settings(self) -> None:
+        self.project.editor = {
+            "selected_km": self.view.selected_km,
+            "grid_snap": self.sb_g1.value(),
+            "grid_sub": self.sb_g2.value(),
+            "snap_on": self.sb_snap.isChecked(),
+            "zoom_v": self.zoom_v.value(),
+            "zoom_h": self.zoom_h.value(),
+            "speed": self.speed.value(),
+            "volume": self.volume.value(),
+        }
+
+    def _apply_editor_settings(self) -> None:
+        e = self.project.editor or {}
+        if e.get("selected_km") in KEY_MODES:
+            self._set_keymode(e["selected_km"])
+        if "grid_snap" in e:
+            self.sb_g1.setValue(int(e["grid_snap"]))
+        if "grid_sub" in e:
+            self.sb_g2.setValue(int(e["grid_sub"]))
+        if "snap_on" in e:
+            self.sb_snap.setChecked(bool(e["snap_on"]))
+        if "zoom_v" in e:
+            self.zoom_v.set_value(float(e["zoom_v"]))
+        if "zoom_h" in e:
+            self.zoom_h.set_value(float(e["zoom_h"]))
+        if "speed" in e:
+            self.speed.set_value(float(e["speed"]))
+        if "volume" in e:
+            self.volume.set_value(float(e["volume"]))
+
     def _autofit_measures(self) -> None:
         """Grow the timeline to cover all notes and the BGM length (never
         shrinks, so the view doesn't jump while editing)."""
@@ -1021,6 +1055,14 @@ class MainWindow(QMainWindow):
         self.view.set_playhead(chart_pos)
         self._follow_playhead(chart_pos)
 
+    def _seek_to_chart(self, absolute: float) -> None:
+        # Click-to-seek: put the playhead where clicked (no scroll jump); the
+        # next play starts from there.
+        seconds = self._ensure_timemap().audio_seconds(absolute)
+        self.audio.seek(seconds)
+        self._preview_active = True
+        self.view.set_playhead(max(0.0, absolute))
+
     def _on_play_tick(self) -> None:
         if self._timemap is None:
             return
@@ -1070,8 +1112,9 @@ class MainWindow(QMainWindow):
         if not self._dirty:
             return
         try:
-            # The .slbms now stores the full audio path (bgm_path), so the
-            # recovery copy can reconnect the BGM on its own.
+            # The .slbms stores the full audio path + editor settings, so the
+            # recovery copy comes back exactly as it was.
+            self._capture_editor_settings()
             bms_io.save_project(self.project, self._recovery_path())
         except Exception:  # noqa: BLE001 — best effort, never interrupt editing
             pass
@@ -1102,7 +1145,8 @@ class MainWindow(QMainWindow):
             self.project_path = None
             self._dirty = True
             self._reload_view()
-            self._auto_load_bgm()   # the recovery .slbms keeps the full path
+            self._auto_load_bgm()          # the recovery .slbms keeps the full path
+            self._apply_editor_settings()
         else:
             self._clear_recovery()
 
@@ -1176,13 +1220,15 @@ class MainWindow(QMainWindow):
         self.project_path = path
         self._dirty = False
         self._reload_view()
-        self._auto_load_bgm()   # reconnect the audio automatically
+        self._auto_load_bgm()          # reconnect the audio automatically
+        self._apply_editor_settings()  # key mode, grid, zoom, speed, volume
 
     def save_project(self) -> None:
         if not self.project_path:
             self.save_project_as()
             return
         try:
+            self._capture_editor_settings()
             bms_io.save_project(self.project, self.project_path)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "저장 실패", str(exc))

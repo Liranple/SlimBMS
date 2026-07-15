@@ -119,6 +119,9 @@ class Project:
     # Mid-song tempo changes: absolute chart position (measures) -> BPM. The
     # base ``bpm`` applies before the first change.
     bpm_changes: Dict[Fraction, float] = field(default_factory=dict)
+    # Editor/session settings (selected key mode, grid, zoom, speed, volume);
+    # saved in .slbms so the workspace comes back as you left it.
+    editor: Dict = field(default_factory=dict)
 
     # -- tempo -------------------------------------------------------------- #
 

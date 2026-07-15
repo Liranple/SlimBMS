@@ -82,6 +82,7 @@ class ChartView(QWidget):
     mode_changed = Signal(str)  # "add" or "edit"
     cursor_info = Signal(str)   # live "group · grid coords" text for the status bar
     scroll_h = Signal(int)      # Shift+wheel: horizontal scroll by this angle delta
+    seek_requested = Signal(float)  # set playback to this absolute chart position
 
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
@@ -905,6 +906,14 @@ class ChartView(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         self.setFocus()
         x, y = event.position().x(), event.position().y()
+
+        # Click the left measure ruler (or middle-click anywhere) to set the
+        # playback position, without touching notes.
+        if (event.button() == Qt.LeftButton and x < L.LEFT_MARGIN) \
+                or event.button() == Qt.MiddleButton:
+            self.seek_requested.emit(self.absolute_at(y))
+            return
+
         col = L.column_at(self.columns, x)
 
         if self.mode == "add":

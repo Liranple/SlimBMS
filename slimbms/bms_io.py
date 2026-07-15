@@ -363,6 +363,7 @@ def project_to_dict(project: Project) -> dict:
         "level": project.level,
         "bgm_file": project.bgm_file,
         "bgm_path": project.bgm_path,
+        "editor": project.editor,
         "measures": project.measures,
         "bpm_changes": sorted([p.numerator, p.denominator, b]
                               for p, b in project.bpm_changes.items()),
@@ -380,6 +381,7 @@ def project_from_dict(data: dict) -> Project:
         level=int(data.get("level", 1)),
         bgm_file=data.get("bgm_file", ""),
         bgm_path=data.get("bgm_path", ""),
+        editor=data.get("editor", {}) or {},
         measures=int(data.get("measures", 16)),
     )
     def to_note(row) -> Note:
