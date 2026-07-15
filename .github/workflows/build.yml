@@ -1,4 +1,4 @@
-name: Build Windows exe
+name: Build Windows app
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:      # allow manual runs from the Actions tab
 
 permissions:
-  contents: write      # allow attaching the exe to a Release on tag builds
+  contents: write      # allow attaching the build to a Release on tag builds
 
 jobs:
   build:
@@ -24,9 +24,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
-      - name: Build exe
+      # Folder (onedir) build: DLLs sit next to the exe and load directly, so
+      # there is no per-launch temp extraction (fast start, and no "Failed to
+      # load Python DLL" race after a self-update replaces the files).
+      - name: Build app (onedir)
         run: >
-          pyinstaller --onefile --windowed --name SlimBMS
+          pyinstaller --noconfirm --windowed --name SlimBMS
           --exclude-module PySide6.QtWebEngineCore
           --exclude-module PySide6.QtWebEngineWidgets
           --exclude-module PySide6.QtWebEngineQuick
@@ -44,14 +47,17 @@ jobs:
           --exclude-module PySide6.QtSensors
           main.py
 
+      - name: Zip app folder
+        run: powershell Compress-Archive -Path dist/SlimBMS -DestinationPath SlimBMS-windows.zip -Force
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: SlimBMS-windows
-          path: dist/SlimBMS.exe
+          path: SlimBMS-windows.zip
 
-      - name: Attach exe to release
+      - name: Attach build to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/SlimBMS.exe
+          files: SlimBMS-windows.zip

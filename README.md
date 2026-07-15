@@ -38,12 +38,13 @@ Two editing modes (toolbar buttons or **F2** / **F3**):
   paste (at the last clicked spot), **`** flips the selection left↔right,
   **Delete** removes them.
 
-- **Grid / snap** (right sidebar): two grids, each entered as *cells per measure*
-  (A = 16 snaps to 1/16; B = 12 is a triplet reference). The **격자 스냅** button
-  toggles snapping; hold **Shift** to place freely off-grid.
+- **Grid / snap** (right sidebar): two number boxes — a main snap grid and a
+  reference grid — each is *cells per measure* (16 = snap to 1/16). The
+  **격자 스냅** button toggles snapping; hold **Shift** to place freely off-grid.
 - **Zoom**: 확대 / 축소 buttons, or **Ctrl + mouse wheel**.
-- **Sidebar**: title, artist, genre, BPM, level, measure count, grids, and BGM
-  registration — all edited inline.
+- The timeline **auto-extends** as you place notes / set a BGM — no measure
+  count to manage.
+- **Sidebar**: title, artist, genre, BPM, level, grids, and BGM registration.
 
 ### Playback / preview
 
@@ -90,22 +91,25 @@ python -m venv .venv
 
 ## Building the Windows `.exe`
 
-Every push to `main` (and every `v*` tag) builds `SlimBMS.exe` via GitHub
-Actions:
+Every push to `main` (and every `v*` tag) builds a **folder (onedir)** app via
+GitHub Actions and zips it to `SlimBMS-windows.zip`. Onedir loads its DLLs
+directly (fast start, and no temp-extraction race when a self-update swaps the
+files), so distribution is a zip you unzip once — then run `SlimBMS/SlimBMS.exe`.
 
-- **Download the latest build:** repo → **Actions** → newest *Build Windows exe*
-  run → **Artifacts** → `SlimBMS-windows`.
-- **Tagged release:** push a tag like `v0.1.0` and the exe is attached to the
-  GitHub Release automatically.
+- **Latest build:** repo → **Actions** → newest run → **Artifacts** →
+  `SlimBMS-windows`.
+- **Tagged release:** push a tag like `v0.8.0`; the zip is attached to the
+  Release automatically. In-app **update** downloads that zip and swaps the
+  folder in place.
 
 To build locally on Windows:
 
 ```bat
 pip install -r requirements.txt pyinstaller
-pyinstaller --onefile --windowed --name SlimBMS --collect-submodules PySide6 main.py
+pyinstaller --noconfirm --windowed --name SlimBMS main.py
 ```
 
-The exe appears in `dist/SlimBMS.exe`.
+The app appears in `dist/SlimBMS/`.
 
 ## Tests
 

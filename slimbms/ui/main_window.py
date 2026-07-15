@@ -156,19 +156,19 @@ class MainWindow(QMainWindow):
         self.sb_level.setRange(0, 99)
         self.sb_level.valueChanged.connect(lambda v: self._set_meta("level", v))
         form.addRow("레벨", self.sb_level)
-
-        self.sb_measures = QSpinBox()
-        self.sb_measures.setRange(1, 999)
-        self.sb_measures.valueChanged.connect(self._set_measures)
-        form.addRow("마디 수", self.sb_measures)
         outer.addLayout(form)
 
         outer.addWidget(self._hline())
 
-        # Grid settings: two grids, each entered as num/den of a measure.
-        outer.addWidget(QLabel("격자 (한 마디를 몇 칸으로)"))
-        self.sb_g1 = self._grid_row(outer, "A (스냅)", 16, self._apply_grids)
-        self.sb_g2 = self._grid_row(outer, "B (참고)", 12, self._apply_grids)
+        # Grid: two plain number boxes (main snap / reference), side by side.
+        grow = QHBoxLayout()
+        grow.addWidget(QLabel("격자"))
+        self.sb_g1 = self._grid_box(16, self._apply_grids)
+        self.sb_g2 = self._grid_box(8, self._apply_grids)
+        grow.addWidget(self.sb_g1)
+        grow.addWidget(self.sb_g2)
+        grow.addStretch(1)
+        outer.addLayout(grow)
 
         self.sb_snap = QPushButton("격자 스냅: 켜짐")
         self.sb_snap.setCheckable(True)
@@ -195,20 +195,14 @@ class MainWindow(QMainWindow):
         line.setFrameShadow(QFrame.Sunken)
         return line
 
-    def _grid_row(self, outer, label, cells, cb):
-        row = QHBoxLayout()
-        lbl = QLabel(label)
-        lbl.setFixedWidth(78)
-        row.addWidget(lbl)
+    def _grid_box(self, cells, cb):
         n = QSpinBox()
+        n.setButtonSymbols(QSpinBox.NoButtons)   # plain number entry, no arrows
         n.setRange(1, 192)
         n.setValue(cells)
-        n.setFixedWidth(64)
+        n.setAlignment(Qt.AlignCenter)
+        n.setFixedWidth(56)
         n.valueChanged.connect(cb)
-        row.addWidget(n)
-        row.addWidget(QLabel("칸/마디"))
-        row.addStretch(1)
-        outer.addLayout(row)
         return n
 
     def _build_toolbar(self) -> None:
@@ -320,6 +314,7 @@ class MainWindow(QMainWindow):
 
     def _on_changed(self) -> None:
         self._dirty = True
+        self._autofit_measures()
         self._update_title()
 
     def _update_title(self) -> None:
@@ -346,9 +341,7 @@ class MainWindow(QMainWindow):
             (self.sb_genre, p.genre),
         ):
             w.blockSignals(True); w.setText(val); w.blockSignals(False)
-        for w, val in ((self.sb_bpm, p.bpm),):
-            w.blockSignals(True); w.setValue(val); w.blockSignals(False)
-        for w, val in ((self.sb_level, p.level), (self.sb_measures, p.measures)):
+        for w, val in ((self.sb_bpm, p.bpm), (self.sb_level, p.level)):
             w.blockSignals(True); w.setValue(val); w.blockSignals(False)
         self.sb_bgm_label.setText(p.bgm_file or "(없음)")
 
@@ -356,10 +349,31 @@ class MainWindow(QMainWindow):
         setattr(self.project, field, value)
         self._on_changed()
 
-    def _set_measures(self, value: int) -> None:
-        self.project.measures = value
+    def _autofit_measures(self) -> None:
+        """Grow the timeline to cover all notes and the BGM length (never
+        shrinks, so the view doesn't jump while editing)."""
+        highest = 0
+        for chart in self.project.charts.values():
+            for n in chart:
+                highest = max(highest, n.measure)
+        for n in self.project.bgm:
+            highest = max(highest, n.measure)
+        need = highest + 4  # keep a few empty measures above for placing notes
+        if self.audio.duration > 0:
+            mps = TimeMap(self.project).measures_per_second
+            need = max(need, int(self.audio.duration * mps) + 2)
+        need = max(16, need)
+        if need > self.project.measures:
+            self._resize_measures(need)
+
+    def _resize_measures(self, need: int) -> None:
+        # Preserve the chart position at the viewport centre across the resize.
+        vbar = self.scroll.verticalScrollBar()
+        vp_h = self.scroll.viewport().height()
+        center_abs = self.view.absolute_at(vbar.value() + vp_h / 2)
+        self.project.measures = need
         self.view.refresh()
-        self._on_changed()
+        vbar.setValue(int(self.view.y_for(center_abs) - vp_h / 2))
 
     def _apply_grids(self) -> None:
         self.view.set_grid_main(self.sb_g1.value())
@@ -624,14 +638,14 @@ class MainWindow(QMainWindow):
         self._begin_update(info)
 
     def _begin_update(self, info) -> None:
-        if not info.exe_url:
-            QMessageBox.warning(self, "업데이트", "릴리스에서 설치 파일(.exe)을 찾지 못했습니다.")
+        if not info.download_url:
+            QMessageBox.warning(self, "업데이트", "릴리스에서 설치 파일(.zip)을 찾지 못했습니다.")
             return
         if not updater.is_frozen():
             QMessageBox.information(
                 self, "업데이트",
                 f"새 버전 {info.tag} 이 있습니다.\n"
-                "지금은 소스 코드로 실행 중이라 자동 적용은 exe에서만 됩니다.\n"
+                "지금은 소스 코드로 실행 중이라 자동 적용은 설치 버전에서만 됩니다.\n"
                 "GitHub 릴리스 페이지에서 받을 수 있습니다.")
             return
 
@@ -643,18 +657,19 @@ class MainWindow(QMainWindow):
         self._progress.show()
 
         worker = self._download_worker = _Worker(
-            lambda: updater.download_new_exe(info.exe_url))
+            lambda: updater.download_update(info.download_url))
         worker.done.connect(self._on_update_downloaded)
         worker.failed.connect(self._on_update_failed)
         worker.start()
 
-    def _on_update_downloaded(self, new_exe: str) -> None:
+    def _on_update_downloaded(self, result) -> None:
         self._progress.close()
+        new_app_dir, tmp_root = result
         QMessageBox.information(
             self, "업데이트",
             "다운로드가 끝났습니다. 프로그램을 재시작하여 업데이트를 적용합니다.")
         self.stop_play()
-        updater.swap_and_restart(new_exe)  # exits the process
+        updater.swap_and_restart(new_app_dir, tmp_root)  # exits the process
 
     def _on_update_failed(self, msg: str) -> None:
         self._progress.close()

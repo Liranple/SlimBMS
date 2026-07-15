@@ -13,7 +13,9 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import urllib.request
+import zipfile
 from typing import Optional, Tuple
 
 from . import __version__
@@ -50,7 +52,7 @@ def is_newer(tag: str, current: str = __version__) -> bool:
 class ReleaseInfo:
     def __init__(self, tag: str, url: Optional[str], notes: str):
         self.tag = tag
-        self.exe_url = url
+        self.download_url = url   # the release .zip
         self.notes = notes
 
 
@@ -63,12 +65,12 @@ def check_latest(timeout: float = 8.0) -> Optional[ReleaseInfo]:
     except Exception:  # noqa: BLE001 — offline, rate-limited, etc.
         return None
     tag = data.get("tag_name", "")
-    exe_url = None
+    zip_url = None
     for asset in data.get("assets", []):
-        if str(asset.get("name", "")).lower().endswith(".exe"):
-            exe_url = asset.get("browser_download_url")
+        if str(asset.get("name", "")).lower().endswith(".zip"):
+            zip_url = asset.get("browser_download_url")
             break
-    return ReleaseInfo(tag, exe_url, data.get("body", ""))
+    return ReleaseInfo(tag, zip_url, data.get("body", ""))
 
 
 def download(url: str, dest: str, timeout: float = 60.0) -> None:
@@ -82,41 +84,55 @@ def download(url: str, dest: str, timeout: float = 60.0) -> None:
             fh.write(chunk)
 
 
-def download_new_exe(exe_url: str) -> str:
-    """Download the new exe next to the current one; return its path.
+def download_update(zip_url: str):
+    """Download and extract the update zip. Returns ``(new_app_dir, tmp_root)``
+    where ``new_app_dir`` holds the fresh SlimBMS.exe. Safe on a worker thread.
 
-    Only valid when :func:`is_frozen`. Safe to call from a worker thread.
+    Only valid when :func:`is_frozen`.
     """
     if not is_frozen():
-        raise RuntimeError("소스 실행 중에는 자동 업데이트를 적용할 수 없습니다.")
-    folder = os.path.dirname(os.path.abspath(sys.executable))
-    new_exe = os.path.join(folder, "SlimBMS_update.exe")
-    download(exe_url, new_exe)
-    return new_exe
+        raise RuntimeError("\uc18c\uc2a4 \uc2e4\ud589 \uc911\uc5d0\ub294 \uc790\ub3d9 \uc5c5\ub370\uc774\ud2b8\ub97c \uc801\uc6a9\ud560 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4.")
+    tmp_root = tempfile.mkdtemp(prefix="slimbms_update_")
+    zip_path = os.path.join(tmp_root, "update.zip")
+    download(zip_url, zip_path)
+    extract_dir = os.path.join(tmp_root, "app")
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(extract_dir)
+    new_app_dir = _find_app_dir(extract_dir)
+    if new_app_dir is None:
+        raise RuntimeError("\uc5c5\ub370\uc774\ud2b8 \ud30c\uc77c\uc5d0\uc11c SlimBMS.exe\ub97c \ucc3e\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
+    return new_app_dir, tmp_root
 
 
-def swap_and_restart(new_exe: str) -> None:
-    """Hand off to a batch that replaces the running exe once this process
-    exits, then relaunches. Does not return (it exits the process).
+def _find_app_dir(root):
+    for base, _dirs, files in os.walk(root):
+        if "SlimBMS.exe" in files:
+            return base
+    return None
 
-    Must be called on the main thread after :func:`download_new_exe`.
+
+def swap_and_restart(new_app_dir: str, tmp_root: str) -> None:
+    """Hand off to a batch that, once this process exits, copies the new app
+    folder over the current one and relaunches. Does not return (it exits).
+
+    Must be called on the main thread after :func:`download_update`.
     """
     current = os.path.abspath(sys.executable)
-    folder = os.path.dirname(current)
-    bat = os.path.join(folder, "_slimbms_update.bat")
-    # Wait for this exe to be released, replace it, relaunch, then self-delete.
-    # Wait for the old exe to be released, replace it, let the filesystem settle
-    # (avoids a race where the fresh onefile exe is relaunched before its temp
-    # extraction is ready -> "Failed to load Python DLL"), then relaunch.
+    app_dir = os.path.dirname(current)
+    bat = os.path.join(tmp_root, "_slimbms_update.bat")
+    # Wait for the running exe to exit, mirror the new files over the install
+    # folder, relaunch, then clean up. Onedir loads DLLs directly from the
+    # folder, so there is no temp-extraction race on relaunch.
     script = (
         "@echo off\r\n"
         "timeout /t 1 /nobreak >nul\r\n"
-        ":retry\r\n"
-        f'del "{current}" >nul 2>&1\r\n'
-        f'if exist "{current}" (timeout /t 1 /nobreak >nul & goto retry)\r\n'
-        f'move /y "{new_exe}" "{current}" >nul\r\n'
-        "timeout /t 3 /nobreak >nul\r\n"
+        ":wait\r\n"
+        'tasklist /fi "imagename eq SlimBMS.exe" | find /i "SlimBMS.exe" >nul '
+        "&& (timeout /t 1 /nobreak >nul & goto wait)\r\n"
+        f'robocopy "{new_app_dir}" "{app_dir}" /E /R:3 /W:1 '
+        "/NFL /NDL /NJH /NJS /NC /NS >nul\r\n"
         f'start "" "{current}"\r\n'
+        f'rmdir /s /q "{tmp_root}" >nul 2>&1\r\n'
         'del "%~f0"\r\n'
     )
     with open(bat, "w", encoding="ascii") as fh:

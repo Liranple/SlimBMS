@@ -23,7 +23,7 @@ def click(view, x, y, button=Qt.LeftButton):
 
 def main() -> int:
     app = QApplication.instance() or QApplication([])
-    win = MainWindow(Project(title="Smoke", bpm=150, measures=8))
+    win = MainWindow(Project(title="Smoke", bpm=150, measures=16))
     view = win.view
 
     # Click in the middle of the 5K group's first lane, somewhere in the timeline.
@@ -39,8 +39,10 @@ def main() -> int:
     click(view, bgm_col.x + 5, view.y_for(0.0))
     assert view.project.bgm, "BGM object should have been placed"
 
-    # Right-click same 5K spot erases it.
-    click(view, x, y, Qt.RightButton)
+    # Right-click the note erases it (recompute y from the actual note in case
+    # the timeline auto-extended and shifted screen positions).
+    note = next(iter(view.project.charts[5]))
+    click(view, x, view.y_for(note.absolute), Qt.RightButton)
     assert view.project.note_count(5) == 0, "note should have been erased"
 
     # Export path exercises the whole pipeline.
