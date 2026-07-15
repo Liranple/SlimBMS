@@ -23,13 +23,13 @@ DISPLAY_MODES = (4, 6, IMPORT_MODE)  # left-to-right order in the editor
 
 # Lane index -> BMS object channel, per mode (1P visible channels).
 # Channels are the standard BMS 1P keys: 11-15 = keys 1-5, 18/19 = keys 6/7,
-# and 16 = scratch (never used here). The modes match uBMSC's playfields, with
-# both hands split around the centre key so the game reads them correctly:
-#   4K = keys 2,3,5,6      6K = keys 1,2,3,5,6,7
+# and 16 = scratch (never used here). The modes match uBMSC's playfields, as
+# confirmed in-game (which channels each mode actually reads):
+#   4K = keys 1,2,4,5      6K = keys 1,2,3,5,6,7
 # The IMPORT_MODE group carries all eight 1P channels (A1~A8 in uBMSC) so any
 # loaded .bms lands there without losing notes.
 KEY_CHANNELS: Dict[int, List[str]] = {
-    4: ["12", "13", "15", "18"],
+    4: ["11", "12", "14", "15"],
     6: ["11", "12", "13", "15", "18", "19"],
     IMPORT_MODE: ["11", "12", "13", "14", "15", "16", "18", "19"],
 }
@@ -38,7 +38,7 @@ KEY_CHANNELS: Dict[int, List[str]] = {
 # Matches real key colours (white = odd key, blue = even key) for the channels
 # above, so lanes look like the keyboard they map to.
 LANE_COLORS: Dict[int, str] = {
-    4: "BWWB",       # keys 2,3,5,6
+    4: "WBBW",       # keys 1,2,4,5
     6: "WBWWBW",     # keys 1,2,3,5,6,7
     IMPORT_MODE: "GGGGGGGG",
 }

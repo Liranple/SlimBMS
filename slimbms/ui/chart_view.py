@@ -61,14 +61,16 @@ RECORD_KEYS = {
 class ChartView(QWidget):
     """Paints the note grid for all key modes and edits notes on click."""
 
-    changed = Signal()       # emitted whenever a note is added/removed
-    zoom_step = Signal(int)  # Ctrl+wheel: +1 zoom in, -1 zoom out
+    changed = Signal()        # emitted whenever a note is added/removed
+    zoom_step = Signal(int)   # Ctrl+wheel: +1 vertical zoom in, -1 out
+    lane_zoom_step = Signal(int)  # Alt+wheel: +1 horizontal (lane width) zoom in, -1 out
     mode_changed = Signal(str)  # "add" or "edit"
 
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
         self.project = project
         self.measure_px = 150         # zoom: vertical pixels per measure
+        self.lane_w = L.LANE_W        # zoom: horizontal pixels per lane
         self.grid_main = Fraction(1, 16)  # primary (snap) grid, of a measure
         self.grid_sub = Fraction(1, 12)   # secondary reference grid
         self.snap_on = True
@@ -86,7 +88,7 @@ class ChartView(QWidget):
         self._paste_anchor = 0.0
         self._add_drag = None         # (mode_key, Note, start_abs, Column) while dragging a long note
         self._rec_pending = {}        # key -> (km, Note, start_abs) for keys held during recording
-        self.columns, self.groups, self._width = L.build_layout()
+        self.columns, self.groups, self._width = L.build_layout(self.lane_w)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self._apply_size()
@@ -100,6 +102,12 @@ class ChartView(QWidget):
 
     def set_zoom(self, measure_px: int) -> None:
         self.measure_px = max(40, min(600, measure_px))
+        self._apply_size()
+        self.update()
+
+    def set_lane_width(self, lane_w: int) -> None:
+        self.lane_w = max(14, min(80, lane_w))
+        self.columns, self.groups, self._width = L.build_layout(self.lane_w)
         self._apply_size()
         self.update()
 
@@ -225,7 +233,7 @@ class ChartView(QWidget):
                 continue
             code = LANE_COLORS.get(col.key_mode, "")
             if col.lane < len(code):
-                p.fillRect(QRect(col.x, top, L.LANE_W, height),
+                p.fillRect(QRect(col.x, top, self.lane_w, height),
                            LANE_TINT[code[col.lane]])
 
     def _grid_line_ys(self, step: Fraction):
@@ -273,7 +281,7 @@ class ChartView(QWidget):
               if c.kind == "key" and c.key_mode == self.selected_km]
         if not xs:
             return None
-        return min(xs), max(xs) + L.LANE_W
+        return min(xs), max(xs) + self.lane_w
 
     def _paint_selected_group(self, p: QPainter) -> None:
         """Gently highlight the selected key mode's lanes: a faint accent tint
@@ -308,7 +316,7 @@ class ChartView(QWidget):
         primary grid so it fits the grid exactly at any zoom level."""
         cell_h = max(3, int(round(self.measure_px * float(self.grid_main))))
         y_line = int(round(self.y_for(absolute)))
-        return QRect(x + 1, y_line - cell_h + 1, L.LANE_W - 2, cell_h - 1)
+        return QRect(x + 1, y_line - cell_h + 1, self.lane_w - 2, cell_h - 1)
 
     def _paint_note(self, p: QPainter, x: int, note: Note, color: QColor) -> None:
         head = self._note_rect(x, note.absolute)
@@ -416,7 +424,7 @@ class ChartView(QWidget):
         return self.snap_on and not shift
 
     def _resolve(self, event: QMouseEvent):
-        col = L.column_at(self.columns, event.position().x())
+        col = L.column_at(self.columns, event.position().x(), self.lane_w)
         if col is None:
             return None
         measure, pos = self.pos_at(event.position().y(), self._snap_now(event))
@@ -513,7 +521,7 @@ class ChartView(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         self.setFocus()
         x, y = event.position().x(), event.position().y()
-        col = L.column_at(self.columns, x)
+        col = L.column_at(self.columns, x, self.lane_w)
 
         if self.mode == "add":
             resolved = self._resolve(event)
@@ -558,7 +566,7 @@ class ChartView(QWidget):
             found = self._notes_in_rect(x0, y0, x1, y1)
             self.selection = (self.selection | found) if self._drag_shift else found
         else:
-            col = L.column_at(self.columns, x0)
+            col = L.column_at(self.columns, x0, self.lane_w)
             hit = self._note_at_point(col, y0) if col else None
             if hit is not None:
                 if self._drag_shift:
@@ -578,7 +586,7 @@ class ChartView(QWidget):
         found = set()
 
         def inside(cx, absolute):
-            cxc = cx + L.LANE_W / 2
+            cxc = cx + self.lane_w / 2
             cyc = self.y_for(absolute)
             return rx0 <= cxc <= rx1 and ry0 <= cyc <= ry1
 
@@ -593,8 +601,12 @@ class ChartView(QWidget):
         return found
 
     def wheelEvent(self, event) -> None:  # noqa: N802
+        step = 1 if event.angleDelta().y() > 0 else -1
         if event.modifiers() & Qt.ControlModifier:
-            self.zoom_step.emit(1 if event.angleDelta().y() > 0 else -1)
+            self.zoom_step.emit(step)          # vertical zoom
+            event.accept()
+        elif event.modifiers() & Qt.AltModifier:
+            self.lane_zoom_step.emit(step)     # horizontal (lane width) zoom
             event.accept()
         else:
             event.ignore()  # let the scroll area scroll
@@ -769,7 +781,8 @@ class LaneHeader(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.columns, self.groups, self._width = L.build_layout()
+        self.lane_w = L.LANE_W
+        self.columns, self.groups, self._width = L.build_layout(self.lane_w)
         self.x_offset = 0
         self.selected_km = KEY_MODES[0]
         self.setFixedHeight(26)
@@ -777,6 +790,11 @@ class LaneHeader(QWidget):
         # with the canvas (via x_offset) and clips, so a small minimum keeps the
         # sidebar from being pushed off-screen.
         self.setMinimumWidth(0)
+
+    def set_lane_width(self, lane_w: int) -> None:
+        self.lane_w = lane_w
+        self.columns, self.groups, self._width = L.build_layout(self.lane_w)
+        self.update()
 
     def set_x_offset(self, value: int) -> None:
         self.x_offset = value

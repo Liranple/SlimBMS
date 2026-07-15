@@ -67,6 +67,7 @@ class MainWindow(QMainWindow):
         self.project = project or Project()
         self.project_path: Optional[str] = None
         self._dirty = False
+        self._last_dir = ""   # folder of the last open/save/export, reused by dialogs
 
         # Playback / preview.
         self.audio = AudioPlayer()
@@ -111,6 +112,7 @@ class MainWindow(QMainWindow):
         self.view = ChartView(self.project)
         self.view.changed.connect(self._on_changed)
         self.view.zoom_step.connect(self._zoom_step)
+        self.view.lane_zoom_step.connect(self._lane_zoom_step)
         self.view.mode_changed.connect(self._on_mode_changed)
         self.scroll.setWidget(self.view)
         self.scroll.horizontalScrollBar().valueChanged.connect(self.header.set_x_offset)
@@ -192,6 +194,27 @@ class MainWindow(QMainWindow):
 
         outer.addWidget(self._hline())
 
+        # -- Zoom ----------------------------------------------------------- #
+        outer.addWidget(self._section("확대/축소"))
+        zrow_v = QHBoxLayout()
+        zrow_v.setSpacing(6)
+        zrow_v.addWidget(QLabel("상하"))
+        zrow_v.addWidget(self._zoom_btn("－", lambda: self._zoom_step(-1)))
+        zrow_v.addWidget(self._zoom_btn("＋", lambda: self._zoom_step(1)))
+        zrow_v.addStretch(1)
+        outer.addLayout(zrow_v)
+
+        zrow_h = QHBoxLayout()
+        zrow_h.setSpacing(6)
+        zrow_h.addWidget(QLabel("좌우"))
+        zrow_h.addWidget(self._zoom_btn("－", lambda: self._lane_zoom_step(-1)))
+        zrow_h.addWidget(self._zoom_btn("＋", lambda: self._lane_zoom_step(1)))
+        zrow_h.addStretch(1)
+        outer.addLayout(zrow_h)
+        outer.addWidget(self._hint("Ctrl+휠: 상하 · Alt+휠: 좌우"))
+
+        outer.addWidget(self._hline())
+
         # -- Audio ---------------------------------------------------------- #
         outer.addWidget(self._section("오디오"))
         self.sb_bgm_btn = QPushButton("BGM 오디오 등록…")
@@ -209,6 +232,12 @@ class MainWindow(QMainWindow):
         label = QLabel(text)
         label.setObjectName("Section")
         return label
+
+    def _zoom_btn(self, text: str, cb) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setFixedWidth(42)
+        btn.clicked.connect(lambda checked=False: cb())
+        return btn
 
     def _hint(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -289,15 +318,6 @@ class MainWindow(QMainWindow):
             act.setShortcut(key)
             act.triggered.connect(lambda checked=False: self.seek_seconds(-1.0))
             self.addAction(act)
-        tb.addSeparator()
-        tb.addWidget(QLabel(" 줌 "))
-        zoom_out = QAction("축소", self)
-        zoom_out.triggered.connect(lambda: self._zoom_step(-1))
-        tb.addAction(zoom_out)
-        zoom_in = QAction("확대", self)
-        zoom_in.triggered.connect(lambda: self._zoom_step(1))
-        tb.addAction(zoom_in)
-        tb.addWidget(QLabel(" (Ctrl+휠) "))
 
         tb.addSeparator()
         self.add_mode_action = QAction("추가(F3)", self)
@@ -455,13 +475,23 @@ class MainWindow(QMainWindow):
                 "편집 모드 — 클릭·드래그 선택 · 방향키 이동 · Ctrl+C/X/V · ` 좌우반전 · Delete 삭제")
 
     def _zoom_step(self, direction: int) -> None:
-        # Zoom while keeping the chart position at the viewport centre stable.
+        # Vertical zoom while keeping the chart position at the viewport centre.
         vbar = self.scroll.verticalScrollBar()
         vp_h = self.scroll.viewport().height()
         center_y = vbar.value() + vp_h / 2
         center_abs = self.view.absolute_at(center_y)
         self.view.set_zoom(self.view.measure_px + direction * 30)
         vbar.setValue(int(self.view.y_for(center_abs) - vp_h / 2))
+
+    def _lane_zoom_step(self, direction: int) -> None:
+        # Horizontal (lane width) zoom, keeping the same relative scroll centre.
+        hbar = self.scroll.horizontalScrollBar()
+        vp_w = self.scroll.viewport().width()
+        old_w = max(1, self.view._width)
+        center_frac = (hbar.value() + vp_w / 2) / old_w
+        self.view.set_lane_width(self.view.lane_w + direction * 6)
+        self.header.set_lane_width(self.view.lane_w)
+        hbar.setValue(int(self.view._width * center_frac - vp_w / 2))
 
     # -- playback / preview ------------------------------------------------- #
 
@@ -569,7 +599,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "프로젝트 열기", "", "SlimBMS 프로젝트 (*.slbms);;모든 파일 (*)")
+            self, "프로젝트 열기", self._last_dir, "SlimBMS 프로젝트 (*.slbms);;모든 파일 (*)")
         if not path:
             return
         try:
@@ -577,6 +607,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "열기 실패", str(exc))
             return
+        self._remember_dir(path)
         self.project_path = path
         self._dirty = False
         self._reload_view()
@@ -595,12 +626,13 @@ class MainWindow(QMainWindow):
 
     def save_project_as(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
-            self, "프로젝트 저장", self._suggest_name(".slbms"),
+            self, "프로젝트 저장", self._dialog_path(self._suggest_name(".slbms")),
             "SlimBMS 프로젝트 (*.slbms)")
         if not path:
             return
         if not path.lower().endswith(".slbms"):
             path += ".slbms"
+        self._remember_dir(path)
         self.project_path = path
         self.save_project()
 
@@ -608,7 +640,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "BMS 가져오기", "", "BMS 채보 (*.bms *.bme *.bml);;모든 파일 (*)")
+            self, "BMS 가져오기", self._last_dir, "BMS 채보 (*.bms *.bme *.bml);;모든 파일 (*)")
         if not path:
             return
         try:
@@ -617,6 +649,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "가져오기 실패", str(exc))
             return
+        self._remember_dir(path)
         self.project_path = None
         self._dirty = True
         self._reload_view()
@@ -627,7 +660,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, "BGM 없음",
                 "BGM 출력 시작 타이밍이 없습니다. BGM 레인에 시작 지점을 먼저 찍어주세요.")
-        default = self._suggest_name(f"_{km}k.bms")
+        default = self._dialog_path(self._suggest_name(f"_{km}k.bms"))
         path, _ = QFileDialog.getSaveFileName(
             self, f"{km}K .bms 내보내기", default, "BMS 채보 (*.bms)")
         if not path:
@@ -641,6 +674,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "내보내기 실패", str(exc))
             return
+        self._remember_dir(path)
         QMessageBox.information(
             self, "내보내기 완료",
             f"{km}K 채보를 저장했습니다:\n{path}\n\n노트 수: {self.project.note_count(km)}")
@@ -649,10 +683,11 @@ class MainWindow(QMainWindow):
 
     def choose_bgm(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "BGM 오디오 선택", "",
+            self, "BGM 오디오 선택", self._last_dir,
             "오디오 (*.wav *.ogg *.mp3 *.flac);;모든 파일 (*)")
         if not path:
             return
+        self._remember_dir(path)
         self.project.bgm_file = os.path.basename(path)
         self._bgm_path = path
         loaded = self.audio.load(path)
@@ -733,6 +768,14 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "업데이트 실패", f"업데이트 중 오류가 발생했습니다:\n{msg}")
 
     # -- helpers ------------------------------------------------------------ #
+
+    def _dialog_path(self, name: str) -> str:
+        """A default path for a save dialog: the last-used folder + ``name`` so
+        the dialog opens where the user last saved, not the install directory."""
+        return os.path.join(self._last_dir, name) if self._last_dir else name
+
+    def _remember_dir(self, path: str) -> None:
+        self._last_dir = os.path.dirname(path)
 
     def _suggest_name(self, suffix: str) -> str:
         base = self.project.title.strip() or "untitled"

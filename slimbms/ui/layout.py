@@ -32,14 +32,14 @@ class Group:
     x1: int
 
 
-def build_layout() -> Tuple[List[Column], List[Group], int]:
+def build_layout(lane_w: int = LANE_W) -> Tuple[List[Column], List[Group], int]:
     columns: List[Column] = []
     groups: List[Group] = []
     x = LEFT_MARGIN
 
     start = x
     columns.append(Column("bgm", None, 0, x))
-    x += LANE_W
+    x += lane_w
     groups.append(Group("BGM", start, x))
     x += GROUP_GAP
 
@@ -47,7 +47,7 @@ def build_layout() -> Tuple[List[Column], List[Group], int]:
         start = x
         for lane in range(lanes_for(km)):
             columns.append(Column("key", km, lane, x))
-            x += LANE_W
+            x += lane_w
         groups.append(Group(DISPLAY_LABELS[km], start, x))
         x += GROUP_GAP
 
@@ -55,8 +55,8 @@ def build_layout() -> Tuple[List[Column], List[Group], int]:
     return columns, groups, total_width
 
 
-def column_at(columns: List[Column], px: float) -> Optional[Column]:
+def column_at(columns: List[Column], px: float, lane_w: int = LANE_W) -> Optional[Column]:
     for col in columns:
-        if col.x <= px < col.x + LANE_W:
+        if col.x <= px < col.x + lane_w:
             return col
     return None

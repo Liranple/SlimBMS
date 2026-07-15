@@ -65,9 +65,9 @@ def test_bms_export_contains_header_and_body():
 def test_export_only_selected_key_mode():
     p = make_project()
     text4 = bms_io.export_bms(p, 4)
-    # 4K never uses channels 11 or 19 (those are 6K's outer keys); make sure the
+    # 4K never uses channels 13 or 19 (those are 6K-only keys); make sure the
     # 6K notes make_project placed there didn't leak into the 4K export.
-    assert not any(line.startswith("#00011:") for line in text4.splitlines())
+    assert not any(line.startswith("#00013:") for line in text4.splitlines())
     assert not any(line.startswith("#00019:") for line in text4.splitlines())
 
 
@@ -113,22 +113,22 @@ def test_import_channels_map_to_import_lanes():
 
 
 def test_key_mode_channel_mapping():
-    # Locks the uBMSC-matching layout: both hands split around the centre key,
-    # scratch (16) unused. 4K=keys2,3,5,6  6K=keys1,2,3,5,6,7.
-    assert KEY_CHANNELS[4] == ["12", "13", "15", "18"]
+    # Locks the in-game-confirmed layout; scratch (16) unused.
+    # 4K = keys 1,2,4,5   6K = keys 1,2,3,5,6,7.
+    assert KEY_CHANNELS[4] == ["11", "12", "14", "15"]
     assert KEY_CHANNELS[6] == ["11", "12", "13", "15", "18", "19"]
     assert "16" not in sum((KEY_CHANNELS[k] for k in (4, 6)), [])
 
 
 def test_long_note_exports_on_ln_channel():
-    # A 4K long note in lane 0 (channel 12 -> LN channel 52) spanning half a
-    # measure emits a head at its start and a tail at its end on channel 52.
+    # A 4K long note in lane 0 (channel 11 -> LN channel 51) spanning half a
+    # measure emits a head at its start and a tail at its end on channel 51.
     p = Project(title="LN", bpm=120, measures=4)
     p.charts[4].add(Note(0, Fraction(1, 4), 0, Fraction(1, 2)))  # head 1/4, tail 3/4
     text = bms_io.export_bms(p, 4)
     assert "#LNTYPE 1" in text
-    ln = [line for line in text.splitlines() if line.startswith("#00052:")]
-    assert ln, "long note should use LN channel 52"
+    ln = [line for line in text.splitlines() if line.startswith("#00051:")]
+    assert ln, "long note should use LN channel 51"
     # Head at 1/4 and tail at 3/4 -> slots 1 and 3 of a length-4 data string.
     data = ln[0].split(":", 1)[1]
     assert data == "00010001", f"unexpected LN data {data!r}"
