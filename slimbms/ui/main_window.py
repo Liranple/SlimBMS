@@ -7,7 +7,7 @@ from typing import Optional
 
 import threading
 
-from PySide6.QtCore import QObject, QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
@@ -221,6 +221,7 @@ class MainWindow(QMainWindow):
         self.view.zoom_step.connect(self._zoom_step)
         self.view.lane_zoom_step.connect(self._lane_zoom_step)
         self.view.mode_changed.connect(self._on_mode_changed)
+        self.view.cursor_info.connect(self._show_cursor)
         self.scroll.setWidget(self.view)
         self.scroll.horizontalScrollBar().valueChanged.connect(self.header.set_x_offset)
         vbox.addWidget(self.scroll)
@@ -292,12 +293,12 @@ class MainWindow(QMainWindow):
         grow.addStretch(1)
         outer.addLayout(grow)
 
-        self.sb_snap = QPushButton("격자 스냅: 켜짐")
+        self.sb_snap = QPushButton("격자 스냅 : 켜짐")
         self.sb_snap.setCheckable(True)
         self.sb_snap.setChecked(True)
         self.sb_snap.toggled.connect(self._toggle_snap)
         outer.addWidget(self.sb_snap)
-        outer.addWidget(self._hint("Shift를 누르면 격자를 무시하고 자유 배치"))
+        outer.addWidget(self._hint("Shift : 자유배치"))
 
         outer.addWidget(self._hline())
 
@@ -311,13 +312,13 @@ class MainWindow(QMainWindow):
         self.zoom_h = DragValue("↔", 0.5, 2.75, 0.25, 1.0)
         self.zoom_h.changed.connect(self._apply_zoom_h)
         outer.addWidget(self.zoom_h)
-        outer.addWidget(self._hint("↕/↔ 값을 좌우로 드래그 · Ctrl+휠: ↕ · Alt+휠: ↔"))
+        outer.addWidget(self._hint("Ctrl+Wheel : ↕    Alt+Wheel : ↔"))
 
         outer.addWidget(self._hline())
 
         # -- Audio ---------------------------------------------------------- #
-        outer.addWidget(self._section("오디오"))
-        self.sb_bgm_btn = QPushButton("BGM 오디오 등록…")
+        outer.addWidget(self._section("음원"))
+        self.sb_bgm_btn = QPushButton("음원 파일 등록")
         self.sb_bgm_btn.clicked.connect(self.choose_bgm)
         outer.addWidget(self.sb_bgm_btn)
         self.sb_bgm_label = QLabel("(없음)")
@@ -372,14 +373,14 @@ class MainWindow(QMainWindow):
         tb.setMovable(False)
         self.addToolBar(tb)
 
-        start_action = QAction("⏮", self)
-        start_action.setToolTip("처음으로 (Home)")
+        # Transport buttons: all one media glyph + a short label, for a
+        # consistent look across the row.
+        start_action = QAction("⏮ 처음", self)
         start_action.setShortcut(Qt.Key_Home)
         start_action.triggered.connect(self.go_to_start)
         tb.addAction(start_action)
 
-        back_action = QAction("− 1초", self)
-        back_action.setToolTip("1초 뒤로 (−)")
+        back_action = QAction("⏪ 1초", self)
         back_action.triggered.connect(lambda: self.seek_seconds(-1.0))
         tb.addAction(back_action)
 
@@ -391,12 +392,11 @@ class MainWindow(QMainWindow):
         if play_btn is not None:
             play_btn.setObjectName("Primary")
 
-        fwd_action = QAction("+ 1초", self)
-        fwd_action.setToolTip("1초 앞으로 (+)")
+        fwd_action = QAction("⏩ 1초", self)
         fwd_action.triggered.connect(lambda: self.seek_seconds(1.0))
         tb.addAction(fwd_action)
 
-        stop_action = QAction("■ 정지", self)
+        stop_action = QAction("⏹ 정지", self)
         stop_action.triggered.connect(self.stop_play)
         tb.addAction(stop_action)
 
@@ -443,6 +443,18 @@ class MainWindow(QMainWindow):
         export_action = QAction("이 키로 .bms 저장", self)
         export_action.triggered.connect(self.export_bms)
         tb.addAction(export_action)
+
+        # No hover tooltips on any toolbar button: an empty tip just falls back
+        # to the button text, so swallow the ToolTip event on each button.
+        for act in tb.actions():
+            btn = tb.widgetForAction(act)
+            if btn is not None:
+                btn.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.ToolTip:
+            return True   # suppress toolbar hover tooltips
+        return super().eventFilter(obj, event)
 
     def _build_menu(self) -> None:
         m = self.menuBar()
@@ -546,7 +558,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_snap(self, on: bool) -> None:
         self.view.set_snap_on(on)
-        self.sb_snap.setText("격자 스냅: 켜짐" if on else "격자 스냅: 꺼짐")
+        self.sb_snap.setText("격자 스냅 : 켜짐" if on else "격자 스냅 : 꺼짐")
 
     def _set_mode(self, mode: str) -> None:
         self.view.set_mode(mode)
@@ -561,12 +573,13 @@ class MainWindow(QMainWindow):
     def _on_mode_changed(self, mode: str) -> None:
         self.add_mode_action.setChecked(mode == "add")
         self.edit_mode_action.setChecked(mode == "edit")
-        if mode == "add":
-            self.statusBar().showMessage(
-                "추가 모드 — 좌클릭: 노트 추가 · 좌클릭 후 위/아래 드래그: 롱노트 · 우클릭: 삭제")
+
+    def _show_cursor(self, text: str) -> None:
+        # The status bar shows only the live cursor coordinate now.
+        if text:
+            self.statusBar().showMessage(text)
         else:
-            self.statusBar().showMessage(
-                "편집 모드 — 클릭·드래그 선택 · 방향키 이동 · Ctrl+C/X/V · ` 좌우반전 · Delete 삭제")
+            self.statusBar().clearMessage()
 
     # Pixel size at zoom factor 1.00 (matches the view's defaults).
     V_ZOOM_BASE = 150   # vertical: pixels per measure
@@ -623,10 +636,6 @@ class MainWindow(QMainWindow):
         self._play_timer.start()
         self.view.set_live(True)
         self.view.setFocus()   # so recording keys reach the canvas
-        km = self.view.selected_km
-        keys = {4: "Q W 8 9", 6: "Q W E 7 8 9"}.get(km, "")
-        self.statusBar().showMessage(
-            f"재생 중 — {km}K 녹음 키: {keys} · 누르면 노트, 꾹 누르면 롱노트로 기록됩니다")
 
     def _pause_play(self) -> None:
         self.audio.pause()

@@ -66,6 +66,7 @@ class ChartView(QWidget):
     zoom_step = Signal(int)   # Ctrl+wheel: +1 vertical zoom in, -1 out
     lane_zoom_step = Signal(int)  # Alt+wheel: +1 horizontal (lane width) zoom in, -1 out
     mode_changed = Signal(str)  # "add" or "edit"
+    cursor_info = Signal(str)   # live "group · grid coords" text for the status bar
 
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
@@ -249,33 +250,38 @@ class ChartView(QWidget):
                 k += 1
 
     def _paint_horizontal_lines(self, p: QPainter) -> None:
-        x0 = L.LEFT_MARGIN
-        x1 = self.groups[-1].x1
         font = QFont()
         font.setPointSize(8)
         p.setFont(font)
         measures = self.project.measures
+        # Draw grid/measure lines only inside each lane group; the gaps between
+        # groups (BGM · 4K · 6K · LOAD) stay empty background.
+        spans = [(g.x0, g.x1) for g in self.groups]
+
+        def draw_row(y: float) -> None:
+            yi = int(y)
+            for gx0, gx1 in spans:
+                p.drawLine(gx0, yi, gx1, yi)
 
         # Fine snap grid first (faint), then the reference grid on top (brighter)
         # so its guide lines stay visible even where they coincide with the
         # denser snap lines.
         p.setPen(QPen(C_GRID_FINE, 1))
         for y in self._grid_line_ys(self.grid_main):
-            p.drawLine(x0, int(y), x1, int(y))
+            draw_row(y)
         p.setPen(QPen(C_GRID_REF, 1))
         for y in self._grid_line_ys(self.grid_sub):
-            p.drawLine(x0, int(y), x1, int(y))
+            draw_row(y)
 
         # Measure lines + numbers.
-        p.setPen(QPen(C_MEASURE, 1))
         for m in range(measures + 1):
             y = self.y_for(m)
-            p.drawLine(x0, int(y), x1, int(y))
+            p.setPen(QPen(C_MEASURE, 1))
+            draw_row(y)
             if m < measures:
                 p.setPen(QPen(C_TEXT, 1))
                 p.drawText(QRect(2, int(y) - 16, L.LEFT_MARGIN - 6, 14),
                            Qt.AlignRight | Qt.AlignVCenter, str(m))
-                p.setPen(QPen(C_MEASURE, 1))
 
     def _selected_group_span(self):
         xs = [c.x for c in self.columns
@@ -558,7 +564,24 @@ class ChartView(QWidget):
         self.changed.emit()
         self.update()
 
+    def _cursor_text(self, event: QMouseEvent) -> str:
+        """A readout of the cursor position on the current (snap) grid, prefixed
+        by the lane group under it, e.g. ``4K · 마디 3 · 5/16 · 2번``."""
+        col = L.column_at(self.columns, event.position().x(), self.lane_w)
+        if col is None:
+            return ""
+        measure, pos = self.pos_at(event.position().y(), True)  # always grid-based
+        if measure < 0 or measure >= self.project.measures:
+            return ""
+        div = self.grid_main.denominator          # cells per measure
+        cell = int(pos / self.grid_main)          # cell index within the measure
+        if col.kind == "bgm":
+            return f"BGM · 마디 {measure} · {cell}/{div}"
+        label = DISPLAY_LABELS.get(col.key_mode, "")
+        return f"{label} · 마디 {measure} · {cell}/{div} · {col.lane + 1}번"
+
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        self.cursor_info.emit(self._cursor_text(event))
         if self.mode == "edit" and self._drag_start is not None:
             self._drag_cur = (event.position().x(), event.position().y())
             self.update()
@@ -573,6 +596,7 @@ class ChartView(QWidget):
                 self.update()
 
     def leaveEvent(self, event) -> None:  # noqa: N802
+        self.cursor_info.emit("")
         if self._hover is not None:
             self._hover = None
             self.update()

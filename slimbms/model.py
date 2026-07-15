@@ -44,7 +44,7 @@ LANE_COLORS: Dict[int, str] = {
 }
 
 DISPLAY_LABELS: Dict[int, str] = {
-    4: "4K", 6: "6K", IMPORT_MODE: "불러오기",
+    4: "4K", 6: "6K", IMPORT_MODE: "LOAD",
 }
 
 # Channel used for the background-music object (whole-song audio start timing).
