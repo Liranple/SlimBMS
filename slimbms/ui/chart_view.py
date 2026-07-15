@@ -953,7 +953,15 @@ class ChartView(QWidget):
         return found
 
     def wheelEvent(self, event) -> None:  # noqa: N802
-        step = 1 if event.angleDelta().y() > 0 else -1
+        # Holding Alt makes many platforms report the wheel on the X axis, so
+        # fall back to it — otherwise angleDelta().y() is 0 and the step would be
+        # stuck at -1 (zoom out only).
+        d = event.angleDelta()
+        delta = d.y() if d.y() != 0 else d.x()
+        if delta == 0:
+            event.ignore()
+            return
+        step = 1 if delta > 0 else -1
         if event.modifiers() & Qt.ControlModifier:
             self.zoom_step.emit(step)          # vertical zoom
             event.accept()
