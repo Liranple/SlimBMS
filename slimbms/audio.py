@@ -96,6 +96,7 @@ class AudioPlayer:
         self._anchor_t = 0.0
         self._paused_pos = 0.0
         self._speed = 1.0
+        self._volume = 1.0
 
         # Decoded BGM: original int16 bytes + per-channel float arrays (for the
         # stretch), plus the cached stretched bytes for the current speed.
@@ -277,6 +278,8 @@ class AudioPlayer:
         self._sound = snd
         try:
             self._channel = snd.play()
+            if self._channel is not None:
+                self._channel.set_volume(self._volume)
         except Exception:  # noqa: BLE001
             self._channel = None
 
@@ -362,6 +365,18 @@ class AudioPlayer:
     @property
     def speed(self) -> float:
         return self._speed
+
+    @property
+    def volume(self) -> float:
+        return self._volume
+
+    def set_volume(self, volume: float) -> None:
+        self._volume = max(0.0, min(1.0, float(volume)))
+        if self._channel is not None:
+            try:
+                self._channel.set_volume(self._volume)
+            except Exception:  # noqa: BLE001
+                pass
 
     def position(self) -> float:
         """Current playback position in song seconds (advances at the speed)."""

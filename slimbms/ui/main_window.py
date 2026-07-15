@@ -299,6 +299,7 @@ class MainWindow(QMainWindow):
         self.view.lane_zoom_step.connect(self._lane_zoom_step)
         self.view.mode_changed.connect(self._on_mode_changed)
         self.view.cursor_info.connect(self._show_cursor)
+        self.view.scroll_h.connect(self._scroll_horizontal)
         self.scroll.setWidget(self.view)
         self.scroll.horizontalScrollBar().valueChanged.connect(self.header.set_x_offset)
         self.header.bgm_width_changed.connect(self._set_bgm_width)
@@ -423,6 +424,10 @@ class MainWindow(QMainWindow):
         self.speed = DragValue("×", 0.25, 2.0, 0.05, 1.0)
         self.speed.changed.connect(self._set_speed)
         audio.add_widget(self.speed)
+        audio.add_widget(self._hint("음량"))
+        self.volume = DragValue("♪", 0.0, 1.0, 0.05, 1.0)
+        self.volume.changed.connect(self.audio.set_volume)
+        audio.add_widget(self.volume)
         self.sb_bgm_btn = QPushButton("음원 파일 등록")
         self.sb_bgm_btn.clicked.connect(self.choose_bgm)
         audio.add_widget(self.sb_bgm_btn)
@@ -834,6 +839,11 @@ class MainWindow(QMainWindow):
     def _lane_zoom_step(self, direction: int) -> None:
         # Alt+wheel nudges the horizontal drag control.
         self.zoom_h.step_by(direction)
+
+    def _scroll_horizontal(self, delta: int) -> None:
+        # Shift+wheel scrolls the chart left/right.
+        hbar = self.scroll.horizontalScrollBar()
+        hbar.setValue(hbar.value() - delta)
 
     def _apply_zoom_v(self, factor: float) -> None:
         # Vertical zoom while keeping the chart position at the viewport centre.

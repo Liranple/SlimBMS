@@ -70,6 +70,7 @@ class ChartView(QWidget):
     lane_zoom_step = Signal(int)  # Alt+wheel: +1 horizontal (lane width) zoom in, -1 out
     mode_changed = Signal(str)  # "add" or "edit"
     cursor_info = Signal(str)   # live "group · grid coords" text for the status bar
+    scroll_h = Signal(int)      # Shift+wheel: horizontal scroll by this angle delta
 
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
@@ -961,15 +962,19 @@ class ChartView(QWidget):
         if delta == 0:
             event.ignore()
             return
+        mods = event.modifiers()
         step = 1 if delta > 0 else -1
-        if event.modifiers() & Qt.ControlModifier:
+        if mods & Qt.ControlModifier:
             self.zoom_step.emit(step)          # vertical zoom
             event.accept()
-        elif event.modifiers() & Qt.AltModifier:
+        elif mods & Qt.AltModifier:
             self.lane_zoom_step.emit(step)     # horizontal (lane width) zoom
             event.accept()
+        elif mods & Qt.ShiftModifier:
+            self.scroll_h.emit(delta)          # horizontal scroll
+            event.accept()
         else:
-            event.ignore()  # let the scroll area scroll
+            event.ignore()  # let the scroll area scroll (vertical)
 
     # -- edit-mode keyboard operations ------------------------------------- #
 
