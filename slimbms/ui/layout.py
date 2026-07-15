@@ -23,6 +23,7 @@ class Column:
     key_mode: Optional[int]  # None for BGM
     lane: int
     x: int                  # left edge
+    w: int                  # column width (BGM may differ from the key lanes)
 
 
 @dataclass(frozen=True)
@@ -32,21 +33,24 @@ class Group:
     x1: int
 
 
-def build_layout(lane_w: int = LANE_W) -> Tuple[List[Column], List[Group], int]:
+def build_layout(lane_w: int = LANE_W, bgm_w: Optional[int] = None
+                 ) -> Tuple[List[Column], List[Group], int]:
+    if bgm_w is None:
+        bgm_w = lane_w
     columns: List[Column] = []
     groups: List[Group] = []
     x = LEFT_MARGIN
 
     start = x
-    columns.append(Column("bgm", None, 0, x))
-    x += lane_w
+    columns.append(Column("bgm", None, 0, x, bgm_w))
+    x += bgm_w
     groups.append(Group("BGM", start, x))
     x += GROUP_GAP
 
     for km in DISPLAY_MODES:
         start = x
         for lane in range(lanes_for(km)):
-            columns.append(Column("key", km, lane, x))
+            columns.append(Column("key", km, lane, x, lane_w))
             x += lane_w
         groups.append(Group(DISPLAY_LABELS[km], start, x))
         x += GROUP_GAP
@@ -55,8 +59,8 @@ def build_layout(lane_w: int = LANE_W) -> Tuple[List[Column], List[Group], int]:
     return columns, groups, total_width
 
 
-def column_at(columns: List[Column], px: float, lane_w: int = LANE_W) -> Optional[Column]:
+def column_at(columns: List[Column], px: float) -> Optional[Column]:
     for col in columns:
-        if col.x <= px < col.x + lane_w:
+        if col.x <= px < col.x + col.w:
             return col
     return None

@@ -261,6 +261,7 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._register_shortcuts()
         self._load_shortcuts()
+        self._load_layout_prefs()
         self._update_title()
         self._on_mode_changed("add")
         self._set_keymode(KEY_MODES[0])
@@ -300,6 +301,7 @@ class MainWindow(QMainWindow):
         self.view.cursor_info.connect(self._show_cursor)
         self.scroll.setWidget(self.view)
         self.scroll.horizontalScrollBar().valueChanged.connect(self.header.set_x_offset)
+        self.header.bgm_width_changed.connect(self._set_bgm_width)
         vbox.addWidget(self.scroll)
         hbox.addWidget(left, 1)
 
@@ -622,7 +624,7 @@ class MainWindow(QMainWindow):
         self.redo_action = self._add(edit_menu, "다시하기", self.view.redo)
         edit_menu.addSeparator()
         self._add(edit_menu, "전체 선택\tCtrl+A", self.view.select_all)
-        self._add(edit_menu, "좌우 반전\t`", self.view.flip_selection)
+        self.flip_action = self._add(edit_menu, "좌우 반전", self.view.flip_selection)
         edit_menu.addSeparator()
         self._add(edit_menu, "설정…", self.open_keybindings)
 
@@ -658,6 +660,7 @@ class MainWindow(QMainWindow):
             "speed_up": (self.speed_up_action, "재생 속도 증가", "]"),
             "undo": (self.undo_action, "되돌리기", "Ctrl+Z"),
             "redo": (self.redo_action, "다시하기", "Ctrl+Y"),
+            "flip": (self.flip_action, "좌우 반전", "`"),
         }
 
     def _load_shortcuts(self) -> None:
@@ -753,6 +756,20 @@ class MainWindow(QMainWindow):
     def _toggle_waveform(self, on: bool) -> None:
         self.view.set_show_waveform(on)
         self.sb_wave.setText("파형 표시 : 켜짐" if on else "파형 표시 : 꺼짐")
+
+    def _set_bgm_width(self, w: int) -> None:
+        self.view.set_bgm_width(w)
+        self.header.set_bgm_width(self.view.bgm_w)   # keep header in sync (clamped)
+        QSettings("SlimBMS", "SlimBMS").setValue("sidebar/bgm_width", self.view.bgm_w)
+
+    def _load_layout_prefs(self) -> None:
+        raw = QSettings("SlimBMS", "SlimBMS").value("sidebar/bgm_width", 64)
+        try:
+            w = int(raw)
+        except (TypeError, ValueError):
+            w = 64
+        self.view.set_bgm_width(w)
+        self.header.set_bgm_width(self.view.bgm_w)
 
     # -- tempo changes ------------------------------------------------------ #
 

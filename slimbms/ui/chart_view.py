@@ -75,7 +75,8 @@ class ChartView(QWidget):
         super().__init__(parent)
         self.project = project
         self.measure_px = 150         # zoom: vertical pixels per measure
-        self.lane_w = L.LANE_W        # zoom: horizontal pixels per lane
+        self.lane_w = L.LANE_W        # zoom: horizontal pixels per key lane
+        self.bgm_w = 64               # BGM lane width (draggable, wider for the waveform)
         self.grid_main = Fraction(1, 16)  # primary (snap) grid, of a measure
         self.grid_sub = Fraction(1, 12)   # secondary reference grid
         self.snap_on = True
@@ -110,7 +111,7 @@ class ChartView(QWidget):
         self._history_timer = QTimer(self)
         self._history_timer.setSingleShot(True)
         self._history_timer.timeout.connect(self._flush_history)
-        self.columns, self.groups, self._width = L.build_layout(self.lane_w)
+        self.columns, self.groups, self._width = L.build_layout(self.lane_w, self.bgm_w)
         # Paint caches, rebuilt on edit (not per paint): overlap flags plus a
         # by-measure index so painting only touches notes near the viewport.
         self._conflicts = set()          # {(km, Note)} overlapping notes
@@ -139,7 +140,13 @@ class ChartView(QWidget):
 
     def set_lane_width(self, lane_w: int) -> None:
         self.lane_w = max(14, min(80, lane_w))
-        self.columns, self.groups, self._width = L.build_layout(self.lane_w)
+        self.columns, self.groups, self._width = L.build_layout(self.lane_w, self.bgm_w)
+        self._apply_size()
+        self.update()
+
+    def set_bgm_width(self, bgm_w: int) -> None:
+        self.bgm_w = max(20, min(400, int(bgm_w)))
+        self.columns, self.groups, self._width = L.build_layout(self.lane_w, self.bgm_w)
         self._apply_size()
         self.update()
 
@@ -270,8 +277,8 @@ class ChartView(QWidget):
         bps = self._wave_bps
         tm = self._wave_tm
         n = len(peaks)
-        cx = self.columns[0].x + self.lane_w / 2.0
-        halfw = self.lane_w * 0.46
+        cx = self.columns[0].x + self.bgm_w / 2.0
+        halfw = self.bgm_w * 0.46
         lo = max(int(self.v_pad), int(self._vis_lo))
         hi = min(int(self.height() - self.v_pad), int(self._vis_hi))
         p.setPen(QPen(C_WAVE, 1))
@@ -420,12 +427,14 @@ class ChartView(QWidget):
             p.drawLine(g.x0, int(top), g.x0, int(bottom))
             p.drawLine(g.x1, int(top), g.x1, int(bottom))
 
-    def _note_rect(self, x: int, absolute: float) -> QRect:
+    def _note_rect(self, x: int, absolute: float, w: Optional[int] = None) -> QRect:
         """A note fills the grid cell above its timing line, sized to the
         primary grid so it fits the grid exactly at any zoom level."""
+        if w is None:
+            w = self.lane_w
         cell_h = max(3, int(round(self.measure_px * float(self.grid_main))))
         y_line = int(round(self.y_for(absolute)))
-        return QRect(x + 1, y_line - cell_h + 1, self.lane_w - 2, cell_h - 1)
+        return QRect(x + 1, y_line - cell_h + 1, w - 2, cell_h - 1)
 
     def _paint_note(self, p: QPainter, x: int, note: Note, color: QColor) -> None:
         head = self._note_rect(x, note.absolute)
@@ -524,7 +533,7 @@ class ChartView(QWidget):
         bgm_x = self.columns[0].x
         for m in range(m_lo, m_hi + 1):
             for n in self._bgm_by_measure.get(m, ()):
-                p.fillRect(self._note_rect(bgm_x, n.absolute), C_NOTE_BGM)
+                p.fillRect(self._note_rect(bgm_x, n.absolute, self.bgm_w), C_NOTE_BGM)
         col_index = {}
         for col in self.columns:
             if col.kind == "key":
@@ -592,7 +601,7 @@ class ChartView(QWidget):
         if self._hover is None or self.mode != "add":
             return
         col, measure, pos = self._hover
-        rect = self._note_rect(col.x, measure + pos)
+        rect = self._note_rect(col.x, measure + pos, col.w)
         p.setPen(QPen(QColor(255, 255, 255, 130), 1))
         p.setBrush(self._hover_color(col))
         p.drawRect(rect)
@@ -601,10 +610,10 @@ class ChartView(QWidget):
     def _col_x(self):
         return {(c.key_mode, c.lane): c.x for c in self.columns if c.kind == "key"}
 
-    def _sel_rect(self, x: int, note: Note) -> QRect:
+    def _sel_rect(self, x: int, note: Note, w: Optional[int] = None) -> QRect:
         """Bounding outline for a note — the head cell for a tap, or the whole
         span from tail cap to head line for a long note."""
-        head = self._note_rect(x, note.absolute)
+        head = self._note_rect(x, note.absolute, w)
         if not note.is_long:
             return head
         y_top = int(round(self.y_for(note.end_absolute))) - head.height()
@@ -621,7 +630,8 @@ class ChartView(QWidget):
             x = bgmx if mode == "bgm" else colx.get((mode, n.lane))
             if x is None:
                 continue
-            p.drawRect(self._sel_rect(x, n))
+            w = self.bgm_w if mode == "bgm" else self.lane_w
+            p.drawRect(self._sel_rect(x, n, w))
 
     def _paint_drag(self, p: QPainter) -> None:
         if self._drag_start is None or self._drag_cur is None:
@@ -643,7 +653,7 @@ class ChartView(QWidget):
         return self.snap_on and not shift
 
     def _resolve(self, event: QMouseEvent):
-        col = L.column_at(self.columns, event.position().x(), self.lane_w)
+        col = L.column_at(self.columns, event.position().x())
         if col is None:
             return None
         measure, pos = self.pos_at(event.position().y(), self._snap_now(event))
@@ -787,7 +797,7 @@ class ChartView(QWidget):
     def _cursor_text(self, event: QMouseEvent) -> str:
         """A readout of the cursor position on the current (snap) grid, prefixed
         by the lane group under it, e.g. ``4K · 마디 3 · 5/16 · 2번``."""
-        col = L.column_at(self.columns, event.position().x(), self.lane_w)
+        col = L.column_at(self.columns, event.position().x())
         if col is None:
             return ""
         measure, pos = self.pos_at(event.position().y(), True)  # always grid-based
@@ -830,7 +840,7 @@ class ChartView(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         self.setFocus()
         x, y = event.position().x(), event.position().y()
-        col = L.column_at(self.columns, x, self.lane_w)
+        col = L.column_at(self.columns, x)
 
         if self.mode == "add":
             resolved = self._resolve(event)
@@ -908,7 +918,7 @@ class ChartView(QWidget):
             found = self._notes_in_rect(x0, y0, x1, y1)
             self.selection = (self.selection | found) if self._drag_shift else found
         else:
-            col = L.column_at(self.columns, x0, self.lane_w)
+            col = L.column_at(self.columns, x0)
             hit = self._note_at_point(col, y0) if col else None
             if hit is not None:
                 if self._drag_shift:
@@ -927,18 +937,18 @@ class ChartView(QWidget):
         bgmx = self.columns[0].x
         found = set()
 
-        def inside(cx, absolute):
-            cxc = cx + self.lane_w / 2
+        def inside(cx, w, absolute):
+            cxc = cx + w / 2
             cyc = self.y_for(absolute)
             return rx0 <= cxc <= rx1 and ry0 <= cyc <= ry1
 
         for mode, chart in self.project.charts.items():
             for n in chart:
                 cx = colx.get((mode, n.lane))
-                if cx is not None and inside(cx, n.absolute):
+                if cx is not None and inside(cx, self.lane_w, n.absolute):
                     found.add((mode, n))
         for n in self.project.bgm:
-            if inside(bgmx, n.absolute):
+            if inside(bgmx, self.bgm_w, n.absolute):
                 found.add(("bgm", n))
         return found
 
@@ -1030,10 +1040,8 @@ class ChartView(QWidget):
             self._move_selection(0, 1)
         elif key == Qt.Key_Down:
             self._move_selection(0, -1)
-        elif key in (Qt.Key_QuoteLeft, Qt.Key_AsciiTilde):
-            self._flip_selection()
         else:
-            super().keyPressEvent(event)
+            super().keyPressEvent(event)  # ` (flip) is a configurable window action
             return
         event.accept()
 
@@ -1192,23 +1200,31 @@ class ChartView(QWidget):
 
 class LaneHeader(QWidget):
     """A thin fixed strip above the canvas showing group labels, kept aligned
-    with the canvas as it scrolls horizontally."""
+    with the canvas as it scrolls horizontally. The BGM|4K divider is a draggable
+    two-line grip that resizes the BGM lane."""
+
+    bgm_width_changed = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.lane_w = L.LANE_W
-        self.columns, self.groups, self._width = L.build_layout(self.lane_w)
+        self.bgm_w = 64
+        self.columns, self.groups, self._width = L.build_layout(self.lane_w, self.bgm_w)
         self.x_offset = 0
         self.selected_km = KEY_MODES[0]
+        self._drag = None            # (press_widget_x, start_bgm_w) while dragging
         self.setFixedHeight(26)
-        # Don't force the full content width onto the layout — the header scrolls
-        # with the canvas (via x_offset) and clips, so a small minimum keeps the
-        # sidebar from being pushed off-screen.
+        self.setMouseTracking(True)
         self.setMinimumWidth(0)
 
     def set_lane_width(self, lane_w: int) -> None:
         self.lane_w = lane_w
-        self.columns, self.groups, self._width = L.build_layout(self.lane_w)
+        self.columns, self.groups, self._width = L.build_layout(self.lane_w, self.bgm_w)
+        self.update()
+
+    def set_bgm_width(self, bgm_w: int) -> None:
+        self.bgm_w = max(20, min(400, int(bgm_w)))
+        self.columns, self.groups, self._width = L.build_layout(self.lane_w, self.bgm_w)
         self.update()
 
     def set_x_offset(self, value: int) -> None:
@@ -1218,6 +1234,31 @@ class LaneHeader(QWidget):
     def set_selected_km(self, key_mode: int) -> None:
         self.selected_km = key_mode
         self.update()
+
+    # -- draggable BGM|4K divider ------------------------------------------- #
+
+    def _grip_x(self) -> int:
+        """Widget-space x of the BGM/4K divider grip."""
+        return self.groups[0].x1 + L.GROUP_GAP // 2 - self.x_offset
+
+    def _on_grip(self, x: float) -> bool:
+        return abs(x - self._grip_x()) <= 6
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton and self._on_grip(event.position().x()):
+            self._drag = (event.position().x(), self.bgm_w)
+            event.accept()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag is not None:
+            px, start_w = self._drag
+            self.bgm_width_changed.emit(int(start_w + (event.position().x() - px)))
+            return
+        self.setCursor(Qt.SplitHCursor if self._on_grip(event.position().x())
+                       else Qt.ArrowCursor)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._drag = None
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
@@ -1237,6 +1278,11 @@ class LaneHeader(QWidget):
             p.drawText(QRect(g.x0, 0, g.x1 - g.x0, self.height()),
                        Qt.AlignCenter, g.label)
         p.setPen(QPen(C_GROUP_SEP, 1))
-        for g in self.groups:
-            p.drawLine(g.x1 + L.GROUP_GAP // 2, 4, g.x1 + L.GROUP_GAP // 2, self.height() - 4)
+        for g in self.groups[2:]:   # 4K|6K, 6K|LOAD (BGM|4K is the grip below)
+            p.drawLine(g.x0 - L.GROUP_GAP // 2, 4, g.x0 - L.GROUP_GAP // 2, self.height() - 4)
+        # BGM|4K divider grip: two accent lines to signal it's draggable.
+        gx = self.groups[0].x1 + L.GROUP_GAP // 2
+        p.setPen(QPen(C_SELECT, 2))
+        p.drawLine(gx - 2, 3, gx - 2, self.height() - 3)
+        p.drawLine(gx + 2, 3, gx + 2, self.height() - 3)
         p.end()
