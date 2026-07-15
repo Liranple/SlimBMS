@@ -1052,8 +1052,8 @@ class ChartView(QWidget):
     # -- edit-mode keyboard operations ------------------------------------- #
 
     def _record_press(self, key: int, lane: int) -> None:
-        """Start recording a note at the playhead in the selected key mode's
-        lane. Held long enough (a key hold), it grows into a long note."""
+        """Drop a single tap note at the playhead in the selected key mode's
+        lane. Holds never become long notes — each press is one tap."""
         if self.playhead is None:
             return
         measure, pos = self.playhead_cell(self.snap_on)
@@ -1061,45 +1061,25 @@ class ChartView(QWidget):
             return
         note = Note(measure, pos, lane)
         self.project.charts[self.selected_km].add(note)
-        self._rec_pending[key] = (self.selected_km, note, measure + pos)
-        self.changed.emit()
-        self.update()
-
-    def _grow_record(self, key: int) -> None:
-        """Extend a held note to the current playhead (called on auto-repeat and
-        on release)."""
-        entry = self._rec_pending.get(key)
-        if entry is None or self.playhead is None:
-            return
-        km, note, start_abs = entry
-        measure, pos = self.playhead_cell(self.snap_on)
-        end_abs = measure + pos
-        if end_abs <= start_abs:
-            return
-        new = self._relen(self.project.charts[km], note, start_abs, end_abs - start_abs)
-        self._rec_pending[key] = (km, new, start_abs)
+        self._rec_pending[key] = note   # held; only used to ignore auto-repeat
         self.changed.emit()
         self.update()
 
     def keyReleaseEvent(self, event) -> None:  # noqa: N802
-        # Finish a held recording note: its final length is the release time.
         if not event.isAutoRepeat() and event.key() in self._rec_pending:
-            self._grow_record(event.key())
             self._rec_pending.pop(event.key(), None)
             event.accept()
             return
         super().keyReleaseEvent(event)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        # Live recording: while playing, mapped keys drop a note at the playhead
-        # in the selected key mode's lane (any edit/add mode). Holding a key grows
-        # it into a long note; auto-repeat presses extend it rather than spamming.
+        # Live recording: while playing, a mapped key drops one tap note at the
+        # playhead in the selected key mode's lane. Auto-repeat (holding) is
+        # ignored, so a hold is still just a single tap.
         if self.live_playing:
             lane = RECORD_KEYS.get(self.selected_km, {}).get(event.key())
             if lane is not None:
-                if event.isAutoRepeat():
-                    self._grow_record(event.key())
-                else:
+                if not event.isAutoRepeat():
                     self._record_press(event.key(), lane)
                 event.accept()
                 return
