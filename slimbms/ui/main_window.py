@@ -318,6 +318,11 @@ class MainWindow(QMainWindow):
 
         # -- Audio ---------------------------------------------------------- #
         outer.addWidget(self._section("음원"))
+        # Playback speed gauge (drag like the zoom controls). 1.00 = normal.
+        outer.addWidget(self._hint("재생 속도"))
+        self.speed = DragValue("×", 0.25, 2.0, 0.05, 1.0)
+        self.speed.changed.connect(self._set_speed)
+        outer.addWidget(self.speed)
         self.sb_bgm_btn = QPushButton("음원 파일 등록")
         self.sb_bgm_btn.clicked.connect(self.choose_bgm)
         outer.addWidget(self.sb_bgm_btn)
@@ -618,6 +623,11 @@ class MainWindow(QMainWindow):
         hbar.setValue(int(self.view._width * center_frac - vp_w / 2))
 
     # -- playback / preview ------------------------------------------------- #
+
+    def _set_speed(self, factor: float) -> None:
+        # Change BGM playback speed; the clock scales too, so the chart scroll
+        # keeps in sync (audio restarts in place if it is currently playing).
+        self.audio.set_speed(factor)
 
     def _ensure_timemap(self) -> TimeMap:
         # Rebuilt on demand so BPM / BGM-offset edits always take effect.
