@@ -105,6 +105,9 @@ def swap_and_restart(new_exe: str) -> None:
     folder = os.path.dirname(current)
     bat = os.path.join(folder, "_slimbms_update.bat")
     # Wait for this exe to be released, replace it, relaunch, then self-delete.
+    # Wait for the old exe to be released, replace it, let the filesystem settle
+    # (avoids a race where the fresh onefile exe is relaunched before its temp
+    # extraction is ready -> "Failed to load Python DLL"), then relaunch.
     script = (
         "@echo off\r\n"
         "timeout /t 1 /nobreak >nul\r\n"
@@ -112,6 +115,7 @@ def swap_and_restart(new_exe: str) -> None:
         f'del "{current}" >nul 2>&1\r\n'
         f'if exist "{current}" (timeout /t 1 /nobreak >nul & goto retry)\r\n'
         f'move /y "{new_exe}" "{current}" >nul\r\n'
+        "timeout /t 3 /nobreak >nul\r\n"
         f'start "" "{current}"\r\n'
         'del "%~f0"\r\n'
     )

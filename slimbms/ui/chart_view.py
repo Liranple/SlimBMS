@@ -9,7 +9,7 @@ from PySide6.QtCore import QRect, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-from ..model import LANE_COLORS, Project
+from ..model import LANE_COLORS, Note, Project, lanes_for
 from . import layout as L
 
 # Colours (dark theme).
@@ -43,8 +43,9 @@ FREE_DIV = 192  # placement resolution when snap is off / Shift held
 class ChartView(QWidget):
     """Paints the note grid for all key modes and edits notes on click."""
 
-    changed = Signal()      # emitted whenever a note is added/removed
+    changed = Signal()       # emitted whenever a note is added/removed
     zoom_step = Signal(int)  # Ctrl+wheel: +1 zoom in, -1 zoom out
+    mode_changed = Signal(str)  # "add" or "edit"
 
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
@@ -56,8 +57,16 @@ class ChartView(QWidget):
         self.v_pad = 24
         self.playhead: Optional[float] = None  # absolute chart pos, or None
         self._hover = None            # (Column, measure, Fraction pos) or None
+        self.mode = "add"             # "add" (F3) or "edit" (F2)
+        self.selection = set()        # {(mode, Note)} ; mode is int or "bgm"
+        self._clipboard = None        # [(mode, Fraction d_abs, lane)]
+        self._drag_start = None       # (x, y) rubber-band anchor
+        self._drag_cur = None
+        self._drag_shift = False
+        self._paste_anchor = 0.0
         self.columns, self.groups, self._width = L.build_layout()
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
         self._apply_size()
 
     # -- geometry ----------------------------------------------------------- #
@@ -72,18 +81,28 @@ class ChartView(QWidget):
         self._apply_size()
         self.update()
 
-    def set_grid_main(self, num: int, den: int) -> None:
-        if num >= 1 and den >= 1:
-            self.grid_main = Fraction(num, den)
+    def set_grid_main(self, cells_per_measure: int) -> None:
+        if cells_per_measure >= 1:
+            self.grid_main = Fraction(1, cells_per_measure)
             self.update()
 
-    def set_grid_sub(self, num: int, den: int) -> None:
-        if num >= 1 and den >= 1:
-            self.grid_sub = Fraction(num, den)
+    def set_grid_sub(self, cells_per_measure: int) -> None:
+        if cells_per_measure >= 1:
+            self.grid_sub = Fraction(1, cells_per_measure)
             self.update()
 
     def set_snap_on(self, on: bool) -> None:
         self.snap_on = on
+        self.update()
+
+    def set_mode(self, mode: str) -> None:
+        if mode not in ("add", "edit"):
+            return
+        self.mode = mode
+        if mode == "add":
+            self.selection = set()
+        self._hover = None
+        self.mode_changed.emit(mode)
         self.update()
 
     def refresh(self) -> None:
@@ -127,7 +146,9 @@ class ChartView(QWidget):
         self._paint_horizontal_lines(p)
         self._paint_separators(p)
         self._paint_notes(p)
+        self._paint_selection(p)
         self._paint_hover(p)
+        self._paint_drag(p)
         self._paint_playhead(p)
         p.end()
 
@@ -250,12 +271,40 @@ class ChartView(QWidget):
         return ghost
 
     def _paint_hover(self, p: QPainter) -> None:
-        if self._hover is None:
+        if self._hover is None or self.mode != "add":
             return
         col, measure, pos = self._hover
         rect = self._note_rect(col.x, measure + pos)
         p.setPen(QPen(QColor(255, 255, 255, 130), 1))
         p.setBrush(self._hover_color(col))
+        p.drawRect(rect)
+        p.setBrush(Qt.NoBrush)
+
+    def _col_x(self):
+        return {(c.key_mode, c.lane): c.x for c in self.columns if c.kind == "key"}
+
+    def _paint_selection(self, p: QPainter) -> None:
+        if not self.selection:
+            return
+        colx = self._col_x()
+        bgmx = self.columns[0].x
+        p.setPen(QPen(QColor("#ffe06a"), 2))
+        p.setBrush(Qt.NoBrush)
+        for mode, n in self.selection:
+            x = bgmx if mode == "bgm" else colx.get((mode, n.lane))
+            if x is None:
+                continue
+            p.drawRect(self._note_rect(x, n.absolute))
+
+    def _paint_drag(self, p: QPainter) -> None:
+        if self._drag_start is None or self._drag_cur is None:
+            return
+        x0, y0 = self._drag_start
+        x1, y1 = self._drag_cur
+        rect = QRect(int(min(x0, x1)), int(min(y0, y1)),
+                     int(abs(x1 - x0)), int(abs(y1 - y0)))
+        p.setPen(QPen(QColor("#ffe06a"), 1, Qt.DashLine))
+        p.setBrush(QColor(255, 224, 106, 30))
         p.drawRect(rect)
         p.setBrush(Qt.NoBrush)
 
@@ -275,11 +324,52 @@ class ChartView(QWidget):
             return None
         return col, measure, pos
 
+    def _note_at_point(self, col, y: float):
+        """Closest note in the column's lane whose cell contains y, or None."""
+        if col.kind == "bgm":
+            pool = [("bgm", n) for n in self.project.bgm]
+        else:
+            pool = [(col.key_mode, n) for n in self.project.charts[col.key_mode]
+                    if n.lane == col.lane]
+        cell_h = max(3.0, self.measure_px * float(self.grid_main))
+        best, best_d = None, None
+        for mode, n in pool:
+            yl = self.y_for(n.absolute)
+            if yl - cell_h - 4 <= y <= yl + 4:
+                d = abs((yl - cell_h / 2) - y)
+                if best_d is None or d < best_d:
+                    best, best_d = (mode, n), d
+        return best
+
+    def _add_note(self, col, measure, pos) -> None:
+        if col.kind == "bgm":
+            self.project.bgm.add(Note(measure, pos, 0))
+        else:
+            self.project.charts[col.key_mode].add(Note(measure, pos, col.lane))
+        self.changed.emit()
+        self.update()
+
+    def _erase_at(self, col, y: float) -> None:
+        hit = self._note_at_point(col, y)
+        if hit is None:
+            return
+        mode, n = hit
+        target = self.project.bgm if mode == "bgm" else self.project.charts[mode]
+        target.discard(n)
+        self.selection.discard(hit)
+        self.changed.emit()
+        self.update()
+
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        hover = self._resolve(event)
-        if hover != self._hover:
-            self._hover = hover
+        if self.mode == "edit" and self._drag_start is not None:
+            self._drag_cur = (event.position().x(), event.position().y())
             self.update()
+            return
+        if self.mode == "add":
+            hover = self._resolve(event)
+            if hover != self._hover:
+                self._hover = hover
+                self.update()
 
     def leaveEvent(self, event) -> None:  # noqa: N802
         if self._hover is not None:
@@ -287,26 +377,77 @@ class ChartView(QWidget):
             self.update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        resolved = self._resolve(event)
-        if resolved is None:
+        self.setFocus()
+        x, y = event.position().x(), event.position().y()
+        col = L.column_at(self.columns, x)
+
+        if self.mode == "add":
+            resolved = self._resolve(event)
+            if resolved is None:
+                return
+            c, measure, pos = resolved
+            if event.button() == Qt.LeftButton:
+                self._add_note(c, measure, pos)          # left = add only
+            elif event.button() == Qt.RightButton:
+                self._erase_at(c, y)                      # right = erase only
             return
-        col, measure, pos = resolved
-        if event.button() == Qt.LeftButton:
-            if col.kind == "bgm":
-                self.project.toggle_bgm(measure, pos)
-            else:
-                self.project.toggle_note(col.key_mode, measure, pos, col.lane)
-            self.changed.emit()
-            self.update()
-        elif event.button() == Qt.RightButton:
-            # Right click always erases.
-            from ..model import Note
-            note = Note(measure, pos, col.lane if col.kind == "key" else 0)
-            target = self.project.bgm if col.kind == "bgm" else self.project.charts[col.key_mode]
-            if note in target:
-                target.discard(note)
-                self.changed.emit()
-                self.update()
+
+        # edit mode
+        if event.button() == Qt.RightButton:
+            if col is not None:
+                self._erase_at(col, y)
+            return
+        if event.button() != Qt.LeftButton:
+            return
+        self._paste_anchor = self.absolute_at(y)
+        self._drag_start = (x, y)
+        self._drag_cur = (x, y)
+        self._drag_shift = bool(event.modifiers() & Qt.ShiftModifier)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self.mode != "edit" or self._drag_start is None:
+            self._drag_start = self._drag_cur = None
+            return
+        x0, y0 = self._drag_start
+        x1, y1 = self._drag_cur
+        moved = abs(x1 - x0) > 4 or abs(y1 - y0) > 4
+        if moved:
+            found = self._notes_in_rect(x0, y0, x1, y1)
+            self.selection = (self.selection | found) if self._drag_shift else found
+        else:
+            col = L.column_at(self.columns, x0)
+            hit = self._note_at_point(col, y0) if col else None
+            if hit is not None:
+                if self._drag_shift:
+                    self.selection ^= {hit}
+                else:
+                    self.selection = {hit}
+            elif not self._drag_shift:
+                self.selection = set()
+        self._drag_start = self._drag_cur = None
+        self.update()
+
+    def _notes_in_rect(self, x0, y0, x1, y1):
+        rx0, rx1 = sorted((x0, x1))
+        ry0, ry1 = sorted((y0, y1))
+        colx = self._col_x()
+        bgmx = self.columns[0].x
+        found = set()
+
+        def inside(cx, absolute):
+            cxc = cx + L.LANE_W / 2
+            cyc = self.y_for(absolute)
+            return rx0 <= cxc <= rx1 and ry0 <= cyc <= ry1
+
+        for mode, chart in self.project.charts.items():
+            for n in chart:
+                cx = colx.get((mode, n.lane))
+                if cx is not None and inside(cx, n.absolute):
+                    found.add((mode, n))
+        for n in self.project.bgm:
+            if inside(bgmx, n.absolute):
+                found.add(("bgm", n))
+        return found
 
     def wheelEvent(self, event) -> None:  # noqa: N802
         if event.modifiers() & Qt.ControlModifier:
@@ -314,6 +455,118 @@ class ChartView(QWidget):
             event.accept()
         else:
             event.ignore()  # let the scroll area scroll
+
+    # -- edit-mode keyboard operations ------------------------------------- #
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if self.mode != "edit":
+            super().keyPressEvent(event)
+            return
+        key, mod = event.key(), event.modifiers()
+        ctrl = bool(mod & Qt.ControlModifier)
+        if key == Qt.Key_Delete:
+            self._delete_selection()
+        elif ctrl and key == Qt.Key_C:
+            self._copy_selection(cut=False)
+        elif ctrl and key == Qt.Key_X:
+            self._copy_selection(cut=True)
+        elif ctrl and key == Qt.Key_V:
+            self._paste()
+        elif key == Qt.Key_Left:
+            self._move_selection(-1, 0)
+        elif key == Qt.Key_Right:
+            self._move_selection(1, 0)
+        elif key == Qt.Key_Up:
+            self._move_selection(0, 1)
+        elif key == Qt.Key_Down:
+            self._move_selection(0, -1)
+        elif key in (Qt.Key_QuoteLeft, Qt.Key_AsciiTilde):
+            self._flip_selection()
+        else:
+            super().keyPressEvent(event)
+            return
+        event.accept()
+
+    def _target_for(self, mode):
+        return self.project.bgm if mode == "bgm" else self.project.charts[mode]
+
+    def _delete_selection(self) -> None:
+        if not self.selection:
+            return
+        for mode, n in self.selection:
+            self._target_for(mode).discard(n)
+        self.selection = set()
+        self.changed.emit()
+        self.update()
+
+    def _move_selection(self, d_lane: int, d_cells: int) -> None:
+        if not self.selection:
+            return
+        step = self.grid_main
+        new_sel = set()
+        for mode, n in self.selection:
+            self._target_for(mode).discard(n)
+        for mode, n in self.selection:
+            new_abs = n.absolute + d_cells * step
+            new_abs = max(Fraction(0), min(Fraction(self.project.measures) - step, new_abs))
+            measure = int(new_abs)
+            pos = new_abs - measure
+            if mode == "bgm":
+                lane = 0
+            else:
+                lane = min(max(n.lane + d_lane, 0), lanes_for(mode) - 1)
+            moved = Note(measure, pos, lane)
+            self._target_for(mode).add(moved)
+            new_sel.add((mode, moved))
+        self.selection = new_sel
+        self.changed.emit()
+        self.update()
+
+    def _flip_selection(self) -> None:
+        if not self.selection:
+            return
+        new_sel = set()
+        for mode, n in self.selection:
+            self._target_for(mode).discard(n)
+        for mode, n in self.selection:
+            if mode == "bgm":
+                flipped = n
+            else:
+                lane = lanes_for(mode) - 1 - n.lane
+                flipped = Note(n.measure, n.pos, lane)
+            self._target_for(mode).add(flipped)
+            new_sel.add((mode, flipped))
+        self.selection = new_sel
+        self.changed.emit()
+        self.update()
+
+    def _copy_selection(self, cut: bool) -> None:
+        if not self.selection:
+            return
+        anchor = min(n.absolute for _mode, n in self.selection)
+        self._clipboard = [(mode, n.absolute - anchor, n.lane)
+                           for mode, n in self.selection]
+        if cut:
+            self._delete_selection()
+
+    def _paste(self) -> None:
+        if not self._clipboard:
+            return
+        anchor = Fraction(self._paste_anchor).limit_denominator(192)
+        new_sel = set()
+        for mode, d_abs, lane in self._clipboard:
+            new_abs = anchor + d_abs
+            if new_abs < 0 or new_abs >= self.project.measures:
+                continue
+            measure = int(new_abs)
+            pos = new_abs - measure
+            note = Note(measure, pos, lane)
+            self._target_for(mode).add(note)
+            new_sel.add((mode, note))
+        if new_sel:
+            self.selection = new_sel
+            self.changed.emit()
+            self.update()
 
 
 class LaneHeader(QWidget):
@@ -325,7 +578,10 @@ class LaneHeader(QWidget):
         self.columns, self.groups, self._width = L.build_layout()
         self.x_offset = 0
         self.setFixedHeight(26)
-        self.setMinimumWidth(self._width)
+        # Don't force the full content width onto the layout — the header scrolls
+        # with the canvas (via x_offset) and clips, so a small minimum keeps the
+        # sidebar from being pushed off-screen.
+        self.setMinimumWidth(0)
 
     def set_x_offset(self, value: int) -> None:
         self.x_offset = value

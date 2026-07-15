@@ -86,6 +86,7 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_menu()
         self._update_title()
+        self._on_mode_changed("add")
 
         # Silent update check shortly after launch.
         QTimer.singleShot(1500, lambda: self.check_for_updates(manual=False))
@@ -110,6 +111,7 @@ class MainWindow(QMainWindow):
         self.view = ChartView(self.project)
         self.view.changed.connect(self._on_changed)
         self.view.zoom_step.connect(self._zoom_step)
+        self.view.mode_changed.connect(self._on_mode_changed)
         self.scroll.setWidget(self.view)
         self.scroll.horizontalScrollBar().valueChanged.connect(self.header.set_x_offset)
         vbox.addWidget(self.scroll)
@@ -164,11 +166,9 @@ class MainWindow(QMainWindow):
         outer.addWidget(self._hline())
 
         # Grid settings: two grids, each entered as num/den of a measure.
-        outer.addWidget(QLabel("격자 (마디를 분수로 분할)"))
-        self.sb_g1_num, self.sb_g1_den = self._grid_row(outer, "A (스냅)",
-                                                        1, 16, self._apply_grids)
-        self.sb_g2_num, self.sb_g2_den = self._grid_row(outer, "B (참고)",
-                                                        1, 12, self._apply_grids)
+        outer.addWidget(QLabel("격자 (한 마디를 몇 칸으로)"))
+        self.sb_g1 = self._grid_row(outer, "A (스냅)", 16, self._apply_grids)
+        self.sb_g2 = self._grid_row(outer, "B (참고)", 12, self._apply_grids)
 
         self.sb_snap = QPushButton("격자 스냅: 켜짐")
         self.sb_snap.setCheckable(True)
@@ -195,27 +195,21 @@ class MainWindow(QMainWindow):
         line.setFrameShadow(QFrame.Sunken)
         return line
 
-    def _grid_row(self, outer, label, num, den, cb):
+    def _grid_row(self, outer, label, cells, cb):
         row = QHBoxLayout()
         lbl = QLabel(label)
         lbl.setFixedWidth(78)
         row.addWidget(lbl)
         n = QSpinBox()
-        n.setRange(1, 64)
-        n.setValue(num)
-        n.setFixedWidth(48)
-        d = QSpinBox()
-        d.setRange(1, 192)
-        d.setValue(den)
-        d.setFixedWidth(56)
+        n.setRange(1, 192)
+        n.setValue(cells)
+        n.setFixedWidth(64)
         n.valueChanged.connect(cb)
-        d.valueChanged.connect(cb)
         row.addWidget(n)
-        row.addWidget(QLabel("/"))
-        row.addWidget(d)
+        row.addWidget(QLabel("칸/마디"))
         row.addStretch(1)
         outer.addLayout(row)
-        return n, d
+        return n
 
     def _build_toolbar(self) -> None:
         tb = QToolBar("도구")
@@ -268,6 +262,19 @@ class MainWindow(QMainWindow):
         zoom_in.triggered.connect(lambda: self._zoom_step(1))
         tb.addAction(zoom_in)
         tb.addWidget(QLabel(" (Ctrl+휠) "))
+
+        tb.addSeparator()
+        self.add_mode_action = QAction("추가(F3)", self)
+        self.add_mode_action.setCheckable(True)
+        self.add_mode_action.setChecked(True)
+        self.add_mode_action.setShortcut(Qt.Key_F3)
+        self.add_mode_action.triggered.connect(lambda: self._set_mode("add"))
+        tb.addAction(self.add_mode_action)
+        self.edit_mode_action = QAction("편집(F2)", self)
+        self.edit_mode_action.setCheckable(True)
+        self.edit_mode_action.setShortcut(Qt.Key_F2)
+        self.edit_mode_action.triggered.connect(lambda: self._set_mode("edit"))
+        tb.addAction(self.edit_mode_action)
 
         tb.addSeparator()
         tb.addWidget(QLabel(" 저장할 키 "))
@@ -355,12 +362,25 @@ class MainWindow(QMainWindow):
         self._on_changed()
 
     def _apply_grids(self) -> None:
-        self.view.set_grid_main(self.sb_g1_num.value(), self.sb_g1_den.value())
-        self.view.set_grid_sub(self.sb_g2_num.value(), self.sb_g2_den.value())
+        self.view.set_grid_main(self.sb_g1.value())
+        self.view.set_grid_sub(self.sb_g2.value())
 
     def _toggle_snap(self, on: bool) -> None:
         self.view.set_snap_on(on)
         self.sb_snap.setText("격자 스냅: 켜짐" if on else "격자 스냅: 꺼짐")
+
+    def _set_mode(self, mode: str) -> None:
+        self.view.set_mode(mode)
+
+    def _on_mode_changed(self, mode: str) -> None:
+        self.add_mode_action.setChecked(mode == "add")
+        self.edit_mode_action.setChecked(mode == "edit")
+        if mode == "add":
+            self.statusBar().showMessage(
+                "추가 모드 — 좌클릭: 노트 추가 / 우클릭: 삭제")
+        else:
+            self.statusBar().showMessage(
+                "편집 모드 — 클릭·드래그 선택 · 방향키 이동 · Ctrl+C/X/V · ` 좌우반전 · Delete 삭제")
 
     def _zoom_step(self, direction: int) -> None:
         # Zoom while keeping the chart position at the viewport centre stable.
