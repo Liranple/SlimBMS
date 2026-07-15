@@ -84,10 +84,11 @@ class ChartView(QWidget):
         self.mode = "add"             # "add" (F3) or "edit" (F2)
         self.selection = set()        # {(mode, Note)} ; mode is int or "bgm"
         self._clipboard = None        # [(mode, Fraction d_abs, lane)]
-        self._drag_start = None       # (x, y) rubber-band anchor
+        self._drag_start = None       # (x, y) rubber-band anchor (empty-area drag)
         self._drag_cur = None
         self._drag_shift = False
         self._paste_anchor = 0.0
+        self._move_drag = None        # {origs, px, py, moved} while dragging notes to move them
         self._add_drag = None         # (mode_key, Note, start_abs, Column) while dragging a long note
         self._rec_pending = {}        # key -> (km, Note, start_abs) for keys held during recording
         self.columns, self.groups, self._width = L.build_layout(self.lane_w)
@@ -621,6 +622,40 @@ class ChartView(QWidget):
         self.changed.emit()
         self.update()
 
+    def _apply_move_drag(self, event: QMouseEvent) -> None:
+        """Reposition the dragged selection by the grid-snapped delta from the
+        press point. Always recomputed from the captured originals, so dragging
+        back and forth doesn't accumulate error."""
+        md = self._move_drag
+        dx = event.position().x() - md["px"]
+        dy = md["py"] - event.position().y()      # up (later in time) = positive
+        step = self.grid_main
+        d_lane = int(round(dx / self.lane_w))
+        d_cells = int(round((dy / self.measure_px) / float(step)))
+        if not md["moved"] and d_lane == 0 and d_cells == 0:
+            return
+        d_abs = d_cells * step
+        limit = Fraction(self.project.measures) - step
+        # Remove the currently-placed (possibly already-moved) notes first.
+        for mode, n in self.selection:
+            self._target_for(mode).discard(n)
+        new_sel = set()
+        for mode, orig in md["origs"]:
+            new_abs = max(Fraction(0), min(limit, orig.absolute + d_abs))
+            measure = int(new_abs)
+            pos = new_abs - measure
+            if mode == "bgm":
+                lane = 0
+            else:
+                lane = min(max(orig.lane + d_lane, 0), lanes_for(mode) - 1)
+            moved = Note(measure, pos, lane, orig.length)
+            self._target_for(mode).add(moved)
+            new_sel.add((mode, moved))
+        self.selection = new_sel
+        md["moved"] = True
+        self.changed.emit()
+        self.update()
+
     def _erase_at(self, col, y: float) -> None:
         hit = self._note_at_point(col, y)
         if hit is None:
@@ -650,6 +685,9 @@ class ChartView(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         self.cursor_info.emit(self._cursor_text(event))
+        if self.mode == "edit" and self._move_drag is not None:
+            self._apply_move_drag(event)
+            return
         if self.mode == "edit" and self._drag_start is not None:
             self._drag_cur = (event.position().x(), event.position().y())
             self.update()
@@ -698,13 +736,33 @@ class ChartView(QWidget):
         if event.button() != Qt.LeftButton:
             return
         self._paste_anchor = self.absolute_at(y)
+        self._drag_shift = bool(event.modifiers() & Qt.ShiftModifier)
+        hit = self._note_at_point(col, y) if col is not None else None
+
+        if hit is not None and not self._drag_shift:
+            # Press on a note (no Shift) → drag to move it. Grab the whole
+            # selection if the note is part of it, otherwise just this note.
+            if hit not in self.selection:
+                self.selection = {hit}
+            self._move_drag = {"origs": list(self.selection),
+                               "px": x, "py": y, "moved": False}
+            self.update()
+            return
+        if hit is not None:   # Shift+click a note → toggle it in the selection
+            self.selection ^= {hit}
+            self.update()
+            return
+        # Empty area → rubber-band selection.
         self._drag_start = (x, y)
         self._drag_cur = (x, y)
-        self._drag_shift = bool(event.modifiers() & Qt.ShiftModifier)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if self._add_drag is not None:      # finished dragging out a long note
             self._add_drag = None
+            self.update()
+            return
+        if self._move_drag is not None:     # finished dragging notes to move them
+            self._move_drag = None
             self.update()
             return
         if self.mode != "edit" or self._drag_start is None:

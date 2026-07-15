@@ -186,7 +186,7 @@ class MainWindow(QMainWindow):
         self._play_timer.timeout.connect(self._on_play_tick)
 
         self.setWindowTitle("SlimBMS")
-        self.resize(1000, 900)
+        self.resize(1360, 880)
 
         self._update_manual = False
         self._build_canvas()
@@ -385,18 +385,17 @@ class MainWindow(QMainWindow):
             tb.addAction(act)
         tb.addSeparator()
 
-        # Transport buttons: all one media glyph + a short label, for a
-        # consistent look across the row.
-        start_action = QAction("⏮ 처음", self)
+        # Transport buttons: compact media glyphs only, to keep the row short.
+        start_action = QAction("⏮", self)
         start_action.setShortcut(Qt.Key_Home)
         start_action.triggered.connect(self.go_to_start)
         tb.addAction(start_action)
 
-        back_action = QAction("⏪ 1초", self)
+        back_action = QAction("⏪", self)
         back_action.triggered.connect(lambda: self.seek_seconds(-1.0))
         tb.addAction(back_action)
 
-        self.play_action = QAction("▶ 재생", self)
+        self.play_action = QAction("▶", self)
         self.play_action.setShortcut(Qt.Key_Space)
         self.play_action.triggered.connect(self.toggle_play)
         tb.addAction(self.play_action)
@@ -404,11 +403,11 @@ class MainWindow(QMainWindow):
         if play_btn is not None:
             play_btn.setObjectName("Primary")
 
-        fwd_action = QAction("⏩ 1초", self)
+        fwd_action = QAction("⏩", self)
         fwd_action.triggered.connect(lambda: self.seek_seconds(1.0))
         tb.addAction(fwd_action)
 
-        stop_action = QAction("⏹ 정지", self)
+        stop_action = QAction("⏹", self)
         stop_action.triggered.connect(self.stop_play)
         tb.addAction(stop_action)
 
@@ -426,13 +425,13 @@ class MainWindow(QMainWindow):
             self.addAction(act)
 
         tb.addSeparator()
-        self.add_mode_action = QAction("추가(F3)", self)
+        self.add_mode_action = QAction("추가", self)
         self.add_mode_action.setCheckable(True)
         self.add_mode_action.setChecked(True)
         self.add_mode_action.setShortcut(Qt.Key_F3)
         self.add_mode_action.triggered.connect(lambda: self._set_mode("add"))
         tb.addAction(self.add_mode_action)
-        self.edit_mode_action = QAction("편집(F2)", self)
+        self.edit_mode_action = QAction("편집", self)
         self.edit_mode_action.setCheckable(True)
         self.edit_mode_action.setShortcut(Qt.Key_F2)
         self.edit_mode_action.triggered.connect(lambda: self._set_mode("edit"))
@@ -643,7 +642,7 @@ class MainWindow(QMainWindow):
             self.audio.resume()
         else:
             self.audio.play(self.audio.position())
-        self.play_action.setText("⏸ 일시정지")
+        self.play_action.setText("⏸")
         self._play_timer.start()
         self.view.set_live(True)
         self.view.setFocus()   # so recording keys reach the canvas
@@ -651,7 +650,7 @@ class MainWindow(QMainWindow):
     def _pause_play(self) -> None:
         self.audio.pause()
         self._play_timer.stop()
-        self.play_action.setText("▶ 재생")
+        self.play_action.setText("▶")
         self.view.set_live(False)
         self._on_mode_changed(self.view.mode)
         # Keep the playhead visible where we paused so seeking has a reference.
@@ -660,7 +659,7 @@ class MainWindow(QMainWindow):
     def stop_play(self) -> None:
         self.audio.stop()
         self._play_timer.stop()
-        self.play_action.setText("▶ 재생")
+        self.play_action.setText("▶")
         self._preview_active = False
         self.view.set_live(False)
         self._on_mode_changed(self.view.mode)
