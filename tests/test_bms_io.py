@@ -111,6 +111,56 @@ def test_import_channels_map_to_import_lanes():
     assert not p.charts[6], "nothing should land in the 6K chart on import"
 
 
+def test_long_note_exports_on_ln_channel():
+    # A 4K long note in lane 0 (channel 11 -> LN channel 51) spanning half a
+    # measure emits a head at its start and a tail at its end on channel 51.
+    p = Project(title="LN", bpm=120, measures=4)
+    p.charts[4].add(Note(0, Fraction(1, 4), 0, Fraction(1, 2)))  # head 1/4, tail 3/4
+    text = bms_io.export_bms(p, 4)
+    assert "#LNTYPE 1" in text
+    ln = [line for line in text.splitlines() if line.startswith("#00051:")]
+    assert ln, "long note should use LN channel 51"
+    # Head at 1/4 and tail at 3/4 -> slots 1 and 3 of a length-4 data string.
+    data = ln[0].split(":", 1)[1]
+    assert data == "00010001", f"unexpected LN data {data!r}"
+
+
+def test_long_note_spanning_measures_pairs_back():
+    # A long note crossing a measure boundary round-trips through export+import
+    # (head/tail paired by time order) with its duration intact.
+    p = Project(title="LN2", bpm=120, measures=8)
+    p.charts[6].add(Note(1, Fraction(1, 2), 2, Fraction(3, 4)))  # ends in measure 2
+    text = bms_io.export_bms(p, 6)
+    back = bms_io.parse_bms(text)
+    longs = [n for n in back.charts[IMPORT_MODE] if n.is_long]
+    assert len(longs) == 1, "exactly one long note should be reconstructed"
+    n = longs[0]
+    assert n.absolute == Fraction(3, 2) and n.length == Fraction(3, 4)
+
+
+def test_slbms_roundtrip_preserves_length():
+    p = Project(title="Hold", bpm=130, measures=4)
+    p.charts[5].add(Note(0, Fraction(0), 1, Fraction(1, 3)))  # long
+    p.charts[5].add(Note(1, Fraction(1, 4), 2))              # tap
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "p.slbms")
+        bms_io.save_project(p, path)
+        back = bms_io.load_project(path)
+    assert back.charts[5] == p.charts[5], "length must survive the JSON round-trip"
+
+
+def test_slbms_v1_without_length_still_loads():
+    # Old files store 4-field note rows (no length) — they must load as taps.
+    data = {
+        "version": 1, "title": "Old", "bpm": 120, "measures": 4,
+        "bgm": [[0, 0, 1, 0]],
+        "charts": {"4": [[0, 1, 4, 2]]},
+    }
+    p = bms_io.project_from_dict(data)
+    (n,) = p.charts[4]
+    assert n.length == Fraction(0) and n.lane == 2
+
+
 if __name__ == "__main__":
     import traceback
 

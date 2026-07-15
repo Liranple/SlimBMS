@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._update_title()
         self._on_mode_changed("add")
+        self._on_keymode_changed(self.keymode_combo.currentIndex())
 
         # Silent update check shortly after launch.
         QTimer.singleShot(1500, lambda: self.check_for_updates(manual=False))
@@ -128,18 +129,27 @@ class MainWindow(QMainWindow):
 
     def _build_sidebar(self) -> QWidget:
         panel = QWidget()
-        panel.setFixedWidth(292)
+        panel.setObjectName("Sidebar")
+        panel.setFixedWidth(300)
         outer = QVBoxLayout(panel)
-        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setContentsMargins(16, 14, 16, 14)
+        outer.setSpacing(10)
 
+        # -- Song info ------------------------------------------------------ #
+        outer.addWidget(self._section("곡 정보"))
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(8)
+        form.setContentsMargins(0, 0, 0, 0)
 
         self.sb_title = QLineEdit()
+        self.sb_title.setPlaceholderText("곡 제목")
         self.sb_title.textEdited.connect(lambda t: self._set_meta("title", t))
         form.addRow("제목", self.sb_title)
 
         self.sb_artist = QLineEdit()
+        self.sb_artist.setPlaceholderText("아티스트")
         self.sb_artist.textEdited.connect(lambda t: self._set_meta("artist", t))
         form.addRow("아티스트", self.sb_artist)
 
@@ -161,14 +171,16 @@ class MainWindow(QMainWindow):
 
         outer.addWidget(self._hline())
 
-        # Grid: two plain number boxes. The LEFT box is the snap basis (cells
-        # per measure that notes land on); the RIGHT box is a reference grid.
+        # -- Grid ----------------------------------------------------------- #
+        # Two plain number boxes: the LEFT is the snap basis (cells per measure
+        # that notes land on); the RIGHT is a lighter reference grid.
+        outer.addWidget(self._section("격자"))
+        self.sb_g1 = self._grid_box(16, self._apply_grids)   # snap basis
+        self.sb_g2 = self._grid_box(4, self._apply_grids)    # reference
         grow = QHBoxLayout()
-        grow.addWidget(QLabel("격자"))
-        self.sb_g1 = self._grid_box(16, self._apply_grids)   # left: snap basis
-        self.sb_g2 = self._grid_box(4, self._apply_grids)    # right: reference
-        grow.addWidget(self.sb_g1)
-        grow.addWidget(self.sb_g2)
+        grow.setSpacing(12)
+        grow.addWidget(self._labeled("스냅 격자", self.sb_g1))
+        grow.addWidget(self._labeled("보조 격자", self.sb_g2))
         grow.addStretch(1)
         outer.addLayout(grow)
 
@@ -177,24 +189,50 @@ class MainWindow(QMainWindow):
         self.sb_snap.setChecked(True)
         self.sb_snap.toggled.connect(self._toggle_snap)
         outer.addWidget(self.sb_snap)
-        outer.addWidget(QLabel("Shift를 누르면 격자 무시하고 자유 배치"))
+        outer.addWidget(self._hint("Shift를 누르면 격자를 무시하고 자유 배치"))
 
         outer.addWidget(self._hline())
 
+        # -- Audio ---------------------------------------------------------- #
+        outer.addWidget(self._section("오디오"))
         self.sb_bgm_btn = QPushButton("BGM 오디오 등록…")
         self.sb_bgm_btn.clicked.connect(self.choose_bgm)
         outer.addWidget(self.sb_bgm_btn)
         self.sb_bgm_label = QLabel("(없음)")
+        self.sb_bgm_label.setObjectName("Hint")
         self.sb_bgm_label.setWordWrap(True)
         outer.addWidget(self.sb_bgm_label)
 
         outer.addStretch(1)
         return panel
 
+    def _section(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("Section")
+        return label
+
+    def _hint(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("Hint")
+        label.setWordWrap(True)
+        return label
+
+    def _labeled(self, caption: str, widget: QWidget) -> QWidget:
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(3)
+        cap = QLabel(caption)
+        cap.setObjectName("Hint")
+        col.addWidget(cap)
+        col.addWidget(widget)
+        return box
+
     def _hline(self) -> QFrame:
         line = QFrame()
+        line.setObjectName("HLine")
         line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)
+        line.setFixedHeight(1)
         return line
 
     def _grid_box(self, cells, cb):
@@ -227,6 +265,9 @@ class MainWindow(QMainWindow):
         self.play_action.setShortcut(Qt.Key_Space)
         self.play_action.triggered.connect(self.toggle_play)
         tb.addAction(self.play_action)
+        play_btn = tb.widgetForAction(self.play_action)
+        if play_btn is not None:
+            play_btn.setObjectName("Primary")
 
         fwd_action = QAction("+ 1초", self)
         fwd_action.setToolTip("1초 앞으로 (+)")
@@ -273,10 +314,11 @@ class MainWindow(QMainWindow):
         tb.addAction(self.edit_mode_action)
 
         tb.addSeparator()
-        tb.addWidget(QLabel(" 저장할 키 "))
+        tb.addWidget(QLabel(" 선택한 키 "))
         self.keymode_combo = QComboBox()
         for km in KEY_MODES:
             self.keymode_combo.addItem(f"{km}K")
+        self.keymode_combo.currentIndexChanged.connect(self._on_keymode_changed)
         tb.addWidget(self.keymode_combo)
         export_action = QAction("이 키로 .bms 저장", self)
         export_action.triggered.connect(self.export_bms)
@@ -357,7 +399,7 @@ class MainWindow(QMainWindow):
         highest = 0
         for chart in self.project.charts.values():
             for n in chart:
-                highest = max(highest, n.measure)
+                highest = max(highest, int(n.end_absolute))
         for n in self.project.bgm:
             highest = max(highest, n.measure)
         need = highest + 4  # keep a few empty measures above for placing notes
@@ -389,12 +431,17 @@ class MainWindow(QMainWindow):
     def _set_mode(self, mode: str) -> None:
         self.view.set_mode(mode)
 
+    def _on_keymode_changed(self, index: int) -> None:
+        km = KEY_MODES[index]
+        self.view.set_selected_km(km)
+        self.header.set_selected_km(km)
+
     def _on_mode_changed(self, mode: str) -> None:
         self.add_mode_action.setChecked(mode == "add")
         self.edit_mode_action.setChecked(mode == "edit")
         if mode == "add":
             self.statusBar().showMessage(
-                "추가 모드 — 좌클릭: 노트 추가 / 우클릭: 삭제")
+                "추가 모드 — 좌클릭: 노트 추가 · 좌클릭 후 위/아래 드래그: 롱노트 · 우클릭: 삭제")
         else:
             self.statusBar().showMessage(
                 "편집 모드 — 클릭·드래그 선택 · 방향키 이동 · Ctrl+C/X/V · ` 좌우반전 · Delete 삭제")
@@ -431,11 +478,19 @@ class MainWindow(QMainWindow):
         self.audio.play(self.audio.position())
         self.play_action.setText("⏸ 일시정지")
         self._play_timer.start()
+        self.view.set_live(True)
+        self.view.setFocus()   # so recording keys reach the canvas
+        km = self.view.selected_km
+        keys = {4: "Q W 8 9", 5: "Q W E/7 8 9", 6: "Q W E 7 8 9"}.get(km, "")
+        self.statusBar().showMessage(
+            f"재생 중 — {km}K 녹음 키: {keys} · 누르면 노트, 꾹 누르면 롱노트로 기록됩니다")
 
     def _pause_play(self) -> None:
         self.audio.pause()
         self._play_timer.stop()
         self.play_action.setText("▶ 재생")
+        self.view.set_live(False)
+        self._on_mode_changed(self.view.mode)
         # Keep the playhead visible where we paused so seeking has a reference.
         self.view.set_playhead(self._current_chart_pos())
 
@@ -444,6 +499,8 @@ class MainWindow(QMainWindow):
         self._play_timer.stop()
         self.play_action.setText("▶ 재생")
         self._preview_active = False
+        self.view.set_live(False)
+        self._on_mode_changed(self.view.mode)
         self.view.set_playhead(None)
 
     def go_to_start(self) -> None:

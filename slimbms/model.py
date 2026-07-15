@@ -75,11 +75,22 @@ class Note:
     measure: int
     pos: Fraction
     lane: int  # 0-based lane within its key mode; 0 for BGM objects
+    length: Fraction = Fraction(0)  # hold duration in measures; 0 = tap note
 
     @property
     def absolute(self) -> Fraction:
         """Position measured in whole measures from the song start."""
         return self.measure + self.pos
+
+    @property
+    def is_long(self) -> bool:
+        """True for a long (hold) note — one with a non-zero duration."""
+        return self.length > 0
+
+    @property
+    def end_absolute(self) -> Fraction:
+        """Absolute position of the note's end (== ``absolute`` for taps)."""
+        return self.absolute + self.length
 
 
 # --------------------------------------------------------------------------- #

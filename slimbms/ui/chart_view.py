@@ -9,7 +9,14 @@ from PySide6.QtCore import QRect, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-from ..model import LANE_COLORS, Note, Project, lanes_for
+from ..model import (
+    DISPLAY_LABELS,
+    KEY_MODES,
+    LANE_COLORS,
+    Note,
+    Project,
+    lanes_for,
+)
 from . import layout as L
 
 # Colours (dark theme).
@@ -39,6 +46,19 @@ LANE_TINT = {
 
 FREE_DIV = 192  # placement resolution when snap is off / Shift held
 
+C_SELECT = QColor("#6fd0ff")            # accent for the selected key mode
+C_SELECT_TINT = QColor(111, 208, 255, 20)  # faint fill over its lanes
+
+# Live-recording keys, per key mode: {Qt key -> lane index}. Left hand Q/W/E,
+# right hand numpad(or top-row) 7/8/9, mapped left-to-right across the lanes.
+# 5K shares its middle lane between E and 7. Top-row and numpad digits both
+# arrive as Key_7/8/9 (NumLock on), so both work.
+RECORD_KEYS = {
+    4: {Qt.Key_Q: 0, Qt.Key_W: 1, Qt.Key_8: 2, Qt.Key_9: 3},
+    5: {Qt.Key_Q: 0, Qt.Key_W: 1, Qt.Key_E: 2, Qt.Key_7: 2, Qt.Key_8: 3, Qt.Key_9: 4},
+    6: {Qt.Key_Q: 0, Qt.Key_W: 1, Qt.Key_E: 2, Qt.Key_7: 3, Qt.Key_8: 4, Qt.Key_9: 5},
+}
+
 
 class ChartView(QWidget):
     """Paints the note grid for all key modes and edits notes on click."""
@@ -56,6 +76,8 @@ class ChartView(QWidget):
         self.snap_on = True
         self.v_pad = 24
         self.playhead: Optional[float] = None  # absolute chart pos, or None
+        self.live_playing = False     # True while the preview is actively playing
+        self.selected_km = KEY_MODES[0]  # key mode being recorded / highlighted
         self._hover = None            # (Column, measure, Fraction pos) or None
         self.mode = "add"             # "add" (F3) or "edit" (F2)
         self.selection = set()        # {(mode, Note)} ; mode is int or "bgm"
@@ -64,6 +86,8 @@ class ChartView(QWidget):
         self._drag_cur = None
         self._drag_shift = False
         self._paste_anchor = 0.0
+        self._add_drag = None         # (mode_key, Note, start_abs, Column) while dragging a long note
+        self._rec_pending = {}        # key -> (km, Note, start_abs) for keys held during recording
         self.columns, self.groups, self._width = L.build_layout()
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -93,6 +117,20 @@ class ChartView(QWidget):
 
     def set_snap_on(self, on: bool) -> None:
         self.snap_on = on
+        self.update()
+
+    def set_live(self, on: bool) -> None:
+        """Toggle live tap-along: while on, a left click in add mode drops a
+        note at the current playhead time (in the clicked lane) instead of at
+        the cursor's vertical position."""
+        self.live_playing = on
+        if not on:
+            self._rec_pending.clear()  # stop growing any held-key long notes
+        self.update()
+
+    def set_selected_km(self, key_mode: int) -> None:
+        """The key mode notes are recorded into and that is highlighted."""
+        self.selected_km = key_mode
         self.update()
 
     def set_mode(self, mode: str) -> None:
@@ -137,6 +175,18 @@ class ChartView(QWidget):
             measure += 1
         return measure, pos
 
+    def playhead_cell(self, snap: bool):
+        """Return (measure, Fraction pos) for the current playhead position.
+        When ``snap`` the time is quantised to the *nearest* primary grid line
+        (nearest, not floored, so a tap that lands slightly off-beat still snaps
+        to the intended cell); otherwise it keeps a fine free resolution."""
+        frac = Fraction(max(0.0, self.playhead or 0.0)).limit_denominator(FREE_DIV)
+        if snap:
+            step = self.grid_main
+            frac = step * round(frac / step)
+        measure = int(frac)
+        return measure, frac - measure
+
     # -- painting ----------------------------------------------------------- #
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -145,6 +195,7 @@ class ChartView(QWidget):
         self._paint_lane_backgrounds(p)
         self._paint_horizontal_lines(p)
         self._paint_separators(p)
+        self._paint_selected_group(p)
         self._paint_notes(p)
         self._paint_selection(p)
         self._paint_hover(p)
@@ -219,6 +270,28 @@ class ChartView(QWidget):
                            Qt.AlignRight | Qt.AlignVCenter, str(m))
                 p.setPen(QPen(C_MEASURE, 1))
 
+    def _selected_group_span(self):
+        xs = [c.x for c in self.columns
+              if c.kind == "key" and c.key_mode == self.selected_km]
+        if not xs:
+            return None
+        return min(xs), max(xs) + L.LANE_W
+
+    def _paint_selected_group(self, p: QPainter) -> None:
+        """Gently highlight the selected key mode's lanes: a faint accent tint
+        plus thin accent edges, kept subtle so it doesn't fight the notes."""
+        span = self._selected_group_span()
+        if span is None:
+            return
+        x0, x1 = span
+        top = int(self.v_pad)
+        bottom = int(self.height() - self.v_pad)
+        p.fillRect(QRect(x0, top, x1 - x0, bottom - top), C_SELECT_TINT)
+        p.setPen(QPen(C_SELECT, 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawLine(x0, top, x0, bottom)
+        p.drawLine(x1, top, x1, bottom)
+
     def _paint_separators(self, p: QPainter) -> None:
         top = self.v_pad
         bottom = self.height() - self.v_pad
@@ -239,6 +312,21 @@ class ChartView(QWidget):
         y_line = int(round(self.y_for(absolute)))
         return QRect(x + 1, y_line - cell_h + 1, L.LANE_W - 2, cell_h - 1)
 
+    def _ln_body_rect(self, x: int, note: Note) -> QRect:
+        """The connecting bar of a long note, spanning head to tail. Kept
+        narrower than the lane so the head/tail caps read as its ends."""
+        y_top = int(round(self.y_for(note.end_absolute)))
+        y_bot = int(round(self.y_for(note.absolute)))
+        return QRect(x + 5, y_top, L.LANE_W - 10, max(1, y_bot - y_top))
+
+    def _paint_note(self, p: QPainter, x: int, note: Note, color: QColor) -> None:
+        if note.is_long:
+            body = QColor(color)
+            body.setAlpha(110)
+            p.fillRect(self._ln_body_rect(x, note), body)
+            p.fillRect(self._note_rect(x, note.end_absolute), color)  # tail cap
+        p.fillRect(self._note_rect(x, note.absolute), color)          # head cap
+
     def _note_color(self, key_mode: int, lane: int) -> QColor:
         code = LANE_COLORS.get(key_mode, "")
         if lane < len(code):
@@ -247,7 +335,7 @@ class ChartView(QWidget):
 
     def _paint_notes(self, p: QPainter) -> None:
         p.setPen(Qt.NoPen)
-        # BGM objects.
+        # BGM objects (always taps).
         bgm_col = self.columns[0]
         for n in self.project.bgm:
             p.fillRect(self._note_rect(bgm_col.x, n.absolute), C_NOTE_BGM)
@@ -261,7 +349,7 @@ class ChartView(QWidget):
                 x = col_index.get((km, n.lane))
                 if x is None:
                     continue
-                p.fillRect(self._note_rect(x, n.absolute), self._note_color(km, n.lane))
+                self._paint_note(p, x, n, self._note_color(km, n.lane))
 
     def _hover_color(self, col) -> QColor:
         if col.kind == "bgm":
@@ -285,6 +373,15 @@ class ChartView(QWidget):
     def _col_x(self):
         return {(c.key_mode, c.lane): c.x for c in self.columns if c.kind == "key"}
 
+    def _sel_rect(self, x: int, note: Note) -> QRect:
+        """Bounding outline for a note — the head cell for a tap, or the whole
+        span from tail cap to head line for a long note."""
+        head = self._note_rect(x, note.absolute)
+        if not note.is_long:
+            return head
+        y_top = int(round(self.y_for(note.end_absolute))) - head.height()
+        return QRect(head.x(), y_top, head.width(), head.bottom() - y_top)
+
     def _paint_selection(self, p: QPainter) -> None:
         if not self.selection:
             return
@@ -296,7 +393,7 @@ class ChartView(QWidget):
             x = bgmx if mode == "bgm" else colx.get((mode, n.lane))
             if x is None:
                 continue
-            p.drawRect(self._note_rect(x, n.absolute))
+            p.drawRect(self._sel_rect(x, n))
 
     def _paint_drag(self, p: QPainter) -> None:
         if self._drag_start is None or self._drag_cur is None:
@@ -336,18 +433,49 @@ class ChartView(QWidget):
         cell_h = max(3.0, self.measure_px * float(self.grid_main))
         best, best_d = None, None
         for mode, n in pool:
-            yl = self.y_for(n.absolute)
-            if yl - cell_h - 4 <= y <= yl + 4:
-                d = abs((yl - cell_h / 2) - y)
+            y_head = self.y_for(n.absolute)
+            # A long note is grabbable anywhere along its body; a tap only in
+            # its single cell.
+            top = self.y_for(n.end_absolute) - cell_h if n.is_long else y_head - cell_h
+            if top - 4 <= y <= y_head + 4:
+                d = abs((top + y_head) / 2 - y)
                 if best_d is None or d < best_d:
                     best, best_d = (mode, n), d
         return best
 
-    def _add_note(self, col, measure, pos) -> None:
+    def _add_note(self, col, measure, pos) -> Note:
         if col.kind == "bgm":
-            self.project.bgm.add(Note(measure, pos, 0))
+            note = Note(measure, pos, 0)
+            self.project.bgm.add(note)
         else:
-            self.project.charts[col.key_mode].add(Note(measure, pos, col.lane))
+            note = Note(measure, pos, col.lane)
+            self.project.charts[col.key_mode].add(note)
+        self.changed.emit()
+        self.update()
+        return note
+
+    def _relen(self, target, note: Note, lo: Fraction, length: Fraction) -> Note:
+        """Replace ``note`` in ``target`` with one starting at absolute ``lo``
+        with the given ``length`` (0 collapses it back to a tap). Returns the
+        new note."""
+        target.discard(note)
+        measure = int(lo)
+        pos = lo - measure
+        new = Note(measure, pos, note.lane, length) if length > 0 \
+            else Note(measure, pos, note.lane)
+        target.add(new)
+        return new
+
+    def _grow_add_drag(self, event: QMouseEvent) -> None:
+        mode_key, note, start_abs, col = self._add_drag
+        if col.kind == "bgm":
+            return  # BGM markers stay taps
+        measure, pos = self.pos_at(event.position().y(), self._snap_now(event))
+        end_abs = measure + pos
+        lo = min(start_abs, end_abs)
+        hi = min(max(start_abs, end_abs), Fraction(self.project.measures))
+        new = self._relen(self.project.charts[mode_key], note, lo, hi - lo)
+        self._add_drag = (mode_key, new, start_abs, col)
         self.changed.emit()
         self.update()
 
@@ -368,6 +496,9 @@ class ChartView(QWidget):
             self.update()
             return
         if self.mode == "add":
+            if self._add_drag is not None:
+                self._grow_add_drag(event)   # dragging out a long note
+                return
             hover = self._resolve(event)
             if hover != self._hover:
                 self._hover = hover
@@ -389,9 +520,14 @@ class ChartView(QWidget):
                 return
             c, measure, pos = resolved
             if event.button() == Qt.LeftButton:
-                self._add_note(c, measure, pos)          # left = add only
+                # Left click drops a note; dragging up/down before release turns
+                # it into a long note spanning the dragged range.
+                note = self._add_note(c, measure, pos)
+                mode_key = "bgm" if c.kind == "bgm" else c.key_mode
+                self._add_drag = (mode_key, note, measure + pos, c)
+                self._hover = None
             elif event.button() == Qt.RightButton:
-                self._erase_at(c, y)                      # right = erase only
+                self._erase_at(c, y)                      # right = erase (whole note)
             return
 
         # edit mode
@@ -407,6 +543,10 @@ class ChartView(QWidget):
         self._drag_shift = bool(event.modifiers() & Qt.ShiftModifier)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._add_drag is not None:      # finished dragging out a long note
+            self._add_drag = None
+            self.update()
+            return
         if self.mode != "edit" or self._drag_start is None:
             self._drag_start = self._drag_cur = None
             return
@@ -460,7 +600,58 @@ class ChartView(QWidget):
 
     # -- edit-mode keyboard operations ------------------------------------- #
 
+    def _record_press(self, key: int, lane: int) -> None:
+        """Start recording a note at the playhead in the selected key mode's
+        lane. Held long enough (a key hold), it grows into a long note."""
+        if self.playhead is None:
+            return
+        measure, pos = self.playhead_cell(self.snap_on)
+        if measure < 0 or measure >= self.project.measures:
+            return
+        note = Note(measure, pos, lane)
+        self.project.charts[self.selected_km].add(note)
+        self._rec_pending[key] = (self.selected_km, note, measure + pos)
+        self.changed.emit()
+        self.update()
+
+    def _grow_record(self, key: int) -> None:
+        """Extend a held note to the current playhead (called on auto-repeat and
+        on release)."""
+        entry = self._rec_pending.get(key)
+        if entry is None or self.playhead is None:
+            return
+        km, note, start_abs = entry
+        measure, pos = self.playhead_cell(self.snap_on)
+        end_abs = measure + pos
+        if end_abs <= start_abs:
+            return
+        new = self._relen(self.project.charts[km], note, start_abs, end_abs - start_abs)
+        self._rec_pending[key] = (km, new, start_abs)
+        self.changed.emit()
+        self.update()
+
+    def keyReleaseEvent(self, event) -> None:  # noqa: N802
+        # Finish a held recording note: its final length is the release time.
+        if not event.isAutoRepeat() and event.key() in self._rec_pending:
+            self._grow_record(event.key())
+            self._rec_pending.pop(event.key(), None)
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
+
     def keyPressEvent(self, event) -> None:  # noqa: N802
+        # Live recording: while playing, mapped keys drop a note at the playhead
+        # in the selected key mode's lane (any edit/add mode). Holding a key grows
+        # it into a long note; auto-repeat presses extend it rather than spamming.
+        if self.live_playing:
+            lane = RECORD_KEYS.get(self.selected_km, {}).get(event.key())
+            if lane is not None:
+                if event.isAutoRepeat():
+                    self._grow_record(event.key())
+                else:
+                    self._record_press(event.key(), lane)
+                event.accept()
+                return
         if self.mode != "edit":
             super().keyPressEvent(event)
             return
@@ -517,7 +708,7 @@ class ChartView(QWidget):
                 lane = 0
             else:
                 lane = min(max(n.lane + d_lane, 0), lanes_for(mode) - 1)
-            moved = Note(measure, pos, lane)
+            moved = Note(measure, pos, lane, n.length)
             self._target_for(mode).add(moved)
             new_sel.add((mode, moved))
         self.selection = new_sel
@@ -535,7 +726,7 @@ class ChartView(QWidget):
                 flipped = n
             else:
                 lane = lanes_for(mode) - 1 - n.lane
-                flipped = Note(n.measure, n.pos, lane)
+                flipped = Note(n.measure, n.pos, lane, n.length)
             self._target_for(mode).add(flipped)
             new_sel.add((mode, flipped))
         self.selection = new_sel
@@ -546,7 +737,7 @@ class ChartView(QWidget):
         if not self.selection:
             return
         anchor = min(n.absolute for _mode, n in self.selection)
-        self._clipboard = [(mode, n.absolute - anchor, n.lane)
+        self._clipboard = [(mode, n.absolute - anchor, n.lane, n.length)
                            for mode, n in self.selection]
         if cut:
             self._delete_selection()
@@ -556,13 +747,13 @@ class ChartView(QWidget):
             return
         anchor = Fraction(self._paste_anchor).limit_denominator(192)
         new_sel = set()
-        for mode, d_abs, lane in self._clipboard:
+        for mode, d_abs, lane, length in self._clipboard:
             new_abs = anchor + d_abs
             if new_abs < 0 or new_abs >= self.project.measures:
                 continue
             measure = int(new_abs)
             pos = new_abs - measure
-            note = Note(measure, pos, lane)
+            note = Note(measure, pos, lane, length)
             self._target_for(mode).add(note)
             new_sel.add((mode, note))
         if new_sel:
@@ -579,6 +770,7 @@ class LaneHeader(QWidget):
         super().__init__(parent)
         self.columns, self.groups, self._width = L.build_layout()
         self.x_offset = 0
+        self.selected_km = KEY_MODES[0]
         self.setFixedHeight(26)
         # Don't force the full content width onto the layout — the header scrolls
         # with the canvas (via x_offset) and clips, so a small minimum keeps the
@@ -589,6 +781,10 @@ class LaneHeader(QWidget):
         self.x_offset = value
         self.update()
 
+    def set_selected_km(self, key_mode: int) -> None:
+        self.selected_km = key_mode
+        self.update()
+
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
         p.fillRect(self.rect(), C_GROUP_BG_A)
@@ -597,8 +793,13 @@ class LaneHeader(QWidget):
         font.setBold(True)
         font.setPointSize(9)
         p.setFont(font)
-        p.setPen(QPen(C_TEXT, 1))
+        sel_label = DISPLAY_LABELS.get(self.selected_km)
         for g in self.groups:
+            selected = g.label == sel_label
+            if selected:
+                p.fillRect(QRect(g.x0, 0, g.x1 - g.x0, self.height()), C_SELECT_TINT)
+                p.fillRect(QRect(g.x0, self.height() - 2, g.x1 - g.x0, 2), C_SELECT)
+            p.setPen(QPen(C_SELECT if selected else C_TEXT, 1))
             p.drawText(QRect(g.x0, 0, g.x1 - g.x0, self.height()),
                        Qt.AlignCenter, g.label)
         p.setPen(QPen(C_GROUP_SEP, 1))

@@ -31,6 +31,11 @@ from .model import (
 # BMS export (one key mode -> .bms text)
 # --------------------------------------------------------------------------- #
 
+def _ln_channel(channel: str) -> str:
+    """The long-note channel paired with a normal 1x object channel (11 -> 51)."""
+    return "5" + channel[1:]
+
+
 def _format_bpm(bpm: float) -> str:
     # Write an integer without a trailing ".0", otherwise keep the decimals.
     if float(bpm).is_integer():
@@ -77,6 +82,7 @@ def export_bms(project: Project, key_mode: int) -> str:
     lines.append(f"#BPM {_format_bpm(project.bpm)}")
     lines.append(f"#PLAYLEVEL {int(project.level)}")
     lines.append("#RANK 3")
+    lines.append("#LNTYPE 1")  # long notes use paired head/tail on the 5x channel
     lines.append(f"#SLIMBMS_KEYMODE {key_mode}")  # hint for lossless re-import
     lines.append("")
     if project.bgm_file:
@@ -95,13 +101,30 @@ def export_bms(project: Project, key_mode: int) -> str:
         if data:
             rows.append(f"#{measure:03d}{BGM_CHANNEL}:{data}")
 
-        # Key objects grouped by lane -> channel.
+        # Key objects grouped by lane -> channel. Tap notes go on the normal
+        # channel (1x); long notes emit a head object at their start and a tail
+        # object at their end, both on the paired LN channel (5x).
         chart = project.charts[key_mode]
         for lane, channel in enumerate(channels):
-            objs = [n for n in chart if n.measure == measure and n.lane == lane]
-            data = _measure_data(objs)
+            lane_notes = [n for n in chart if n.lane == lane]
+            taps = [n for n in lane_notes if not n.is_long and n.measure == measure]
+            data = _measure_data(taps)
             if data:
                 rows.append(f"#{measure:03d}{channel}:{data}")
+
+            endpoints: List[Note] = []
+            for n in lane_notes:
+                if not n.is_long:
+                    continue
+                if n.measure == measure:
+                    endpoints.append(Note(measure, n.pos, lane))
+                end_abs = n.end_absolute
+                end_measure = int(end_abs)
+                if end_measure == measure:
+                    endpoints.append(Note(measure, end_abs - end_measure, lane))
+            data = _measure_data(endpoints)
+            if data:
+                rows.append(f"#{measure:03d}{_ln_channel(channel)}:{data}")
 
         lines.extend(rows)
 
@@ -133,8 +156,10 @@ def parse_bms(text: str) -> Project:
     object and metadata are read normally.
     """
     project = Project()
-    # Channel -> import lane index (A1~A8).
+    # Channel -> import lane index (A1~A8), for both tap (1x) and LN (5x) channels.
     import_lane = {ch: lane for lane, ch in enumerate(KEY_CHANNELS[IMPORT_MODE])}
+    ln_lane = {_ln_channel(ch): lane
+               for lane, ch in enumerate(KEY_CHANNELS[IMPORT_MODE])}
 
     # measure -> channel -> list of positions
     body: Dict[int, Dict[str, List[Fraction]]] = {}
@@ -173,6 +198,9 @@ def parse_bms(text: str) -> Project:
             max_measure = max(max_measure, measure)
 
     project.measures = max(16, max_measure + 1)
+    # LN endpoints, gathered across all measures per channel so head/tail pairs
+    # can be matched in time order.
+    ln_points: Dict[str, List[Fraction]] = {}
     for measure, chans in body.items():
         for channel, positions in chans.items():
             if channel == BGM_CHANNEL:
@@ -182,6 +210,21 @@ def parse_bms(text: str) -> Project:
                 lane = import_lane[channel]
                 for pos in positions:
                     project.charts[IMPORT_MODE].add(Note(measure, pos, lane))
+            elif channel in ln_lane:
+                ln_points.setdefault(channel, []).extend(measure + pos for pos in positions)
+
+    # Pair consecutive LN endpoints into hold notes (head, tail, head, tail…).
+    for channel, points in ln_points.items():
+        lane = ln_lane[channel]
+        points.sort()
+        for i in range(0, len(points) - 1, 2):
+            start, end = points[i], points[i + 1]
+            m = int(start)
+            project.charts[IMPORT_MODE].add(Note(m, start - m, lane, end - start))
+        if len(points) % 2:  # dangling head with no tail -> a plain tap
+            start = points[-1]
+            m = int(start)
+            project.charts[IMPORT_MODE].add(Note(m, start - m, lane))
     return project
 
 
@@ -191,13 +234,20 @@ def parse_bms(text: str) -> Project:
 
 def project_to_dict(project: Project) -> dict:
     def notes(objs) -> List[list]:
-        return sorted(
-            [[n.measure, n.pos.numerator, n.pos.denominator, n.lane] for n in objs]
-        )
+        # [measure, pos_num, pos_den, lane, len_num, len_den]. The two length
+        # fields are omitted for taps to keep files compact and are treated as 0
+        # when absent (so v1 files without them still load).
+        rows = []
+        for n in objs:
+            row = [n.measure, n.pos.numerator, n.pos.denominator, n.lane]
+            if n.is_long:
+                row += [n.length.numerator, n.length.denominator]
+            rows.append(row)
+        return sorted(rows)
 
     return {
         "format": "slimbms",
-        "version": 1,
+        "version": 2,
         "title": project.title,
         "artist": project.artist,
         "genre": project.genre,
@@ -220,13 +270,18 @@ def project_from_dict(data: dict) -> Project:
         bgm_file=data.get("bgm_file", ""),
         measures=int(data.get("measures", 16)),
     )
-    for m, num, den, lane in data.get("bgm", []):
-        project.bgm.add(Note(m, Fraction(num, den), lane))
+    def to_note(row) -> Note:
+        m, num, den, lane = row[0], row[1], row[2], row[3]
+        length = Fraction(row[4], row[5]) if len(row) >= 6 else Fraction(0)
+        return Note(m, Fraction(num, den), lane, length)
+
+    for row in data.get("bgm", []):
+        project.bgm.add(to_note(row))
     for km_str, objs in data.get("charts", {}).items():
         km = int(km_str)
         if km in ALL_MODES:
-            for m, num, den, lane in objs:
-                project.charts[km].add(Note(m, Fraction(num, den), lane))
+            for row in objs:
+                project.charts[km].add(to_note(row))
     return project
 
 
