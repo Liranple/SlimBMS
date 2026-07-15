@@ -1071,6 +1071,10 @@ class MainWindow(QMainWindow):
             return
         try:
             bms_io.save_project(self.project, self._recovery_path())
+            # Remember the audio path too — the .slbms only stores the filename,
+            # so recovery needs the full path to reload the BGM.
+            QSettings("SlimBMS", "SlimBMS").setValue(
+                "recovery/bgm_path", self._bgm_path or "")
         except Exception:  # noqa: BLE001 — best effort, never interrupt editing
             pass
 
@@ -1079,6 +1083,7 @@ class MainWindow(QMainWindow):
             os.remove(self._recovery_path())
         except OSError:
             pass
+        QSettings("SlimBMS", "SlimBMS").remove("recovery/bgm_path")
 
     def _check_recovery(self) -> None:
         path = self._recovery_path()
@@ -1100,6 +1105,11 @@ class MainWindow(QMainWindow):
             self.project_path = None
             self._dirty = True
             self._reload_view()
+            # Reload the BGM audio from the remembered path (the project only
+            # kept the filename).
+            bgm_path = QSettings("SlimBMS", "SlimBMS").value("recovery/bgm_path", "")
+            if bgm_path and os.path.exists(bgm_path):
+                self._apply_bgm(bgm_path)
         else:
             self._clear_recovery()
 
@@ -1257,24 +1267,27 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self._remember_dir("bgm", path)
-        self.project.bgm_file = os.path.basename(path)
-        self._bgm_path = path
-        loaded = self.audio.load(path)
-        self.sb_bgm_label.setText(self.project.bgm_file)
-        # Waveform for the editor background.
-        peaks, bps = self.audio.waveform_peaks()
-        self.view.set_waveform(peaks, bps)
-        # Pre-build the stretch for the current speed so the first play at a
-        # non-1.0x speed doesn't stall.
-        if loaded and not self.audio.stretch_ready():
-            worker = self._bgm_speed_worker = _Worker(self.audio.build_stretch)
-            worker.start()
+        loaded = self._apply_bgm(path)
         self._on_changed()
         note = "" if loaded else "\n\n(이 환경에서는 오디오 장치가 없어 재생 미리보기는 실제 PC에서만 됩니다.)"
         QMessageBox.information(
             self, "BGM 설정됨",
             f"BGM 파일명: {self.project.bgm_file}\n"
             "이 파일을 .bms와 같은 폴더에 두어야 게임에서 재생됩니다." + note)
+
+    def _apply_bgm(self, path: str) -> bool:
+        """Load an audio file as the BGM: register it, decode, build the
+        waveform and pre-stretch. Used by the file dialog and by recovery."""
+        self.project.bgm_file = os.path.basename(path)
+        self._bgm_path = path
+        loaded = self.audio.load(path)
+        self.sb_bgm_label.setText(self.project.bgm_file)
+        peaks, bps = self.audio.waveform_peaks()
+        self.view.set_waveform(peaks, bps)
+        if loaded and not self.audio.stretch_ready():
+            worker = self._bgm_speed_worker = _Worker(self.audio.build_stretch)
+            worker.start()
+        return loaded
 
     # -- updates ------------------------------------------------------------ #
 
