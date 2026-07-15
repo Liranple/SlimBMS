@@ -17,6 +17,7 @@ from ..model import (
     Project,
     lanes_for,
 )
+from ..timing import TimeMap
 from . import layout as L
 
 # Colours (dark theme).
@@ -36,6 +37,7 @@ C_NOTE_BGM = QColor("#ffb347")
 C_PLAYHEAD = QColor("#ff4d6d")
 C_CONFLICT = QColor("#ff4d4d")   # notes that overlap another note in the same lane
 C_BPM = QColor("#c792ea")        # mid-song tempo-change markers
+C_WAVE = QColor(120, 180, 255, 70)  # BGM waveform in the BGM lane
 
 # Note colour by lane code.
 NOTE_COLOR = {"W": C_NOTE_WHITE, "B": C_NOTE_BLUE, "G": C_NOTE_GREY}
@@ -80,6 +82,10 @@ class ChartView(QWidget):
         self.v_pad = 24
         self.playhead: Optional[float] = None  # absolute chart pos, or None
         self.record_offset_measures = 0.0  # recording latency comp, in measures
+        self._wave = None             # normalised peak envelope (numpy array)
+        self._wave_bps = 200          # buckets per second in _wave
+        self._wave_tm = None          # cached TimeMap for chart<->audio mapping
+        self.show_waveform = True
         self.live_playing = False     # True while the preview is actively playing
         self.selected_km = KEY_MODES[0]  # key mode being recorded / highlighted
         self._hover = None            # (Column, measure, Fraction pos) or None
@@ -149,6 +155,16 @@ class ChartView(QWidget):
 
     def set_snap_on(self, on: bool) -> None:
         self.snap_on = on
+        self.update()
+
+    def set_waveform(self, peaks, buckets_per_sec: int) -> None:
+        self._wave = peaks
+        self._wave_bps = buckets_per_sec
+        self._wave_tm = TimeMap(self.project)
+        self.update()
+
+    def set_show_waveform(self, on: bool) -> None:
+        self.show_waveform = on
         self.update()
 
     def set_live(self, on: bool) -> None:
@@ -232,6 +248,7 @@ class ChartView(QWidget):
         self._vis_hi = clip.bottom() + 2
         p.fillRect(clip, C_BG)
         self._paint_lane_backgrounds(p)
+        self._paint_waveform(p)
         self._paint_horizontal_lines(p)
         self._paint_separators(p)
         self._paint_selected_group(p)
@@ -242,6 +259,29 @@ class ChartView(QWidget):
         self._paint_bpm_changes(p)
         self._paint_playhead(p)
         p.end()
+
+    def _paint_waveform(self, p: QPainter) -> None:
+        """Draw the BGM's amplitude envelope down the BGM lane, mapped through
+        the time map so it lines up with the notes even across tempo changes."""
+        if (self._wave is None or not self.show_waveform
+                or self._wave_tm is None or len(self._wave) == 0):
+            return
+        peaks = self._wave
+        bps = self._wave_bps
+        tm = self._wave_tm
+        n = len(peaks)
+        cx = self.columns[0].x + self.lane_w / 2.0
+        halfw = self.lane_w * 0.46
+        lo = max(int(self.v_pad), int(self._vis_lo))
+        hi = min(int(self.height() - self.v_pad), int(self._vis_hi))
+        p.setPen(QPen(C_WAVE, 1))
+        for y in range(lo, hi, 2):
+            absolute = self.absolute_at(y)
+            idx = int(tm.audio_seconds(absolute) * bps)
+            if 0 <= idx < n:
+                a = float(peaks[idx]) * halfw
+                if a > 0.5:
+                    p.drawLine(int(cx - a), y, int(cx + a), y)
 
     def _paint_bpm_changes(self, p: QPainter) -> None:
         if not self.project.bpm_changes:
@@ -458,6 +498,8 @@ class ChartView(QWidget):
         self._taps_by_measure = taps_by_measure
         self._longs = longs
         self._bgm_by_measure = bgm_by_measure
+        if self._wave is not None:
+            self._wave_tm = TimeMap(self.project)   # BPM/BGM may have changed
 
     def _visible(self, note: Note) -> bool:
         """True when any part of the note falls inside the exposed paint strip."""
@@ -970,7 +1012,9 @@ class ChartView(QWidget):
             return
         key, mod = event.key(), event.modifiers()
         ctrl = bool(mod & Qt.ControlModifier)
-        if key == Qt.Key_Delete:
+        if ctrl and key == Qt.Key_A:
+            self.select_all()
+        elif key == Qt.Key_Delete:
             self._delete_selection()
         elif ctrl and key == Qt.Key_C:
             self._copy_selection(cut=False)
@@ -1080,6 +1124,24 @@ class ChartView(QWidget):
         self.selection = new_sel
         self.changed.emit()
         self.update()
+
+    def select_all(self) -> None:
+        """Select every note (all key modes + BGM); switches to edit mode so the
+        selection is visible."""
+        self.set_mode("edit")
+        sel = set()
+        for km, chart in self.project.charts.items():
+            for n in chart:
+                sel.add((km, n))
+        for n in self.project.bgm:
+            sel.add(("bgm", n))
+        self.selection = sel
+        self.update()
+
+    def flip_selection(self) -> None:
+        """Public entry: mirror the selected notes left↔right within each mode's
+        lanes (lane 1↔N, 2↔N-1, …)."""
+        self._flip_selection()
 
     def _flip_selection(self) -> None:
         if not self.selection:

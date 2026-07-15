@@ -7,7 +7,18 @@ from typing import Optional
 
 import threading
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSettings, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QRect,
+    QSettings,
+    QSize,
+    QStandardPaths,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QDialog,
@@ -34,7 +45,7 @@ from PySide6.QtWidgets import (
 
 from .. import __version__, bms_io, updater
 from ..audio import AudioPlayer
-from ..model import KEY_MODES, Project
+from ..model import IMPORT_MODE, KEY_MODES, Project
 from ..timing import TimeMap
 from .appicon import build_icon
 from .chart_view import ChartView, LaneHeader
@@ -254,7 +265,14 @@ class MainWindow(QMainWindow):
         self._on_mode_changed("add")
         self._set_keymode(KEY_MODES[0])
 
-        # Silent update check shortly after launch.
+        # Autosave a recovery copy while there are unsaved changes.
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(45000)
+        self._autosave_timer.timeout.connect(self._autosave)
+        self._autosave_timer.start()
+
+        # Offer to recover an unsaved session, then check for updates.
+        QTimer.singleShot(300, self._check_recovery)
         QTimer.singleShot(1500, lambda: self.check_for_updates(manual=False))
 
     # -- construction ------------------------------------------------------- #
@@ -410,6 +428,11 @@ class MainWindow(QMainWindow):
         self.sb_bgm_label.setObjectName("Hint")
         self.sb_bgm_label.setWordWrap(True)
         audio.add_widget(self.sb_bgm_label)
+        self.sb_wave = QPushButton("파형 표시 : 켜짐")
+        self.sb_wave.setCheckable(True)
+        self.sb_wave.setChecked(True)
+        self.sb_wave.toggled.connect(self._toggle_waveform)
+        audio.add_widget(self.sb_wave)
         outer.addWidget(audio)
 
         # -- Recording ------------------------------------------------------ #
@@ -598,10 +621,15 @@ class MainWindow(QMainWindow):
         self.undo_action = self._add(edit_menu, "되돌리기", self.view.undo)
         self.redo_action = self._add(edit_menu, "다시하기", self.view.redo)
         edit_menu.addSeparator()
+        self._add(edit_menu, "전체 선택\tCtrl+A", self.view.select_all)
+        self._add(edit_menu, "좌우 반전\t`", self.view.flip_selection)
+        edit_menu.addSeparator()
         self._add(edit_menu, "설정…", self.open_keybindings)
 
         song_menu = m.addMenu("곡")
         self._add(song_menu, "음원 파일 등록", self.choose_bgm)
+        song_menu.addSeparator()
+        self._add(song_menu, "검증 / 통계", self.show_stats)
 
         help_menu = m.addMenu("도움말")
         self._add(help_menu, "업데이트 확인", lambda: self.check_for_updates(manual=True))
@@ -721,6 +749,10 @@ class MainWindow(QMainWindow):
     def _toggle_snap(self, on: bool) -> None:
         self.view.set_snap_on(on)
         self.sb_snap.setText("격자 스냅 : 켜짐" if on else "격자 스냅 : 꺼짐")
+
+    def _toggle_waveform(self, on: bool) -> None:
+        self.view.set_show_waveform(on)
+        self.sb_wave.setText("파형 표시 : 켜짐" if on else "파형 표시 : 꺼짐")
 
     # -- tempo changes ------------------------------------------------------ #
 
@@ -981,6 +1013,95 @@ class MainWindow(QMainWindow):
         target = max(vbar.minimum(), min(vbar.maximum(), target))
         vbar.setValue(target)
 
+    # -- autosave / recovery ------------------------------------------------ #
+
+    def _recovery_path(self) -> str:
+        base = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
+        if not base:
+            import tempfile
+            base = os.path.join(tempfile.gettempdir(), "SlimBMS")
+        os.makedirs(base, exist_ok=True)
+        return os.path.join(base, "recovery.slbms")
+
+    def _autosave(self) -> None:
+        if not self._dirty:
+            return
+        try:
+            bms_io.save_project(self.project, self._recovery_path())
+        except Exception:  # noqa: BLE001 — best effort, never interrupt editing
+            pass
+
+    def _clear_recovery(self) -> None:
+        try:
+            os.remove(self._recovery_path())
+        except OSError:
+            pass
+
+    def _check_recovery(self) -> None:
+        path = self._recovery_path()
+        if not os.path.exists(path):
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("작업 복구")
+        box.setText("저장하지 않고 종료된 작업이 있습니다.\n복구할까요?")
+        restore = box.addButton("복구", QMessageBox.AcceptRole)
+        box.addButton("무시", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is restore:
+            try:
+                self.project = bms_io.load_project(path)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.critical(self, "복구 실패", str(exc))
+                return
+            self.project_path = None
+            self._dirty = True
+            self._reload_view()
+        else:
+            self._clear_recovery()
+
+    # -- validation / stats ------------------------------------------------- #
+
+    def _validate(self):
+        p = self.project
+        warns = []
+        if not p.bgm:
+            warns.append("BGM 시작 마커가 없음 (내보내기 타이밍 기준 없음)")
+        if self.view._conflicts:
+            warns.append(f"겹치는 노트 {len(self.view._conflicts)}개 (빨간 표시)")
+        if p.bgm:
+            t0 = min(n.absolute for n in p.bgm)
+            early = sum(1 for km in KEY_MODES for n in p.charts[km] if n.absolute < t0)
+            if early:
+                warns.append(f"BGM 시작보다 앞선 노트 {early}개")
+        for km in KEY_MODES:
+            if not p.charts[km]:
+                warns.append(f"{km}K 채보가 비어 있음")
+        return warns
+
+    def show_stats(self) -> None:
+        p = self.project
+        lines = [
+            f"마디 수 : {p.measures}",
+            f"기본 BPM : {p.bpm:g}    BPM 변화 : {len(p.bpm_changes)}개",
+            f"BGM 마커 : {len(p.bgm)}개",
+            "",
+        ]
+        for km in KEY_MODES:
+            chart = p.charts[km]
+            longs = sum(1 for n in chart if n.is_long)
+            lines.append(f"{km}K — 노트 {len(chart)}개 (롱 {longs})")
+        if p.charts[IMPORT_MODE]:
+            lines.append(f"LOAD — 노트 {len(p.charts[IMPORT_MODE])}개")
+        lines.append("")
+        warns = self._validate()
+        if warns:
+            lines.append("⚠ 경고")
+            lines += [f"  · {w}" for w in warns]
+        else:
+            lines.append("문제 없음 ✓")
+        QMessageBox.information(self, "검증 / 통계", "\n".join(lines))
+
     # -- file actions ------------------------------------------------------- #
 
     def new_project(self) -> None:
@@ -989,6 +1110,7 @@ class MainWindow(QMainWindow):
         self.project = Project()
         self.project_path = None
         self._dirty = False
+        self._clear_recovery()
         self._reload_view()
 
     def open_project(self) -> None:
@@ -1018,6 +1140,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "저장 실패", str(exc))
             return
         self._dirty = False
+        self._clear_recovery()   # a real save supersedes the recovery copy
         self._update_title()
 
     def save_project_as(self) -> None:
@@ -1093,6 +1216,9 @@ class MainWindow(QMainWindow):
         self._bgm_path = path
         loaded = self.audio.load(path)
         self.sb_bgm_label.setText(self.project.bgm_file)
+        # Waveform for the editor background.
+        peaks, bps = self.audio.waveform_peaks()
+        self.view.set_waveform(peaks, bps)
         # Pre-build the stretch for the current speed so the first play at a
         # non-1.0x speed doesn't stall.
         if loaded and not self.audio.stretch_ready():
@@ -1215,6 +1341,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._confirm_discard():
+            self._clear_recovery()   # clean exit — no crash to recover from
             event.accept()
         else:
             event.ignore()

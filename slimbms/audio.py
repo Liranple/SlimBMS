@@ -143,6 +143,24 @@ class AudioPlayer:
             except Exception:  # noqa: BLE001
                 setattr(self, attr, None)
 
+    def waveform_peaks(self, buckets_per_sec: int = 200):
+        """Down-sampled absolute-peak envelope of the BGM (normalised 0..1) plus
+        the bucket rate, for drawing a waveform. Returns (None, bps) if there is
+        no decoded audio."""
+        if _np is None or not self._chans:
+            return None, buckets_per_sec
+        ch = self._chans
+        mono = ch[0] if len(ch) == 1 else (ch[0] + ch[1]) * 0.5
+        bucket = max(1, self._rate // buckets_per_sec)
+        n = len(mono) // bucket
+        if n == 0:
+            return None, buckets_per_sec
+        peaks = _np.abs(mono[:n * bucket].reshape(n, bucket)).max(axis=1)
+        mx = float(peaks.max())
+        if mx > 0:
+            peaks = peaks / mx
+        return peaks, buckets_per_sec
+
     def play_click(self, accent: bool = False) -> None:
         snd = self._click_accent if accent else self._click
         if snd is None:
