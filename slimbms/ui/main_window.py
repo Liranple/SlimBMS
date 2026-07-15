@@ -262,6 +262,7 @@ class MainWindow(QMainWindow):
         self._register_shortcuts()
         self._load_shortcuts()
         self._load_layout_prefs()
+        self._restore_geometry()   # reuse the last window size/position
         self._update_title()
         self._on_mode_changed("add")
         self._set_keymode(KEY_MODES[0])
@@ -775,6 +776,14 @@ class MainWindow(QMainWindow):
             w = 64
         self.view.set_bgm_width(w)
         self.header.set_bgm_width(self.view.bgm_w)
+
+    def _restore_geometry(self) -> None:
+        geo = QSettings("SlimBMS", "SlimBMS").value("window/geometry")
+        if geo is not None:
+            self.restoreGeometry(geo)   # size + position + maximized state
+
+    def _save_geometry(self) -> None:
+        QSettings("SlimBMS", "SlimBMS").setValue("window/geometry", self.saveGeometry())
 
     # -- tempo changes ------------------------------------------------------ #
 
@@ -1368,6 +1377,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._confirm_discard():
+            self._save_geometry()    # remember the window size/position
             self._clear_recovery()   # clean exit — no crash to recover from
             event.accept()
         else:
