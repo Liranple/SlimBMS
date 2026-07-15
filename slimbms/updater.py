@@ -145,8 +145,11 @@ def swap_and_restart(new_app_dir: str, tmp_root: str) -> None:
         fh.write(script)
 
     creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-    subprocess.Popen(["cmd", "/c", bat], creationflags=creationflags, close_fds=True)
-    # sys.exit() does not reliably terminate the app from inside a Qt slot, which
-    # would leave the exe locked; force-kill so the batch can replace the files.
-    sys.stdout.flush()
-    os._exit(0)
+    try:
+        subprocess.Popen(["cmd", "/c", bat], creationflags=creationflags, close_fds=True)
+    finally:
+        # os._exit MUST run so the exe is unlocked for the batch to replace it.
+        # Do NOT touch sys.stdout here: a windowed (no-console) exe sets it to
+        # None, so flushing it would raise and skip this hard-exit — which was
+        # exactly why the updater kept stalling at "Updating...".
+        os._exit(0)
