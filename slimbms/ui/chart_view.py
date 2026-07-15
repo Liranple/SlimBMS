@@ -91,6 +91,14 @@ class ChartView(QWidget):
         self._add_drag = None         # (mode_key, Note, start_abs, Column) while dragging a long note
         self._rec_pending = {}        # key -> (km, Note, start_abs) for keys held during recording
         self.columns, self.groups, self._width = L.build_layout(self.lane_w)
+        # Paint caches, rebuilt on edit (not per paint): overlap flags plus a
+        # by-measure index so painting only touches notes near the viewport.
+        self._conflicts = set()          # {(km, Note)} overlapping notes
+        self._taps_by_measure = {}       # km -> {measure -> [tap Note]}
+        self._longs = {}                 # km -> [long Note]
+        self._bgm_by_measure = {}        # measure -> [BGM Note]
+        self.changed.connect(self._rebuild_caches)
+        self._rebuild_caches()
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self._apply_size()
@@ -152,6 +160,7 @@ class ChartView(QWidget):
         self.update()
 
     def refresh(self) -> None:
+        self._rebuild_caches()   # project may have been replaced/resized
         self._apply_size()
         self.update()
 
@@ -199,7 +208,12 @@ class ChartView(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
-        p.fillRect(self.rect(), C_BG)
+        # Only the exposed strip needs repainting; cull grid lines and notes
+        # outside it so scrolling a big chart stays smooth.
+        clip = event.rect()
+        self._vis_lo = clip.top() - 2
+        self._vis_hi = clip.bottom() + 2
+        p.fillRect(clip, C_BG)
         self._paint_lane_backgrounds(p)
         self._paint_horizontal_lines(p)
         self._paint_separators(p)
@@ -258,8 +272,12 @@ class ChartView(QWidget):
         # groups (BGM · 4K · 6K · LOAD) stay empty background.
         spans = [(g.x0, g.x1) for g in self.groups]
 
+        lo, hi = self._vis_lo, self._vis_hi
+
         def draw_row(y: float) -> None:
             yi = int(y)
+            if yi < lo or yi > hi:
+                return
             for gx0, gx1 in spans:
                 p.drawLine(gx0, yi, gx1, yi)
 
@@ -278,7 +296,7 @@ class ChartView(QWidget):
             y = self.y_for(m)
             p.setPen(QPen(C_MEASURE, 1))
             draw_row(y)
-            if m < measures:
+            if m < measures and lo <= int(y) <= hi + 16:
                 p.setPen(QPen(C_TEXT, 1))
                 p.drawText(QRect(2, int(y) - 16, L.LEFT_MARGIN - 6, 14),
                            Qt.AlignRight | Qt.AlignVCenter, str(m))
@@ -358,39 +376,89 @@ class ChartView(QWidget):
         return (a.absolute < b.end_absolute and b.absolute < a.end_absolute) \
             or a.absolute == b.absolute
 
-    def _conflicting_notes(self):
-        """Set of ``(key_mode, Note)`` for every note that overlaps another note
-        in the same lane, so they can be flagged. O(n²) per lane, but a lane
-        holds few notes."""
-        bad = set()
+    def _rebuild_caches(self) -> None:
+        """Rebuild paint caches after an edit (or project reload) — NOT per paint.
+        Builds overlap flags and a by-measure tap index (plus a small long-note
+        list) so a large imported chart paints only what's near the viewport and
+        never re-scans every note each frame."""
+        conflicts = set()
+        taps_by_measure = {}
+        longs = {}
         for km, chart in self.project.charts.items():
+            tm = {}
+            lg = []
             by_lane = {}
             for n in chart:
                 by_lane.setdefault(n.lane, []).append(n)
+                if n.is_long:
+                    lg.append(n)
+                else:
+                    tm.setdefault(n.measure, []).append(n)
+            taps_by_measure[km] = tm
+            longs[km] = lg
+            # Overlap flags: sort each lane so the inner scan can break early.
             for notes in by_lane.values():
-                for i in range(len(notes)):
-                    for j in range(i + 1, len(notes)):
-                        if self._overlaps(notes[i], notes[j]):
-                            bad.add((km, notes[i]))
-                            bad.add((km, notes[j]))
-        return bad
+                notes.sort(key=lambda n: n.absolute)
+                for i, a in enumerate(notes):
+                    a_end = a.end_absolute
+                    for b in notes[i + 1:]:
+                        if b.absolute >= a_end and b.absolute != a.absolute:
+                            break   # sorted: nothing further can overlap a
+                        if self._overlaps(a, b):
+                            conflicts.add((km, a))
+                            conflicts.add((km, b))
+        bgm_by_measure = {}
+        for n in self.project.bgm:
+            bgm_by_measure.setdefault(n.measure, []).append(n)
+        self._conflicts = conflicts
+        self._taps_by_measure = taps_by_measure
+        self._longs = longs
+        self._bgm_by_measure = bgm_by_measure
+
+    def _visible(self, note: Note) -> bool:
+        """True when any part of the note falls inside the exposed paint strip."""
+        top = self.y_for(note.end_absolute)     # higher position = smaller y
+        bottom = self.y_for(note.absolute)
+        cell_h = self.measure_px * float(self.grid_main)
+        return bottom >= self._vis_lo and (top - cell_h) <= self._vis_hi
+
+    def _visible_measure_range(self):
+        """Inclusive measure range whose notes can fall in the exposed strip."""
+        measures = self.project.measures
+        abs_top = self.absolute_at(self._vis_lo)    # top of strip = higher pos
+        abs_bot = self.absolute_at(self._vis_hi)
+        m_lo = max(0, int(abs_bot) - 1)
+        m_hi = min(measures - 1, int(abs_top) + 1)
+        return m_lo, m_hi
 
     def _paint_notes(self, p: QPainter) -> None:
         p.setPen(Qt.NoPen)
-        # BGM objects (always taps).
-        bgm_col = self.columns[0]
-        for n in self.project.bgm:
-            p.fillRect(self._note_rect(bgm_col.x, n.absolute), C_NOTE_BGM)
-        # Key notes.
+        m_lo, m_hi = self._visible_measure_range()
+        # BGM objects (always taps) in the visible measures.
+        bgm_x = self.columns[0].x
+        for m in range(m_lo, m_hi + 1):
+            for n in self._bgm_by_measure.get(m, ()):
+                p.fillRect(self._note_rect(bgm_x, n.absolute), C_NOTE_BGM)
         col_index = {}
         for col in self.columns:
             if col.kind == "key":
                 col_index[(col.key_mode, col.lane)] = col.x
-        conflicts = self._conflicting_notes()
-        for km, chart in self.project.charts.items():
-            for n in chart:
+        conflicts = self._conflicts
+        for km in self.project.charts:
+            tm = self._taps_by_measure.get(km, {})
+            for m in range(m_lo, m_hi + 1):
+                for n in tm.get(m, ()):
+                    x = col_index.get((km, n.lane))
+                    if x is None:
+                        continue
+                    self._paint_note(p, x, n, self._note_color(km, n.lane))
+                    if (km, n) in conflicts:
+                        self._paint_conflict(p, x, n)
+            # Long notes are few; check each against the strip precisely so a
+            # hold starting below the viewport still draws where it reaches in.
+            for n in self._longs.get(km, ()):
                 x = col_index.get((km, n.lane))
-                if x is None:
+                if x is None or not self._visible(n):
                     continue
                 self._paint_note(p, x, n, self._note_color(km, n.lane))
                 if (km, n) in conflicts:

@@ -71,17 +71,18 @@ def test_export_only_selected_key_mode():
     assert not any(line.startswith("#00019:") for line in text4.splitlines())
 
 
-def test_bms_import_lands_in_import_lane():
-    # Exporting a key mode then importing routes every note into the dedicated
-    # import lane group. Timing positions and BGM/metadata must be preserved.
+def test_bms_import_lands_in_hinted_key_mode():
+    # Our exports carry a key-mode hint (#SLIMBMS_KEYMODE / #NK), so re-importing
+    # routes notes back into that same key mode's lanes (not the import group),
+    # lining them up with the playfield. Positions and BGM/metadata are kept.
     p = make_project()
     for km in (4, 6):
         text = bms_io.export_bms(p, km)
         back = bms_io.parse_bms(text)
-        assert not back.charts[km], "notes should not land back in the key-mode chart"
-        orig_positions = {(n.measure, n.pos) for n in p.charts[km]}
-        import_positions = {(n.measure, n.pos) for n in back.charts[IMPORT_MODE]}
-        assert import_positions == orig_positions, f"key mode {km} timing mismatch"
+        assert not back.charts[IMPORT_MODE], "hinted import should skip the import group"
+        orig = {(n.measure, n.pos, n.lane) for n in p.charts[km]}
+        got = {(n.measure, n.pos, n.lane) for n in back.charts[km]}
+        assert got == orig, f"key mode {km} note/lane mismatch"
         assert back.bgm == p.bgm
         assert back.title == p.title
         assert back.bpm == p.bpm
@@ -102,14 +103,23 @@ def test_project_json_roundtrip():
         assert back.charts[km] == p.charts[km]
 
 
-def test_import_channels_map_to_import_lanes():
-    # Channels 16/18/19 (which don't fit the 6-lane 6K group) must still load
-    # into the import lane instead of being dropped.
+def test_import_without_hint_maps_to_import_lanes():
+    # An external chart with no key-mode hint loads into the catch-all import
+    # group by channel, so no notes are dropped. Channels 16/18/19 -> lanes 5,6,7.
     lines = ["#TITLE X", "#00016:01", "#00018:01", "#00019:01"]
     p = bms_io.parse_bms("\n".join(lines))
     lanes = {n.lane for n in p.charts[IMPORT_MODE]}
     assert lanes == {5, 6, 7}, f"expected import lanes 5,6,7, got {lanes}"
     assert not p.charts[6], "nothing should land in the 6K chart on import"
+
+
+def test_import_honors_key_mode_command():
+    # A uBMSC #6K command (no SLIMBMS hint) routes notes into the 6K lanes.
+    lines = ["#TITLE X", "#6K", "#00011:01", "#00019:01"]  # 6K channels 11, 19
+    p = bms_io.parse_bms("\n".join(lines))
+    assert not p.charts[IMPORT_MODE]
+    lanes = {n.lane for n in p.charts[6]}
+    assert lanes == {0, 5}, f"expected 6K lanes 0 and 5, got {lanes}"
 
 
 def test_key_mode_channel_mapping():
@@ -141,7 +151,7 @@ def test_long_note_spanning_measures_pairs_back():
     p.charts[6].add(Note(1, Fraction(1, 2), 2, Fraction(3, 4)))  # ends in measure 2
     text = bms_io.export_bms(p, 6)
     back = bms_io.parse_bms(text)
-    longs = [n for n in back.charts[IMPORT_MODE] if n.is_long]
+    longs = [n for n in back.charts[6] if n.is_long]
     assert len(longs) == 1, "exactly one long note should be reconstructed"
     n = longs[0]
     assert n.absolute == Fraction(3, 2) and n.length == Fraction(3, 4)

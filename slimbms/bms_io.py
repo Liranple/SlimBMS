@@ -154,19 +154,18 @@ def _parse_objects(data: str) -> List[Fraction]:
 def parse_bms(text: str) -> Project:
     """Parse a ``.bms`` chart into a :class:`Project`.
 
-    All key objects are loaded into the dedicated import lane group (A1~A8) so
-    nothing is lost regardless of how many channels the source uses; the BGM
-    object and metadata are read normally.
+    When the header names a key mode (our ``#SLIMBMS_KEYMODE`` hint, or a uBMSC
+    ``#4K`` / ``#6K`` command) the notes are loaded straight into that mode's
+    lanes so they line up with the 4K / 6K playfield. Otherwise everything falls
+    back to the dedicated import group (A1~A8) so nothing is lost regardless of
+    how many channels the source uses. BGM and metadata are read normally.
     """
     project = Project()
-    # Channel -> import lane index (A1~A8), for both tap (1x) and LN (5x) channels.
-    import_lane = {ch: lane for lane, ch in enumerate(KEY_CHANNELS[IMPORT_MODE])}
-    ln_lane = {_ln_channel(ch): lane
-               for lane, ch in enumerate(KEY_CHANNELS[IMPORT_MODE])}
 
     # measure -> channel -> list of positions
     body: Dict[int, Dict[str, List[Fraction]]] = {}
     max_measure = 0
+    key_hint: Optional[int] = None
 
     for raw in text.splitlines():
         line = raw.strip()
@@ -186,6 +185,14 @@ def parse_bms(text: str) -> Project:
                 pass
         elif upper.startswith(f"#WAV{BGM_WAV_INDEX}"):
             project.bgm_file = line[len("#WAV") + len(BGM_WAV_INDEX):].strip()
+        elif upper.startswith("#SLIMBMS_KEYMODE"):
+            try:
+                key_hint = int(upper.split()[1])
+            except (IndexError, ValueError):
+                pass
+        elif upper in ("#4K", "#5K", "#6K", "#7K", "#8K", "#9K"):
+            if key_hint is None:                 # SLIMBMS_KEYMODE wins if present
+                key_hint = int(upper[1:-1])
         elif len(line) >= 7 and line[6] == ":" and line[1:6].isalnum():
             # Body line: #XXXYY:data
             try:
@@ -201,6 +208,15 @@ def parse_bms(text: str) -> Project:
             max_measure = max(max_measure, measure)
 
     project.measures = max(16, max_measure + 1)
+
+    # Load into the hinted key mode's lanes when known, else the catch-all
+    # import group. Channel -> lane index for tap (1x) and LN (5x) channels.
+    target = key_hint if key_hint in KEY_CHANNELS else IMPORT_MODE
+    channels = KEY_CHANNELS[target]
+    import_lane = {ch: lane for lane, ch in enumerate(channels)}
+    ln_lane = {_ln_channel(ch): lane for lane, ch in enumerate(channels)}
+    chart = project.charts[target]
+
     # LN endpoints, gathered across all measures per channel so head/tail pairs
     # can be matched in time order.
     ln_points: Dict[str, List[Fraction]] = {}
@@ -212,7 +228,7 @@ def parse_bms(text: str) -> Project:
             elif channel in import_lane:
                 lane = import_lane[channel]
                 for pos in positions:
-                    project.charts[IMPORT_MODE].add(Note(measure, pos, lane))
+                    chart.add(Note(measure, pos, lane))
             elif channel in ln_lane:
                 ln_points.setdefault(channel, []).extend(measure + pos for pos in positions)
 
@@ -223,11 +239,11 @@ def parse_bms(text: str) -> Project:
         for i in range(0, len(points) - 1, 2):
             start, end = points[i], points[i + 1]
             m = int(start)
-            project.charts[IMPORT_MODE].add(Note(m, start - m, lane, end - start))
+            chart.add(Note(m, start - m, lane, end - start))
         if len(points) % 2:  # dangling head with no tail -> a plain tap
             start = points[-1]
             m = int(start)
-            project.charts[IMPORT_MODE].add(Note(m, start - m, lane))
+            chart.add(Note(m, start - m, lane))
     return project
 
 

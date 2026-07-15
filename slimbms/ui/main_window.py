@@ -373,6 +373,18 @@ class MainWindow(QMainWindow):
         tb.setMovable(False)
         self.addToolBar(tb)
 
+        # File actions up front for quick access: open / save / import / export.
+        for label, slot in (
+            ("📂 열기", self.open_project),
+            ("💾 저장", self.save_project),
+            ("📥 가져오기", self.import_bms),
+            ("📤 내보내기", self.export_bms),
+        ):
+            act = QAction(label, self)
+            act.triggered.connect(lambda checked=False, s=slot: s())
+            tb.addAction(act)
+        tb.addSeparator()
+
         # Transport buttons: all one media glyph + a short label, for a
         # consistent look across the row.
         start_action = QAction("⏮ 처음", self)
@@ -427,9 +439,7 @@ class MainWindow(QMainWindow):
         tb.addAction(self.edit_mode_action)
 
         tb.addSeparator()
-        tb.addWidget(QLabel(" 선택한 키 "))
-        # Two-option segmented toggle (4K / 6K) instead of a dropdown; the
-        # checked one is highlighted like the mode buttons.
+        # Two-option segmented toggle (4K / 6K); the checked one is highlighted.
         self._km_actions = {}
         km_group = QActionGroup(self)
         km_group.setExclusive(True)
@@ -440,9 +450,6 @@ class MainWindow(QMainWindow):
             km_group.addAction(act)
             tb.addAction(act)
             self._km_actions[km] = act
-        export_action = QAction("이 키로 .bms 저장", self)
-        export_action.triggered.connect(self.export_bms)
-        tb.addAction(export_action)
 
         # No hover tooltips on any toolbar button: an empty tip just falls back
         # to the button text, so swallow the ToolTip event on each button.
@@ -461,22 +468,22 @@ class MainWindow(QMainWindow):
 
         file_menu = m.addMenu("파일")
         self._add(file_menu, "새로 만들기", self.new_project, QKeySequence.New)
-        self._add(file_menu, "프로젝트 열기…", self.open_project, QKeySequence.Open)
+        self._add(file_menu, "프로젝트 열기", self.open_project, QKeySequence.Open)
         self._add(file_menu, "프로젝트 저장", self.save_project, QKeySequence.Save)
-        self._add(file_menu, "프로젝트 다른 이름으로 저장…", self.save_project_as,
+        self._add(file_menu, "프로젝트 다른 이름으로 저장", self.save_project_as,
                   QKeySequence("Ctrl+Shift+S"))
         file_menu.addSeparator()
-        self._add(file_menu, "BMS 가져오기…", self.import_bms)
-        self._add(file_menu, "선택한 키로 .bms 내보내기…", self.export_bms,
+        self._add(file_menu, "BMS 가져오기", self.import_bms)
+        self._add(file_menu, "선택한 키로 .bms 내보내기", self.export_bms,
                   QKeySequence("Ctrl+E"))
         file_menu.addSeparator()
         self._add(file_menu, "종료", self.close)
 
         song_menu = m.addMenu("곡")
-        self._add(song_menu, "BGM 오디오 선택…", self.choose_bgm)
+        self._add(song_menu, "음원 파일 등록", self.choose_bgm)
 
         help_menu = m.addMenu("도움말")
-        self._add(help_menu, "업데이트 확인…", lambda: self.check_for_updates(manual=True))
+        self._add(help_menu, "업데이트 확인", lambda: self.check_for_updates(manual=True))
         self._add(help_menu, "정보", self.show_about)
 
     def _add(self, menu, text, slot, shortcut=None) -> None:
@@ -767,6 +774,11 @@ class MainWindow(QMainWindow):
         self.project_path = None
         self._dirty = True
         self._reload_view()
+        # Highlight the key mode the notes landed in, so it matches the view.
+        for km in KEY_MODES:
+            if self.project.charts[km]:
+                self._set_keymode(km)
+                break
 
     def export_bms(self) -> None:
         km = self.view.selected_km
