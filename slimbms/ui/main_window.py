@@ -80,7 +80,8 @@ class DragValue(QWidget):
     movement is ignored, so the mouse only needs to travel sideways."""
 
     changed = Signal(float)
-    PX_PER_STEP = 14   # horizontal pixels the mouse travels for one step
+    GROOVE_L = 28   # groove left edge (matches paintEvent)
+    GROOVE_R_PAD = 52  # space reserved on the right for the value text
 
     def __init__(self, icon: str, minimum: float, maximum: float,
                  step: float, value: float, parent=None):
@@ -90,9 +91,8 @@ class DragValue(QWidget):
         self._max = float(maximum)
         self._step = float(step)
         self._value = self._quant(value)
-        self._drag_x = None
-        self._drag_val = self._value
-        self.setCursor(Qt.SizeHorCursor)
+        self._dragging = False
+        self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(30)
         self.setMinimumWidth(160)
 
@@ -117,22 +117,29 @@ class DragValue(QWidget):
 
     # -- interaction -------------------------------------------------------- #
 
+    def _value_at(self, x: float) -> float:
+        """The value the groove maps the widget-x position to (absolute, so the
+        handle follows the mouse)."""
+        gx0 = self.GROOVE_L
+        gx1 = self.width() - self.GROOVE_R_PAD
+        if gx1 <= gx0:
+            return self._value
+        frac = max(0.0, min(1.0, (x - gx0) / (gx1 - gx0)))
+        return self._min + frac * (self._max - self._min)
+
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton:
-            self._drag_x = event.position().x()
-            self._drag_val = self._value
+            self._dragging = True
+            self.set_value(self._value_at(event.position().x()))
             event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if self._drag_x is None:
-            return
-        dx = event.position().x() - self._drag_x   # sideways travel only
-        steps = round(dx / self.PX_PER_STEP)
-        self.set_value(self._drag_val + steps * self._step)
-        event.accept()
+        if self._dragging:
+            self.set_value(self._value_at(event.position().x()))
+            event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        self._drag_x = None
+        self._dragging = False
 
     def wheelEvent(self, event) -> None:  # noqa: N802
         event.ignore()   # no wheel adjustment; let the sidebar scroll instead
@@ -162,7 +169,7 @@ class DragValue(QWidget):
                    Qt.AlignRight | Qt.AlignVCenter, f"{self._value:.2f}")
 
         # Groove between icon and value, with a filled portion and a round handle.
-        gx0, gx1 = 28, w - 52
+        gx0, gx1 = self.GROOVE_L, w - self.GROOVE_R_PAD
         if gx1 <= gx0:
             p.end()
             return
