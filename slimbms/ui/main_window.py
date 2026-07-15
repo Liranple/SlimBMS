@@ -184,6 +184,11 @@ class MainWindow(QMainWindow):
         self._play_timer = QTimer(self)
         self._play_timer.setInterval(int(1000 / PREVIEW_FPS))
         self._play_timer.timeout.connect(self._on_play_tick)
+        # Debounce speed-gauge drags: rebuild the stretch once the drag settles.
+        self._pending_speed = 1.0
+        self._speed_timer = QTimer(self)
+        self._speed_timer.setSingleShot(True)
+        self._speed_timer.timeout.connect(self._commit_speed)
 
         self.setWindowTitle("SlimBMS")
         self.resize(1360, 880)
@@ -625,9 +630,38 @@ class MainWindow(QMainWindow):
     # -- playback / preview ------------------------------------------------- #
 
     def _set_speed(self, factor: float) -> None:
-        # Change BGM playback speed; the clock scales too, so the chart scroll
-        # keeps in sync (audio restarts in place if it is currently playing).
+        # Debounce: the gauge fires on every 0.05 step while dragging, but the
+        # pitch-preserving stretch is heavy, so only rebuild once it settles.
+        self._pending_speed = factor
+        self._speed_timer.start(280)
+
+    def _commit_speed(self) -> None:
+        factor = self._pending_speed
+        if abs(factor - self.audio.speed) < 1e-9:
+            return
+        was_playing = self.audio.playing
+        pos = self.audio.position()
+        # Stop audio + clock while we rebuild the stretch (pitch preserved).
+        self._play_timer.stop()
+        self.audio.stop()
+        self.view.set_live(False)
         self.audio.set_speed(factor)
+        if not self.audio.loaded or self.audio.stretch_ready():
+            self._speed_ready(pos, was_playing)   # 1.0x / no audio: nothing to build
+            return
+        self.statusBar().showMessage(f"재생 속도 {factor:.2f}× 처리 중…")
+        worker = self._speed_worker = _Worker(self.audio.build_stretch)
+        worker.done.connect(lambda _=None: self._speed_ready(pos, was_playing))
+        worker.failed.connect(lambda _msg: self._speed_ready(pos, was_playing))
+        worker.start()
+
+    def _speed_ready(self, pos: float, was_playing: bool) -> None:
+        self.statusBar().clearMessage()
+        self.audio.seek(pos)
+        if was_playing:
+            self._start_play()
+        elif self._preview_active:
+            self.view.set_playhead(self._ensure_timemap().chart_pos(pos))
 
     def _ensure_timemap(self) -> TimeMap:
         # Rebuilt on demand so BPM / BGM-offset edits always take effect.
@@ -831,6 +865,11 @@ class MainWindow(QMainWindow):
         self._bgm_path = path
         loaded = self.audio.load(path)
         self.sb_bgm_label.setText(self.project.bgm_file)
+        # Pre-build the stretch for the current speed so the first play at a
+        # non-1.0x speed doesn't stall.
+        if loaded and not self.audio.stretch_ready():
+            worker = self._bgm_speed_worker = _Worker(self.audio.build_stretch)
+            worker.start()
         self._on_changed()
         note = "" if loaded else "\n\n(이 환경에서는 오디오 장치가 없어 재생 미리보기는 실제 PC에서만 됩니다.)"
         QMessageBox.information(
