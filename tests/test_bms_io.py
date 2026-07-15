@@ -113,6 +113,27 @@ def test_import_without_hint_maps_to_import_lanes():
     assert not p.charts[6], "nothing should land in the 6K chart on import"
 
 
+def test_bpm_change_roundtrip():
+    # Mid-song tempo changes survive export -> import (channel 08 + #BPMxx).
+    p = make_project()
+    p.bpm_changes[Fraction(1)] = 140.0
+    p.bpm_changes[Fraction(9, 4)] = 95.5       # non-integer position + float BPM
+    back = bms_io.parse_bms(bms_io.export_bms(p, 6))
+    assert back.bpm == p.bpm
+    assert back.bpm_changes.get(Fraction(1)) == 140.0
+    assert abs(back.bpm_changes.get(Fraction(9, 4), 0) - 95.5) < 0.01
+
+
+def test_bpm_change_slbms_roundtrip():
+    p = make_project()
+    p.bpm_changes[Fraction(3)] = 180.0
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "p.slbms")
+        bms_io.save_project(p, path)
+        back = bms_io.load_project(path)
+    assert back.bpm_changes == p.bpm_changes
+
+
 def test_import_honors_key_mode_command():
     # A uBMSC #6K command (no SLIMBMS hint) routes notes into the 6K lanes.
     lines = ["#TITLE X", "#6K", "#00011:01", "#00019:01"]  # 6K channels 11, 19

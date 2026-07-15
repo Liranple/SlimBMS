@@ -42,6 +42,45 @@ def test_audio_seconds_clamped():
     assert tm.audio_seconds(0.0) == 0.0
 
 
+def test_variable_bpm():
+    # 120 bpm (0.5 m/s) for measures 0-2, then 240 bpm (1.0 m/s) after.
+    p = Project(bpm=120.0)
+    p.toggle_bgm(0, Fraction(0))
+    p.bpm_changes[Fraction(2)] = 240.0
+    tm = TimeMap(p)
+    assert abs(tm.audio_seconds(2.0) - 4.0) < 1e-9     # 2 measures @120 = 4s
+    assert abs(tm.audio_seconds(3.0) - 5.0) < 1e-9     # +1 measure @240 = 1s
+    assert abs(tm.chart_pos(4.0) - 2.0) < 1e-9
+    assert abs(tm.chart_pos(5.0) - 3.0) < 1e-9
+    # Round-trips through the tempo change.
+    for secs in (0.0, 2.0, 4.0, 6.5):
+        assert abs(tm.audio_seconds(tm.chart_pos(secs)) - secs) < 1e-6
+
+
+def test_bpm_at():
+    p = Project(bpm=100.0)
+    p.bpm_changes[Fraction(4)] = 150.0
+    assert p.bpm_at(Fraction(0)) == 100.0
+    assert p.bpm_at(Fraction(3)) == 100.0
+    assert p.bpm_at(Fraction(4)) == 150.0
+    assert p.bpm_at(Fraction(10)) == 150.0
+
+
+def test_snapshot_restore():
+    from slimbms.model import Note
+    p = Project(bpm=120.0)
+    p.charts[4].add(Note(0, Fraction(0), 0))
+    p.bpm_changes[Fraction(2)] = 140.0
+    snap = p.snapshot()
+    p.charts[4].add(Note(1, Fraction(0), 1))
+    p.bpm_changes[Fraction(3)] = 90.0
+    p.measures = 40
+    p.restore(snap)
+    assert len(p.charts[4]) == 1
+    assert dict(p.bpm_changes) == {Fraction(2): 140.0}
+    assert p.measures == 16
+
+
 if __name__ == "__main__":
     import traceback
 

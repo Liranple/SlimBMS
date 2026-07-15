@@ -31,6 +31,21 @@ from .model import (
 # BMS export (one key mode -> .bms text)
 # --------------------------------------------------------------------------- #
 
+BPM_CH_INT = "03"    # inline integer BPM (2-hex-digit value)
+BPM_CH_EXT = "08"    # extended BPM: value indexes a #BPMxx definition
+
+_B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _b36(n: int) -> str:
+    """A 2-character base-36 index (01..ZZ) for BMS object values."""
+    return _B36[(n // 36) % 36] + _B36[n % 36]
+
+
+def _from_b36(s: str) -> int:
+    return int(s, 36)
+
+
 def _ln_channel(channel: str) -> str:
     """The long-note channel paired with a normal 1x object channel (11 -> 51)."""
     return "5" + channel[1:]
@@ -68,6 +83,27 @@ def _measure_data(objects: List[Note]) -> str:
     return "".join(slots)
 
 
+def _measure_data_valued(items) -> str:
+    """Like :func:`_measure_data` but each object carries its own 2-char value.
+
+    ``items`` is a list of ``(Fraction pos, str value)``."""
+    if not items:
+        return ""
+    length = 1
+    for pos, _ in items:
+        length = length * pos.denominator // gcd(length, pos.denominator)
+    slots = ["00"] * length
+    for pos, val in items:
+        slots[pos.numerator * (length // pos.denominator)] = val
+    g = length
+    for i, v in enumerate(slots):
+        if v != "00":
+            g = gcd(g, i)
+    if g > 1:
+        slots = slots[::g]
+    return "".join(slots)
+
+
 def export_bms(project: Project, key_mode: int) -> str:
     """Return the ``.bms`` text for ``key_mode`` (BGM + that chart's notes)."""
     if key_mode not in KEY_MODES:
@@ -87,6 +123,14 @@ def export_bms(project: Project, key_mode: int) -> str:
     lines.append("#RANK 3")
     lines.append("#LNTYPE 1")  # long notes use paired head/tail on the 5x channel
     lines.append(f"#SLIMBMS_KEYMODE {key_mode}")  # hint for lossless re-import
+
+    # Mid-song tempo changes: define #BPMxx values and place them on channel 08.
+    bpm_changes = sorted(project.bpm_changes.items())
+    bpm_index = {}   # absolute position -> 2-char index
+    for i, (pos, bpm) in enumerate(bpm_changes, start=1):
+        idx = _b36(i)
+        bpm_index[pos] = idx
+        lines.append(f"#BPM{idx} {_format_bpm(bpm)}")
     lines.append("")
     if project.bgm_file:
         lines.append(f"#WAV{BGM_WAV_INDEX} {project.bgm_file}")
@@ -97,6 +141,13 @@ def export_bms(project: Project, key_mode: int) -> str:
 
     for measure in range(project.measures):
         rows: List[str] = []
+
+        # Tempo changes on channel 08 (extended BPM).
+        bpm_here = [(pos - measure, idx) for pos, idx in bpm_index.items()
+                    if int(pos) == measure]
+        data = _measure_data_valued(bpm_here)
+        if data:
+            rows.append(f"#{measure:03d}{BPM_CH_EXT}:{data}")
 
         # BGM objects on channel 01.
         bgm_here = [n for n in project.bgm if n.measure == measure]
@@ -151,6 +202,14 @@ def _parse_objects(data: str) -> List[Fraction]:
     return out
 
 
+def _parse_valued(data: str):
+    """Like :func:`_parse_objects` but keeps each slot's 2-char value:
+    a list of ``(Fraction pos, str value)``."""
+    pairs = [data[i:i + 2] for i in range(0, len(data) - 1, 2)]
+    n = len(pairs)
+    return [(Fraction(i, n), v) for i, v in enumerate(pairs) if v != "00"]
+
+
 def parse_bms(text: str) -> Project:
     """Parse a ``.bms`` chart into a :class:`Project`.
 
@@ -166,6 +225,8 @@ def parse_bms(text: str) -> Project:
     body: Dict[int, Dict[str, List[Fraction]]] = {}
     max_measure = 0
     key_hint: Optional[int] = None
+    bpm_defs: Dict[str, float] = {}   # #BPMxx index -> value
+    tempo_objs: List = []             # (absolute pos, channel, 2-char value)
 
     for raw in text.splitlines():
         line = raw.strip()
@@ -182,6 +243,13 @@ def parse_bms(text: str) -> Project:
             try:
                 project.bpm = float(line[5:].strip())
             except ValueError:
+                pass
+        elif upper.startswith("#BPM") and len(line) > 4 and line[4] != " ":
+            # Indexed tempo definition: #BPMxx value
+            idx = upper[4:6]
+            try:
+                bpm_defs[idx] = float(line.split(None, 1)[1])
+            except (IndexError, ValueError):
                 pass
         elif upper.startswith(f"#WAV{BGM_WAV_INDEX}"):
             project.bgm_file = line[len("#WAV") + len(BGM_WAV_INDEX):].strip()
@@ -201,11 +269,32 @@ def parse_bms(text: str) -> Project:
                 continue
             channel = line[4:6]
             data = line[7:].strip()
+            if channel in (BPM_CH_INT, BPM_CH_EXT):
+                for pos, val in _parse_valued(data):
+                    tempo_objs.append((measure + pos, channel, val))
+                max_measure = max(max_measure, measure)
+                continue
             positions = _parse_objects(data)
             if not positions:
                 continue
             body.setdefault(measure, {}).setdefault(channel, []).extend(positions)
             max_measure = max(max_measure, measure)
+
+    # Resolve tempo changes; a change at the very start becomes the base BPM.
+    for abs_pos, channel, val in tempo_objs:
+        if channel == BPM_CH_INT:
+            try:
+                bpm = float(int(val, 16))
+            except ValueError:
+                continue
+        else:
+            bpm = bpm_defs.get(val.upper())
+            if bpm is None:
+                continue
+        if abs_pos <= 0:
+            project.bpm = bpm
+        else:
+            project.bpm_changes[abs_pos] = bpm
 
     project.measures = max(16, max_measure + 1)
 
@@ -274,6 +363,8 @@ def project_to_dict(project: Project) -> dict:
         "level": project.level,
         "bgm_file": project.bgm_file,
         "measures": project.measures,
+        "bpm_changes": sorted([p.numerator, p.denominator, b]
+                              for p, b in project.bpm_changes.items()),
         "bgm": notes(project.bgm),
         "charts": {str(km): notes(project.charts[km]) for km in ALL_MODES},
     }
@@ -294,6 +385,8 @@ def project_from_dict(data: dict) -> Project:
         length = Fraction(row[4], row[5]) if len(row) >= 6 else Fraction(0)
         return Note(m, Fraction(num, den), lane, length)
 
+    for row in data.get("bpm_changes", []):
+        project.bpm_changes[Fraction(int(row[0]), int(row[1]))] = float(row[2])
     for row in data.get("bgm", []):
         project.bgm.add(to_note(row))
     for km_str, objs in data.get("charts", {}).items():

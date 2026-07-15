@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from fractions import Fraction
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -107,7 +107,7 @@ class Project:
     title: str = ""
     artist: str = ""
     genre: str = ""
-    bpm: float = 120.0
+    bpm: float = 120.0           # base BPM, in effect from the song start
     level: int = 1               # play level / difficulty
     bgm_file: str = ""            # audio filename, e.g. "song.ogg"
     measures: int = 16           # number of measures in the timeline
@@ -115,6 +115,39 @@ class Project:
         default_factory=lambda: {k: set() for k in ALL_MODES}
     )
     bgm: Set[Note] = field(default_factory=set)  # BGM objects (lane 0)
+    # Mid-song tempo changes: absolute chart position (measures) -> BPM. The
+    # base ``bpm`` applies before the first change.
+    bpm_changes: Dict[Fraction, float] = field(default_factory=dict)
+
+    # -- tempo -------------------------------------------------------------- #
+
+    def bpm_at(self, pos) -> float:
+        """The BPM in effect at absolute chart position ``pos``."""
+        bpm = self.bpm
+        best: Optional[Fraction] = None
+        for p, val in self.bpm_changes.items():
+            if p <= pos and (best is None or p > best):
+                best, bpm = p, val
+        return max(1.0, bpm)
+
+    # -- undo/redo snapshots ------------------------------------------------ #
+
+    def snapshot(self):
+        """A cheap copy of all editable note/tempo/length state (Notes are
+        immutable, so copying the sets just copies references)."""
+        return (
+            {km: set(s) for km, s in self.charts.items()},
+            set(self.bgm),
+            dict(self.bpm_changes),
+            self.measures,
+        )
+
+    def restore(self, snap) -> None:
+        charts, bgm, bpm_changes, measures = snap
+        self.charts = {km: set(s) for km, s in charts.items()}
+        self.bgm = set(bgm)
+        self.bpm_changes = dict(bpm_changes)
+        self.measures = measures
 
     # -- note editing ------------------------------------------------------- #
 

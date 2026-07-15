@@ -110,7 +110,10 @@ class AudioPlayer:
 
         self._sound = None
         self._channel = None
+        self._click = None
+        self._click_accent = None
         self._init_mixer()
+        self._make_click()
 
     def _init_mixer(self) -> None:
         try:
@@ -122,6 +125,32 @@ class AudioPlayer:
         except Exception:  # noqa: BLE001
             self._pygame = None
             self.available = False
+
+    def _make_click(self) -> None:
+        """Pre-render short metronome clicks (a plain tick and an accented one)."""
+        if not self.available or _np is None:
+            return
+        freq, size, channels = self._pygame.mixer.get_init()
+        for attr, hz in (("_click", 1500.0), ("_click_accent", 2200.0)):
+            n = int(freq * 0.045)
+            t = _np.arange(n) / freq
+            tone = _np.sin(2 * _np.pi * hz * t) * _np.exp(-t * 55.0) * 0.5
+            pcm = _np.clip(tone * 32767, -32768, 32767).astype(_np.int16)
+            if channels > 1:
+                pcm = _np.repeat(pcm[:, None], channels, axis=1)
+            try:
+                setattr(self, attr, self._pygame.mixer.Sound(buffer=pcm.tobytes()))
+            except Exception:  # noqa: BLE001
+                setattr(self, attr, None)
+
+    def play_click(self, accent: bool = False) -> None:
+        snd = self._click_accent if accent else self._click
+        if snd is None:
+            return
+        try:
+            snd.play()
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- loading ------------------------------------------------------------ #
 

@@ -10,6 +10,7 @@ import threading
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QPainter
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QProgressDialog,
@@ -185,6 +187,12 @@ class MainWindow(QMainWindow):
         self._play_timer = QTimer(self)
         self._play_timer.setInterval(int(1000 / PREVIEW_FPS))
         self._play_timer.timeout.connect(self._on_play_tick)
+        # Recording aids: count-in beats + metronome beat tracking.
+        self._counting_in = False
+        self._countin_left = 0
+        self._last_beat = -1
+        self._countin_timer = QTimer(self)
+        self._countin_timer.timeout.connect(self._countin_tick)
         # Debounce speed-gauge drags: rebuild the stretch once the drag settles.
         self._pending_speed = 1.0
         self._speed_timer = QTimer(self)
@@ -248,6 +256,7 @@ class MainWindow(QMainWindow):
         panel.setObjectName("Sidebar")
         panel.setFixedWidth(300)
         outer = QVBoxLayout(panel)
+        self._sidebar_panel = panel
         outer.setContentsMargins(16, 14, 16, 14)
         outer.setSpacing(10)
 
@@ -323,6 +332,37 @@ class MainWindow(QMainWindow):
 
         outer.addWidget(self._hline())
 
+        # -- Tempo changes -------------------------------------------------- #
+        outer.addWidget(self._section("BPM 변화"))
+        self.bpm_measure = QSpinBox()
+        self.bpm_measure.setRange(0, 9999)
+        self.bpm_measure.setButtonSymbols(QSpinBox.NoButtons)
+        self.bpm_cell = QSpinBox()
+        self.bpm_cell.setRange(0, 15)          # position within the measure, in 1/16
+        self.bpm_cell.setButtonSymbols(QSpinBox.NoButtons)
+        self.bpm_value = QDoubleSpinBox()
+        self.bpm_value.setRange(1.0, 999.0)
+        self.bpm_value.setDecimals(2)
+        self.bpm_value.setValue(120.0)
+        brow = QHBoxLayout()
+        brow.setSpacing(8)
+        brow.addWidget(self._labeled("마디", self.bpm_measure))
+        brow.addWidget(self._labeled("칸(1/16)", self.bpm_cell))
+        brow.addWidget(self._labeled("BPM", self.bpm_value))
+        outer.addLayout(brow)
+        add_bpm = QPushButton("추가 / 변경")
+        add_bpm.clicked.connect(self._add_bpm_change)
+        outer.addWidget(add_bpm)
+        self.bpm_list = QListWidget()
+        self.bpm_list.setMaximumHeight(84)
+        outer.addWidget(self.bpm_list)
+        del_bpm = QPushButton("선택 삭제")
+        del_bpm.clicked.connect(self._remove_bpm_change)
+        outer.addWidget(del_bpm)
+        outer.addWidget(self._hint("곡 시작 템포는 위 '곡 정보'의 BPM"))
+
+        outer.addWidget(self._hline())
+
         # -- Audio ---------------------------------------------------------- #
         outer.addWidget(self._section("음원"))
         # Playback speed gauge (drag like the zoom controls). 1.00 = normal.
@@ -338,8 +378,33 @@ class MainWindow(QMainWindow):
         self.sb_bgm_label.setWordWrap(True)
         outer.addWidget(self.sb_bgm_label)
 
+        outer.addWidget(self._hline())
+
+        # -- Recording ------------------------------------------------------ #
+        outer.addWidget(self._section("녹음"))
+        self.rec_offset = QSpinBox()
+        self.rec_offset.setRange(-300, 300)
+        self.rec_offset.setSingleStep(5)
+        self.rec_offset.setSuffix(" ms")
+        self.rec_offset.valueChanged.connect(self._update_record_offset)
+        outer.addWidget(self._labeled("녹음 오프셋 (입력 지연 보정)", self.rec_offset))
+        self.rec_countin = QCheckBox("카운트인 (재생 전 4박)")
+        outer.addWidget(self.rec_countin)
+        self.rec_metronome = QCheckBox("메트로놈")
+        outer.addWidget(self.rec_metronome)
+        outer.addWidget(self._hint("오프셋을 늘리면 노트가 더 이르게 기록됨"))
+
         outer.addStretch(1)
-        return panel
+        # Wrap in a scroll area so the (now taller) sidebar never clips its
+        # lower sections on a short window.
+        scroll = QScrollArea()
+        scroll.setObjectName("SidebarScroll")
+        scroll.setWidget(panel)
+        scroll.setWidgetResizable(False)
+        scroll.setFixedWidth(318)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        return scroll
 
     def _section(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -497,6 +562,10 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         self._add(file_menu, "종료", self.close)
 
+        edit_menu = m.addMenu("편집")
+        self._add(edit_menu, "되돌리기", self.view.undo, QKeySequence.Undo)
+        self._add(edit_menu, "다시하기", self.view.redo, QKeySequence.Redo)
+
         song_menu = m.addMenu("곡")
         self._add(song_menu, "음원 파일 등록", self.choose_bgm)
 
@@ -527,6 +596,7 @@ class MainWindow(QMainWindow):
     def _reload_view(self) -> None:
         self.stop_play()
         self.view.project = self.project
+        self.view.clear_history()   # a fresh project starts a fresh undo history
         self.view.refresh()
         self._sync_sidebar()
         self._update_title()
@@ -545,6 +615,7 @@ class MainWindow(QMainWindow):
         for w, val in ((self.sb_bpm, p.bpm), (self.sb_level, p.level)):
             w.blockSignals(True); w.setValue(val); w.blockSignals(False)
         self.sb_bgm_label.setText(p.bgm_file or "(없음)")
+        self._refresh_bpm_list()
 
     def _set_meta(self, field: str, value) -> None:
         setattr(self.project, field, value)
@@ -584,6 +655,37 @@ class MainWindow(QMainWindow):
     def _toggle_snap(self, on: bool) -> None:
         self.view.set_snap_on(on)
         self.sb_snap.setText("격자 스냅 : 켜짐" if on else "격자 스냅 : 꺼짐")
+
+    # -- tempo changes ------------------------------------------------------ #
+
+    def _add_bpm_change(self) -> None:
+        from fractions import Fraction
+        pos = Fraction(self.bpm_measure.value()) + Fraction(self.bpm_cell.value(), 16)
+        self.project.bpm_changes[pos] = float(self.bpm_value.value())
+        self.view.changed.emit()   # marks dirty + schedules an undo entry
+        self.view.update()
+        self._refresh_bpm_list()
+
+    def _remove_bpm_change(self) -> None:
+        item = self.bpm_list.currentItem()
+        if item is None:
+            return
+        pos = item.data(Qt.UserRole)
+        if pos in self.project.bpm_changes:
+            del self.project.bpm_changes[pos]
+            self.view.changed.emit()
+            self.view.update()
+            self._refresh_bpm_list()
+
+    def _refresh_bpm_list(self) -> None:
+        self.bpm_list.clear()
+        for pos, bpm in sorted(self.project.bpm_changes.items()):
+            measure = int(pos)
+            frac = pos - measure
+            cell = int(frac * 16)
+            text = f"마디 {measure} · {cell}/16 → BPM {bpm:g}"
+            self.bpm_list.addItem(text)
+            self.bpm_list.item(self.bpm_list.count() - 1).setData(Qt.UserRole, pos)
 
     def _set_mode(self, mode: str) -> None:
         self.view.set_mode(mode)
@@ -680,15 +782,32 @@ class MainWindow(QMainWindow):
     def _current_chart_pos(self) -> float:
         return self._ensure_timemap().chart_pos(self.audio.position())
 
+    def _update_record_offset(self) -> None:
+        # Convert the ms offset to measures at the current tempo for recording.
+        mps = TimeMap(self.project).measures_per_second
+        self.view.record_offset_measures = (self.rec_offset.value() / 1000.0) * mps
+
     def toggle_play(self) -> None:
-        if self.audio.playing:
+        if self._counting_in:
+            self._cancel_countin()
+            self.stop_play()
+        elif self.audio.playing:
             self._pause_play()
         else:
             self._start_play()
 
     def _start_play(self) -> None:
+        # A count-in plays four beats before a fresh start (not when resuming).
+        if self.rec_countin.isChecked() and not self.audio.paused and not self._counting_in:
+            self._begin_countin()
+            return
+        self._do_start_play()
+
+    def _do_start_play(self) -> None:
         self._ensure_timemap()
         self._preview_active = True
+        self._update_record_offset()
+        self._last_beat = -1
         # Un-pause in place when we were paused (no re-seek, so the audio stays
         # in sync); otherwise start/seek to the current position.
         if self.audio.paused:
@@ -700,6 +819,34 @@ class MainWindow(QMainWindow):
         self.view.set_live(True)
         self.view.setFocus()   # so recording keys reach the canvas
 
+    def _begin_countin(self) -> None:
+        self._counting_in = True
+        self._countin_left = 3          # first beat plays now, three more follow
+        self.play_action.setText("⏸")
+        self.statusBar().showMessage("카운트인…")
+        self.audio.play_click(accent=True)
+        interval = int(60000.0 / max(1.0, self.project.bpm))
+        self._countin_timer.setInterval(interval)
+        self._countin_timer.start()
+
+    def _countin_tick(self) -> None:
+        if not self._counting_in:
+            self._countin_timer.stop()
+            return
+        if self._countin_left <= 0:
+            self._countin_timer.stop()
+            self._counting_in = False
+            self.statusBar().clearMessage()
+            self._do_start_play()
+            return
+        self.audio.play_click(accent=False)
+        self._countin_left -= 1
+
+    def _cancel_countin(self) -> None:
+        self._countin_timer.stop()
+        self._counting_in = False
+        self.statusBar().clearMessage()
+
     def _pause_play(self) -> None:
         self.audio.pause()
         self._play_timer.stop()
@@ -710,6 +857,7 @@ class MainWindow(QMainWindow):
         self.view.set_playhead(self._current_chart_pos())
 
     def stop_play(self) -> None:
+        self._cancel_countin()
         self.audio.stop()
         self._play_timer.stop()
         self.play_action.setText("▶")
@@ -743,6 +891,11 @@ class MainWindow(QMainWindow):
         ):
             self.stop_play()
             return
+        if self.rec_metronome.isChecked():
+            beat = int(chart_pos * 4)   # 4 beats per measure (4/4)
+            if beat > self._last_beat:
+                self.audio.play_click(accent=(beat % 4 == 0))
+                self._last_beat = beat
         self.view.set_playhead(chart_pos)
         self._follow_playhead(chart_pos)
 

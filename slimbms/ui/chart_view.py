@@ -5,7 +5,7 @@ from __future__ import annotations
 from fractions import Fraction
 from typing import Optional
 
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QPolygon
 from PySide6.QtWidgets import QWidget
 
@@ -35,6 +35,7 @@ C_NOTE_GREY = QColor("#9aa0ac")
 C_NOTE_BGM = QColor("#ffb347")
 C_PLAYHEAD = QColor("#ff4d6d")
 C_CONFLICT = QColor("#ff4d4d")   # notes that overlap another note in the same lane
+C_BPM = QColor("#c792ea")        # mid-song tempo-change markers
 
 # Note colour by lane code.
 NOTE_COLOR = {"W": C_NOTE_WHITE, "B": C_NOTE_BLUE, "G": C_NOTE_GREY}
@@ -78,6 +79,7 @@ class ChartView(QWidget):
         self.snap_on = True
         self.v_pad = 24
         self.playhead: Optional[float] = None  # absolute chart pos, or None
+        self.record_offset_measures = 0.0  # recording latency comp, in measures
         self.live_playing = False     # True while the preview is actively playing
         self.selected_km = KEY_MODES[0]  # key mode being recorded / highlighted
         self._hover = None            # (Column, measure, Fraction pos) or None
@@ -91,6 +93,17 @@ class ChartView(QWidget):
         self._move_drag = None        # {origs, px, py, moved} while dragging notes to move them
         self._add_drag = None         # (mode_key, Note, start_abs, Column) while dragging a long note
         self._rec_pending = {}        # key -> (km, Note, start_abs) for keys held during recording
+        self._len_drag = None         # {mode, note, end:'head'|'tail'} while dragging a long-note endpoint
+        # Undo/redo: snapshots of the project's editable state, coalesced by a
+        # settle timer so bursts (drags, recording) collapse to one step.
+        self._undo_stack = []
+        self._redo_stack = []
+        self._committed = None
+        self._restoring = False
+        self._undo_limit = 300
+        self._history_timer = QTimer(self)
+        self._history_timer.setSingleShot(True)
+        self._history_timer.timeout.connect(self._flush_history)
         self.columns, self.groups, self._width = L.build_layout(self.lane_w)
         # Paint caches, rebuilt on edit (not per paint): overlap flags plus a
         # by-measure index so painting only touches notes near the viewport.
@@ -99,6 +112,8 @@ class ChartView(QWidget):
         self._longs = {}                 # km -> [long Note]
         self._bgm_by_measure = {}        # measure -> [BGM Note]
         self.changed.connect(self._rebuild_caches)
+        self.changed.connect(self._schedule_history)
+        self._committed = self.project.snapshot()
         self._rebuild_caches()
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -194,11 +209,12 @@ class ChartView(QWidget):
         return measure, pos
 
     def playhead_cell(self, snap: bool):
-        """Return (measure, Fraction pos) for the current playhead position.
-        When ``snap`` the time is quantised to the *nearest* primary grid line
-        (nearest, not floored, so a tap that lands slightly off-beat still snaps
-        to the intended cell); otherwise it keeps a fine free resolution."""
-        frac = Fraction(max(0.0, self.playhead or 0.0)).limit_denominator(FREE_DIV)
+        """Return (measure, Fraction pos) for the current playhead position,
+        shifted back by the recording offset (to compensate for reaction/audio
+        latency). When ``snap`` the time is quantised to the *nearest* primary
+        grid line; otherwise it keeps a fine free resolution."""
+        ph = max(0.0, (self.playhead or 0.0) - self.record_offset_measures)
+        frac = Fraction(ph).limit_denominator(FREE_DIV)
         if snap:
             step = self.grid_main
             frac = step * round(frac / step)
@@ -223,8 +239,35 @@ class ChartView(QWidget):
         self._paint_selection(p)
         self._paint_hover(p)
         self._paint_drag(p)
+        self._paint_bpm_changes(p)
         self._paint_playhead(p)
         p.end()
+
+    def _paint_bpm_changes(self, p: QPainter) -> None:
+        if not self.project.bpm_changes:
+            return
+        x0 = L.LEFT_MARGIN
+        x1 = self.groups[-1].x1
+        font = QFont()
+        font.setPointSize(8)
+        font.setBold(True)
+        for pos, bpm in self.project.bpm_changes.items():
+            y = int(self.y_for(float(pos)))
+            if y < self._vis_lo - 14 or y > self._vis_hi + 14:
+                continue
+            p.setPen(QPen(C_BPM, 1, Qt.DashLine))
+            p.drawLine(x0, y, x1, y)
+            # A small tag with the tempo at the left edge of the lanes.
+            label = f"♩{bpm:g}"
+            p.setFont(font)
+            fm = p.fontMetrics()
+            tw = fm.horizontalAdvance(label) + 8
+            tag = QRect(x0 + 2, y - 14, tw, 13)
+            p.setPen(Qt.NoPen)
+            p.setBrush(C_BPM)
+            p.drawRoundedRect(tag, 3, 3)
+            p.setPen(QPen(QColor("#1b1b21"), 1))
+            p.drawText(tag, Qt.AlignCenter, label)
 
     def set_playhead(self, absolute: Optional[float]) -> None:
         self.playhead = absolute
@@ -656,6 +699,38 @@ class ChartView(QWidget):
         self.changed.emit()
         self.update()
 
+    def _endpoint_near(self, note: Note, y: float):
+        """Return 'head' or 'tail' if ``y`` is near that end of a long note, else
+        None — used to grab an endpoint for length editing."""
+        cell_h = max(3.0, self.measure_px * float(self.grid_main))
+        thresh = max(8.0, cell_h * 0.6)
+        head_y = self.y_for(note.absolute)          # bottom (start)
+        tail_y = self.y_for(note.end_absolute)      # top (end)
+        dh, dt = abs(y - head_y), abs(y - tail_y)
+        if min(dh, dt) > thresh:
+            return None
+        return "tail" if dt <= dh else "head"
+
+    def _apply_len_drag(self, event: QMouseEvent) -> None:
+        """Resize a long note by dragging its head or tail to the cursor."""
+        ld = self._len_drag
+        mode, note = ld["mode"], ld["note"]
+        target = self._target_for(mode)
+        measure, pos = self.pos_at(event.position().y(), self._snap_now(event))
+        cur = Fraction(measure) + pos
+        step = self.grid_main
+        head, tail = note.absolute, note.end_absolute
+        if ld["end"] == "tail":
+            new_end = max(head + step, min(cur, Fraction(self.project.measures)))
+            new = self._relen(target, note, head, new_end - head)
+        else:
+            new_head = max(Fraction(0), min(cur, tail - step))
+            new = self._relen(target, note, new_head, tail - new_head)
+        ld["note"] = new
+        self.selection = {(mode, new)}
+        self.changed.emit()
+        self.update()
+
     def _erase_at(self, col, y: float) -> None:
         hit = self._note_at_point(col, y)
         if hit is None:
@@ -685,6 +760,9 @@ class ChartView(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         self.cursor_info.emit(self._cursor_text(event))
+        if self.mode == "edit" and self._len_drag is not None:
+            self._apply_len_drag(event)
+            return
         if self.mode == "edit" and self._move_drag is not None:
             self._apply_move_drag(event)
             return
@@ -740,6 +818,15 @@ class ChartView(QWidget):
         hit = self._note_at_point(col, y) if col is not None else None
 
         if hit is not None and not self._drag_shift:
+            mode, note = hit
+            # Near a long note's end → resize it; elsewhere on a note → move.
+            if mode != "bgm" and note.is_long:
+                end = self._endpoint_near(note, y)
+                if end is not None:
+                    self.selection = {hit}
+                    self._len_drag = {"mode": mode, "note": note, "end": end}
+                    self.update()
+                    return
             # Press on a note (no Shift) → drag to move it. Grab the whole
             # selection if the note is part of it, otherwise just this note.
             if hit not in self.selection:
@@ -759,6 +846,10 @@ class ChartView(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if self._add_drag is not None:      # finished dragging out a long note
             self._add_drag = None
+            self.update()
+            return
+        if self._len_drag is not None:      # finished resizing a long note
+            self._len_drag = None
             self.update()
             return
         if self._move_drag is not None:     # finished dragging notes to move them
@@ -904,6 +995,59 @@ class ChartView(QWidget):
 
     def _target_for(self, mode):
         return self.project.bgm if mode == "bgm" else self.project.charts[mode]
+
+    # -- undo / redo -------------------------------------------------------- #
+    #
+    # Edits are coalesced automatically: every ``changed`` (re)starts a short
+    # timer, and when it settles the pre-burst state is pushed to the undo
+    # stack. So a whole drag / recording burst becomes one undo step without any
+    # per-operation begin/commit calls.
+
+    def _schedule_history(self) -> None:
+        if self._restoring:
+            return
+        self._history_timer.start(400)
+
+    def _flush_history(self) -> None:
+        """Commit any pending change as one undo entry."""
+        if self._committed is None:
+            self._committed = self.project.snapshot()
+            return
+        current = self.project.snapshot()
+        if current != self._committed:
+            self._undo_stack.append(self._committed)
+            if len(self._undo_stack) > self._undo_limit:
+                self._undo_stack.pop(0)
+            self._redo_stack.clear()
+            self._committed = current
+
+    def clear_history(self) -> None:
+        self._history_timer.stop()
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._committed = self.project.snapshot()
+
+    def _restore(self, snap) -> None:
+        self._restoring = True
+        self.project.restore(snap)
+        self._committed = self.project.snapshot()
+        self.selection = set()
+        self.changed.emit()
+        self.update()
+        self._restoring = False
+
+    def undo(self) -> None:
+        self._flush_history()   # commit an in-flight edit first
+        if not self._undo_stack:
+            return
+        self._redo_stack.append(self.project.snapshot())
+        self._restore(self._undo_stack.pop())
+
+    def redo(self) -> None:
+        if not self._redo_stack:
+            return
+        self._undo_stack.append(self.project.snapshot())
+        self._restore(self._redo_stack.pop())
 
     def _delete_selection(self) -> None:
         if not self.selection:
