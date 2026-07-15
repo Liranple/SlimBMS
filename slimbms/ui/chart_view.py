@@ -17,8 +17,8 @@ C_BG = QColor("#1e1e24")
 C_GROUP_BG_A = QColor("#23232b")
 C_GROUP_BG_B = QColor("#1b1b21")
 C_MEASURE = QColor("#8a8a99")
-C_GRID_MAIN = QColor("#4a4a58")   # primary (snap) grid
-C_GRID_SUB = QColor("#33333f")    # secondary reference grid
+C_GRID_FINE = QColor("#313139")   # fine snap grid (faint)
+C_GRID_REF = QColor("#5a5a76")    # reference grid (brighter, drawn on top)
 C_LANE_SEP = QColor("#33333d")
 C_GROUP_SEP = QColor("#55556a")
 C_TEXT = QColor("#c8c8d0")
@@ -198,12 +198,14 @@ class ChartView(QWidget):
         p.setFont(font)
         measures = self.project.measures
 
-        # Secondary grid (faintest), then primary grid over it.
-        p.setPen(QPen(C_GRID_SUB, 1))
-        for y in self._grid_line_ys(self.grid_sub):
-            p.drawLine(x0, int(y), x1, int(y))
-        p.setPen(QPen(C_GRID_MAIN, 1))
+        # Fine snap grid first (faint), then the reference grid on top (brighter)
+        # so its guide lines stay visible even where they coincide with the
+        # denser snap lines.
+        p.setPen(QPen(C_GRID_FINE, 1))
         for y in self._grid_line_ys(self.grid_main):
+            p.drawLine(x0, int(y), x1, int(y))
+        p.setPen(QPen(C_GRID_REF, 1))
+        for y in self._grid_line_ys(self.grid_sub):
             p.drawLine(x0, int(y), x1, int(y))
 
         # Measure lines + numbers.
