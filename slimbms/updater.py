@@ -120,28 +120,25 @@ def swap_and_restart(new_app_dir: str, tmp_root: str) -> None:
     current = os.path.abspath(sys.executable)
     app_dir = os.path.dirname(current)
     bat = os.path.join(tmp_root, "_slimbms_update.bat")
-    # Wait for the running exe to exit, mirror the new files over the install
-    # folder, relaunch, then clean up. Onedir loads DLLs directly from the
-    # folder, so there is no temp-extraction race on relaunch.
+    # A fixed short wait (this process is force-killed with os._exit right after
+    # launching the batch, so it is gone within that window) then robocopy the
+    # new files over the install folder and relaunch. Robocopy retries handle
+    # any file still briefly locked. No wait-loop, so this can never hang.
     script = (
         "@echo off\r\n"
-        "timeout /t 1 /nobreak >nul\r\n"
-        ":wait\r\n"
-        'tasklist /fi "imagename eq SlimBMS.exe" | find /i "SlimBMS.exe" >nul '
-        "&& (timeout /t 1 /nobreak >nul & goto wait)\r\n"
-        f'robocopy "{new_app_dir}" "{app_dir}" /E /R:3 /W:1 '
-        "/NFL /NDL /NJH /NJS /NC /NS >nul\r\n"
+        "title SlimBMS Update\r\n"
+        "echo Updating SlimBMS, please wait...\r\n"
+        "timeout /t 3 /nobreak >nul\r\n"
+        f'robocopy "{new_app_dir}" "{app_dir}" /E /R:15 /W:1 /NJH /NJS >nul\r\n'
         f'start "" "{current}"\r\n'
-        f'rmdir /s /q "{tmp_root}" >nul 2>&1\r\n'
         'del "%~f0"\r\n'
     )
     with open(bat, "w", encoding="ascii") as fh:
         fh.write(script)
 
-    creationflags = 0
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        creationflags |= subprocess.CREATE_NO_WINDOW
-    if hasattr(subprocess, "DETACHED_PROCESS"):
-        creationflags |= subprocess.DETACHED_PROCESS
+    creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
     subprocess.Popen(["cmd", "/c", bat], creationflags=creationflags, close_fds=True)
-    sys.exit(0)
+    # sys.exit() does not reliably terminate the app from inside a Qt slot, which
+    # would leave the exe locked; force-kill so the batch can replace the files.
+    sys.stdout.flush()
+    os._exit(0)
