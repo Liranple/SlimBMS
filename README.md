@@ -29,11 +29,15 @@ music track — no per-note keysounds to manage.
 
 ## Editing
 
-- **Left click** a lane cell to place a note; click it again (or **right click**)
-  to remove it.
-- **Snap** (toolbar): choose the grid resolution (1/4 … 1/32, plus triplets).
-- **Zoom** (toolbar 확대 / 축소): change vertical spacing.
-- **곡 → 곡 정보 편집**: title, artist, genre, BPM, measure count.
+- **Left click** a lane cell to place a note (it fills the cell you point at);
+  click it again (or **right click**) to remove it. A translucent ghost note
+  previews where the click will land as you hover.
+- **Grid / snap** (right sidebar): two grids, each entered as a fraction of a
+  measure (e.g. A = 1/16 for snapping, B = 1/12 as a triplet reference). The
+  **격자 스냅** button toggles snapping; hold **Shift** to place freely off-grid.
+- **Zoom**: 확대 / 축소 buttons, or **Ctrl + mouse wheel**.
+- **Sidebar**: title, artist, genre, BPM, level, measure count, grids, and BGM
+  registration — all edited inline.
 
 ### Playback / preview
 

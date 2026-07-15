@@ -11,12 +11,19 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
+    QFrame,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QProgressDialog,
+    QPushButton,
     QScrollArea,
+    QSpinBox,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -27,7 +34,6 @@ from ..audio import AudioPlayer
 from ..model import KEY_MODES, Project
 from ..timing import TimeMap
 from .chart_view import ChartView, LaneHeader
-from .metadata_dialog import MetadataDialog
 
 
 class _Worker(QObject):
@@ -54,17 +60,6 @@ PREVIEW_FPS = 60
 # Where the playhead sits within the viewport (fraction from the top). Notes
 # scroll upward, so keeping it low leaves upcoming notes visible above it.
 PLAYHEAD_VIEWPORT_FRACTION = 0.72
-
-# Snap options shown in the toolbar: label -> denominator (fraction of a measure)
-SNAP_OPTIONS = [
-    ("1/4", 4),
-    ("1/8", 8),
-    ("1/16", 16),
-    ("1/32", 32),
-    ("1/6", 6),
-    ("1/12", 12),
-    ("1/24", 24),
-]
 
 
 class MainWindow(QMainWindow):
@@ -99,24 +94,128 @@ class MainWindow(QMainWindow):
 
     def _build_canvas(self) -> None:
         central = QWidget()
-        vbox = QVBoxLayout(central)
+        hbox = QHBoxLayout(central)
+        hbox.setContentsMargins(0, 0, 0, 0)
+        hbox.setSpacing(0)
+
+        # Left: header + scrolling chart.
+        left = QWidget()
+        vbox = QVBoxLayout(left)
         vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(0)
-
         self.header = LaneHeader()
         vbox.addWidget(self.header)
-
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(False)
         self.view = ChartView(self.project)
         self.view.changed.connect(self._on_changed)
+        self.view.zoom_step.connect(self._zoom_step)
         self.scroll.setWidget(self.view)
         self.scroll.horizontalScrollBar().valueChanged.connect(self.header.set_x_offset)
         vbox.addWidget(self.scroll)
+        hbox.addWidget(left, 1)
+
+        # Right: song / grid sidebar.
+        hbox.addWidget(self._build_sidebar())
 
         self.setCentralWidget(central)
+        self._sync_sidebar()
         # Start scrolled to the bottom (song start).
         self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
+
+    def _build_sidebar(self) -> QWidget:
+        panel = QWidget()
+        panel.setFixedWidth(292)
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(10, 10, 10, 10)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+
+        self.sb_title = QLineEdit()
+        self.sb_title.textEdited.connect(lambda t: self._set_meta("title", t))
+        form.addRow("제목", self.sb_title)
+
+        self.sb_artist = QLineEdit()
+        self.sb_artist.textEdited.connect(lambda t: self._set_meta("artist", t))
+        form.addRow("아티스트", self.sb_artist)
+
+        self.sb_genre = QLineEdit()
+        self.sb_genre.textEdited.connect(lambda t: self._set_meta("genre", t))
+        form.addRow("장르", self.sb_genre)
+
+        self.sb_bpm = QDoubleSpinBox()
+        self.sb_bpm.setRange(1.0, 999.0)
+        self.sb_bpm.setDecimals(2)
+        self.sb_bpm.valueChanged.connect(lambda v: self._set_meta("bpm", v))
+        form.addRow("BPM", self.sb_bpm)
+
+        self.sb_level = QSpinBox()
+        self.sb_level.setRange(0, 99)
+        self.sb_level.valueChanged.connect(lambda v: self._set_meta("level", v))
+        form.addRow("레벨", self.sb_level)
+
+        self.sb_measures = QSpinBox()
+        self.sb_measures.setRange(1, 999)
+        self.sb_measures.valueChanged.connect(self._set_measures)
+        form.addRow("마디 수", self.sb_measures)
+        outer.addLayout(form)
+
+        outer.addWidget(self._hline())
+
+        # Grid settings: two grids, each entered as num/den of a measure.
+        outer.addWidget(QLabel("격자 (마디를 분수로 분할)"))
+        self.sb_g1_num, self.sb_g1_den = self._grid_row(outer, "A (스냅)",
+                                                        1, 16, self._apply_grids)
+        self.sb_g2_num, self.sb_g2_den = self._grid_row(outer, "B (참고)",
+                                                        1, 12, self._apply_grids)
+
+        self.sb_snap = QPushButton("격자 스냅: 켜짐")
+        self.sb_snap.setCheckable(True)
+        self.sb_snap.setChecked(True)
+        self.sb_snap.toggled.connect(self._toggle_snap)
+        outer.addWidget(self.sb_snap)
+        outer.addWidget(QLabel("Shift를 누르면 격자 무시하고 자유 배치"))
+
+        outer.addWidget(self._hline())
+
+        self.sb_bgm_btn = QPushButton("BGM 오디오 등록…")
+        self.sb_bgm_btn.clicked.connect(self.choose_bgm)
+        outer.addWidget(self.sb_bgm_btn)
+        self.sb_bgm_label = QLabel("(없음)")
+        self.sb_bgm_label.setWordWrap(True)
+        outer.addWidget(self.sb_bgm_label)
+
+        outer.addStretch(1)
+        return panel
+
+    def _hline(self) -> QFrame:
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        return line
+
+    def _grid_row(self, outer, label, num, den, cb):
+        row = QHBoxLayout()
+        lbl = QLabel(label)
+        lbl.setFixedWidth(78)
+        row.addWidget(lbl)
+        n = QSpinBox()
+        n.setRange(1, 64)
+        n.setValue(num)
+        n.setFixedWidth(48)
+        d = QSpinBox()
+        d.setRange(1, 192)
+        d.setValue(den)
+        d.setFixedWidth(56)
+        n.valueChanged.connect(cb)
+        d.valueChanged.connect(cb)
+        row.addWidget(n)
+        row.addWidget(QLabel("/"))
+        row.addWidget(d)
+        row.addStretch(1)
+        outer.addLayout(row)
+        return n, d
 
     def _build_toolbar(self) -> None:
         tb = QToolBar("도구")
@@ -161,23 +260,14 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda checked=False: self.seek_seconds(-1.0))
             self.addAction(act)
         tb.addSeparator()
-
-        tb.addWidget(QLabel(" 스냅 "))
-        self.snap_combo = QComboBox()
-        for label, _div in SNAP_OPTIONS:
-            self.snap_combo.addItem(label)
-        self.snap_combo.setCurrentIndex(1)  # 1/8
-        self.snap_combo.currentIndexChanged.connect(self._on_snap_changed)
-        tb.addWidget(self.snap_combo)
-
-        tb.addSeparator()
         tb.addWidget(QLabel(" 줌 "))
         zoom_out = QAction("축소", self)
-        zoom_out.triggered.connect(lambda: self.view.set_zoom(self.view.measure_px - 30))
+        zoom_out.triggered.connect(lambda: self._zoom_step(-1))
         tb.addAction(zoom_out)
         zoom_in = QAction("확대", self)
-        zoom_in.triggered.connect(lambda: self.view.set_zoom(self.view.measure_px + 30))
+        zoom_in.triggered.connect(lambda: self._zoom_step(1))
         tb.addAction(zoom_in)
+        tb.addWidget(QLabel(" (Ctrl+휠) "))
 
         tb.addSeparator()
         tb.addWidget(QLabel(" 저장할 키 "))
@@ -206,7 +296,6 @@ class MainWindow(QMainWindow):
         self._add(file_menu, "종료", self.close)
 
         song_menu = m.addMenu("곡")
-        self._add(song_menu, "곡 정보 편집…", self.edit_metadata)
         self._add(song_menu, "BGM 오디오 선택…", self.choose_bgm)
 
         help_menu = m.addMenu("도움말")
@@ -226,9 +315,6 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self._update_title()
 
-    def _on_snap_changed(self, index: int) -> None:
-        self.view.set_snap(SNAP_OPTIONS[index][1])
-
     def _update_title(self) -> None:
         name = os.path.basename(self.project_path) if self.project_path else "제목 없음"
         star = "*" if self._dirty else ""
@@ -239,7 +325,51 @@ class MainWindow(QMainWindow):
         self.stop_play()
         self.view.project = self.project
         self.view.refresh()
+        self._sync_sidebar()
         self._update_title()
+
+    # -- sidebar ------------------------------------------------------------ #
+
+    def _sync_sidebar(self) -> None:
+        """Populate the sidebar from the current project without re-triggering
+        the change signals."""
+        p = self.project
+        for w, val in (
+            (self.sb_title, p.title), (self.sb_artist, p.artist),
+            (self.sb_genre, p.genre),
+        ):
+            w.blockSignals(True); w.setText(val); w.blockSignals(False)
+        for w, val in ((self.sb_bpm, p.bpm),):
+            w.blockSignals(True); w.setValue(val); w.blockSignals(False)
+        for w, val in ((self.sb_level, p.level), (self.sb_measures, p.measures)):
+            w.blockSignals(True); w.setValue(val); w.blockSignals(False)
+        self.sb_bgm_label.setText(p.bgm_file or "(없음)")
+
+    def _set_meta(self, field: str, value) -> None:
+        setattr(self.project, field, value)
+        self._on_changed()
+
+    def _set_measures(self, value: int) -> None:
+        self.project.measures = value
+        self.view.refresh()
+        self._on_changed()
+
+    def _apply_grids(self) -> None:
+        self.view.set_grid_main(self.sb_g1_num.value(), self.sb_g1_den.value())
+        self.view.set_grid_sub(self.sb_g2_num.value(), self.sb_g2_den.value())
+
+    def _toggle_snap(self, on: bool) -> None:
+        self.view.set_snap_on(on)
+        self.sb_snap.setText("격자 스냅: 켜짐" if on else "격자 스냅: 꺼짐")
+
+    def _zoom_step(self, direction: int) -> None:
+        # Zoom while keeping the chart position at the viewport centre stable.
+        vbar = self.scroll.verticalScrollBar()
+        vp_h = self.scroll.viewport().height()
+        center_y = vbar.value() + vp_h / 2
+        center_abs = self.view.absolute_at(center_y)
+        self.view.set_zoom(self.view.measure_px + direction * 30)
+        vbar.setValue(int(self.view.y_for(center_abs) - vp_h / 2))
 
     # -- playback / preview ------------------------------------------------- #
 
@@ -415,13 +545,6 @@ class MainWindow(QMainWindow):
 
     # -- song actions ------------------------------------------------------- #
 
-    def edit_metadata(self) -> None:
-        dlg = MetadataDialog(self.project, self)
-        if dlg.exec():
-            dlg.apply_to(self.project)
-            self._on_changed()
-            self.view.refresh()
-
     def choose_bgm(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "BGM 오디오 선택", "",
@@ -431,6 +554,7 @@ class MainWindow(QMainWindow):
         self.project.bgm_file = os.path.basename(path)
         self._bgm_path = path
         loaded = self.audio.load(path)
+        self.sb_bgm_label.setText(self.project.bgm_file)
         self._on_changed()
         note = "" if loaded else "\n\n(이 환경에서는 오디오 장치가 없어 재생 미리보기는 실제 PC에서만 됩니다.)"
         QMessageBox.information(

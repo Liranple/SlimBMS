@@ -94,6 +94,7 @@ class Project:
     artist: str = ""
     genre: str = ""
     bpm: float = 120.0
+    level: int = 1               # play level / difficulty
     bgm_file: str = ""            # audio filename, e.g. "song.ogg"
     measures: int = 16           # number of measures in the timeline
     charts: Dict[int, Set[Note]] = field(

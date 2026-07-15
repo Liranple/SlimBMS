@@ -17,8 +17,8 @@ C_BG = QColor("#1e1e24")
 C_GROUP_BG_A = QColor("#23232b")
 C_GROUP_BG_B = QColor("#1b1b21")
 C_MEASURE = QColor("#8a8a99")
-C_BEAT = QColor("#4a4a55")
-C_SNAP = QColor("#2c2c34")
+C_GRID_MAIN = QColor("#4a4a58")   # primary (snap) grid
+C_GRID_SUB = QColor("#33333f")    # secondary reference grid
 C_LANE_SEP = QColor("#33333d")
 C_GROUP_SEP = QColor("#55556a")
 C_TEXT = QColor("#c8c8d0")
@@ -37,21 +37,25 @@ LANE_TINT = {
     "G": QColor(150, 160, 175, 20),
 }
 
-BEATS_PER_MEASURE = 4
+FREE_DIV = 192  # placement resolution when snap is off / Shift held
 
 
 class ChartView(QWidget):
     """Paints the note grid for all key modes and edits notes on click."""
 
-    changed = Signal()  # emitted whenever a note is added/removed
+    changed = Signal()      # emitted whenever a note is added/removed
+    zoom_step = Signal(int)  # Ctrl+wheel: +1 zoom in, -1 zoom out
 
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
         self.project = project
         self.measure_px = 150         # zoom: vertical pixels per measure
-        self.snap_div = 8             # snap grid: 1/snap_div of a measure
+        self.grid_main = Fraction(1, 16)  # primary (snap) grid, of a measure
+        self.grid_sub = Fraction(1, 12)   # secondary reference grid
+        self.snap_on = True
         self.v_pad = 24
         self.playhead: Optional[float] = None  # absolute chart pos, or None
+        self._hover = None            # (Column, measure, Fraction pos) or None
         self.columns, self.groups, self._width = L.build_layout()
         self.setMouseTracking(True)
         self._apply_size()
@@ -68,8 +72,18 @@ class ChartView(QWidget):
         self._apply_size()
         self.update()
 
-    def set_snap(self, snap_div: int) -> None:
-        self.snap_div = snap_div
+    def set_grid_main(self, num: int, den: int) -> None:
+        if num >= 1 and den >= 1:
+            self.grid_main = Fraction(num, den)
+            self.update()
+
+    def set_grid_sub(self, num: int, den: int) -> None:
+        if num >= 1 and den >= 1:
+            self.grid_sub = Fraction(num, den)
+            self.update()
+
+    def set_snap_on(self, on: bool) -> None:
+        self.snap_on = on
         self.update()
 
     def refresh(self) -> None:
@@ -82,18 +96,27 @@ class ChartView(QWidget):
         """Pixel y for an absolute position in measures (0 = song start)."""
         return self.v_pad + (self.project.measures - absolute) * self.measure_px
 
-    def pos_at(self, y: float):
-        """Return (measure, Fraction pos) for a pixel y, snapped to the grid."""
-        absolute = self.project.measures - (y - self.v_pad) / self.measure_px
-        if absolute < 0:
-            absolute = 0.0
+    def absolute_at(self, y: float) -> float:
+        return max(0.0, self.project.measures - (y - self.v_pad) / self.measure_px)
+
+    def pos_at(self, y: float, snap: bool):
+        """Return (measure, Fraction pos) for a pixel y. When ``snap`` the
+        position is floored to the primary grid cell the cursor is in (so the
+        note lands in exactly the cell under the mouse); otherwise it is floored
+        to a fine resolution for near-free placement."""
+        absolute = self.absolute_at(y)
         measure = int(absolute)
-        frac = absolute - measure
-        k = round(frac * self.snap_div)
-        if k >= self.snap_div:
+        frac = absolute - measure          # [0, 1)
+        if snap:
+            step = self.grid_main
+            k = int(frac / float(step))    # floor -> cell under the cursor
+            pos = step * k
+        else:
+            pos = Fraction(int(frac * FREE_DIV), FREE_DIV)
+        if pos >= 1:
+            pos = Fraction(0)
             measure += 1
-            k = 0
-        return measure, Fraction(k, self.snap_div)
+        return measure, pos
 
     # -- painting ----------------------------------------------------------- #
 
@@ -104,6 +127,7 @@ class ChartView(QWidget):
         self._paint_horizontal_lines(p)
         self._paint_separators(p)
         self._paint_notes(p)
+        self._paint_hover(p)
         self._paint_playhead(p)
         p.end()
 
@@ -134,6 +158,17 @@ class ChartView(QWidget):
                 p.fillRect(QRect(col.x, top, L.LANE_W, height),
                            LANE_TINT[code[col.lane]])
 
+    def _grid_line_ys(self, step: Fraction):
+        """Yield pixel y for every grid line at ``step`` spacing (skipping the
+        measure line at k=0, drawn separately)."""
+        measures = self.project.measures
+        step_f = float(step)
+        for m in range(measures):
+            k = 1
+            while k * step_f < 1.0:
+                yield self.y_for(m + k * step_f)
+                k += 1
+
     def _paint_horizontal_lines(self, p: QPainter) -> None:
         x0 = L.LEFT_MARGIN
         x1 = self.groups[-1].x1
@@ -142,21 +177,13 @@ class ChartView(QWidget):
         p.setFont(font)
         measures = self.project.measures
 
-        # Snap subdivisions (faintest).
-        p.setPen(QPen(C_SNAP, 1))
-        for m in range(measures):
-            for k in range(1, self.snap_div):
-                if k * BEATS_PER_MEASURE % self.snap_div == 0:
-                    continue  # drawn as a beat line below
-                y = self.y_for(m + k / self.snap_div)
-                p.drawLine(x0, int(y), x1, int(y))
-
-        # Beat lines.
-        p.setPen(QPen(C_BEAT, 1))
-        for m in range(measures):
-            for b in range(1, BEATS_PER_MEASURE):
-                y = self.y_for(m + b / BEATS_PER_MEASURE)
-                p.drawLine(x0, int(y), x1, int(y))
+        # Secondary grid (faintest), then primary grid over it.
+        p.setPen(QPen(C_GRID_SUB, 1))
+        for y in self._grid_line_ys(self.grid_sub):
+            p.drawLine(x0, int(y), x1, int(y))
+        p.setPen(QPen(C_GRID_MAIN, 1))
+        for y in self._grid_line_ys(self.grid_main):
+            p.drawLine(x0, int(y), x1, int(y))
 
         # Measure lines + numbers.
         p.setPen(QPen(C_MEASURE, 1))
@@ -184,8 +211,8 @@ class ChartView(QWidget):
 
     def _note_rect(self, x: int, absolute: float) -> QRect:
         """A note fills the grid cell above its timing line, sized to the
-        current snap so it fits the grid exactly at any zoom level."""
-        cell_h = max(3, int(round(self.measure_px / self.snap_div)))
+        primary grid so it fits the grid exactly at any zoom level."""
+        cell_h = max(3, int(round(self.measure_px * float(self.grid_main))))
         y_line = int(round(self.y_for(absolute)))
         return QRect(x + 1, y_line - cell_h + 1, L.LANE_W - 2, cell_h - 1)
 
@@ -213,15 +240,57 @@ class ChartView(QWidget):
                     continue
                 p.fillRect(self._note_rect(x, n.absolute), self._note_color(km, n.lane))
 
+    def _hover_color(self, col) -> QColor:
+        if col.kind == "bgm":
+            base = C_NOTE_BGM
+        else:
+            base = self._note_color(col.key_mode, col.lane)
+        ghost = QColor(base)
+        ghost.setAlpha(90)
+        return ghost
+
+    def _paint_hover(self, p: QPainter) -> None:
+        if self._hover is None:
+            return
+        col, measure, pos = self._hover
+        rect = self._note_rect(col.x, measure + pos)
+        p.setPen(QPen(QColor(255, 255, 255, 130), 1))
+        p.setBrush(self._hover_color(col))
+        p.drawRect(rect)
+        p.setBrush(Qt.NoBrush)
+
     # -- mouse -------------------------------------------------------------- #
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+    def _snap_now(self, event: QMouseEvent) -> bool:
+        # Snap unless disabled, or temporarily bypassed by holding Shift.
+        shift = bool(event.modifiers() & Qt.ShiftModifier)
+        return self.snap_on and not shift
+
+    def _resolve(self, event: QMouseEvent):
         col = L.column_at(self.columns, event.position().x())
         if col is None:
+            return None
+        measure, pos = self.pos_at(event.position().y(), self._snap_now(event))
+        if measure < 0 or measure >= self.project.measures:
+            return None
+        return col, measure, pos
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        hover = self._resolve(event)
+        if hover != self._hover:
+            self._hover = hover
+            self.update()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        if self._hover is not None:
+            self._hover = None
+            self.update()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        resolved = self._resolve(event)
+        if resolved is None:
             return
-        measure, pos = self.pos_at(event.position().y())
-        if measure >= self.project.measures:
-            return
+        col, measure, pos = resolved
         if event.button() == Qt.LeftButton:
             if col.kind == "bgm":
                 self.project.toggle_bgm(measure, pos)
@@ -238,6 +307,13 @@ class ChartView(QWidget):
                 target.discard(note)
                 self.changed.emit()
                 self.update()
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        if event.modifiers() & Qt.ControlModifier:
+            self.zoom_step.emit(1 if event.angleDelta().y() > 0 else -1)
+            event.accept()
+        else:
+            event.ignore()  # let the scroll area scroll
 
 
 class LaneHeader(QWidget):

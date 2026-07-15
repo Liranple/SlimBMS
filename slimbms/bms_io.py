@@ -75,7 +75,7 @@ def export_bms(project: Project, key_mode: int) -> str:
     lines.append(f"#TITLE {project.title}")
     lines.append(f"#ARTIST {project.artist}")
     lines.append(f"#BPM {_format_bpm(project.bpm)}")
-    lines.append("#PLAYLEVEL 1")
+    lines.append(f"#PLAYLEVEL {int(project.level)}")
     lines.append("#RANK 3")
     lines.append(f"#SLIMBMS_KEYMODE {key_mode}")  # hint for lossless re-import
     lines.append("")
@@ -202,6 +202,7 @@ def project_to_dict(project: Project) -> dict:
         "artist": project.artist,
         "genre": project.genre,
         "bpm": project.bpm,
+        "level": project.level,
         "bgm_file": project.bgm_file,
         "measures": project.measures,
         "bgm": notes(project.bgm),
@@ -215,6 +216,7 @@ def project_from_dict(data: dict) -> Project:
         artist=data.get("artist", ""),
         genre=data.get("genre", ""),
         bpm=float(data.get("bpm", 120.0)),
+        level=int(data.get("level", 1)),
         bgm_file=data.get("bgm_file", ""),
         measures=int(data.get("measures", 16)),
     )
