@@ -32,6 +32,7 @@ from .. import __version__, bms_io, updater
 from ..audio import AudioPlayer
 from ..model import KEY_MODES, Project
 from ..timing import TimeMap
+from .appicon import build_icon
 from .chart_view import ChartView, LaneHeader
 
 
@@ -191,6 +192,7 @@ class MainWindow(QMainWindow):
         self._speed_timer.timeout.connect(self._commit_speed)
 
         self.setWindowTitle("SlimBMS")
+        self.setWindowIcon(build_icon())
         self.resize(1360, 880)
 
         self._update_manual = False
@@ -324,7 +326,7 @@ class MainWindow(QMainWindow):
         # -- Audio ---------------------------------------------------------- #
         outer.addWidget(self._section("음원"))
         # Playback speed gauge (drag like the zoom controls). 1.00 = normal.
-        outer.addWidget(self._hint("재생 속도"))
+        outer.addWidget(self._hint("재생 속도  ( [ / ] )"))
         self.speed = DragValue("×", 0.25, 2.0, 0.05, 1.0)
         self.speed.changed.connect(self._set_speed)
         outer.addWidget(self.speed)
@@ -432,6 +434,13 @@ class MainWindow(QMainWindow):
             act = QAction(self)
             act.setShortcut(key)
             act.triggered.connect(lambda checked=False: self.seek_seconds(-1.0))
+            self.addAction(act)
+
+        # [ / ] nudge the playback-speed gauge down / up (0.05 steps).
+        for key, step in ((Qt.Key_BracketLeft, -1), (Qt.Key_BracketRight, 1)):
+            act = QAction(self)
+            act.setShortcut(key)
+            act.triggered.connect(lambda checked=False, s=step: self.speed.step_by(s))
             self.addAction(act)
 
         tb.addSeparator()

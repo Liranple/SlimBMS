@@ -30,6 +30,7 @@ jobs:
       - name: Build app (onedir)
         run: >
           pyinstaller --noconfirm --windowed --name SlimBMS
+          --icon slimbms.ico
           --exclude-module PySide6.QtWebEngineCore
           --exclude-module PySide6.QtWebEngineWidgets
           --exclude-module PySide6.QtWebEngineQuick
