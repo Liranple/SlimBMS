@@ -161,12 +161,12 @@ class MainWindow(QMainWindow):
 
         outer.addWidget(self._hline())
 
-        # Grid: two plain number boxes. The RIGHT box is the snap basis (cells
-        # per measure that notes land on); the LEFT box is a reference grid.
+        # Grid: two plain number boxes. The LEFT box is the snap basis (cells
+        # per measure that notes land on); the RIGHT box is a reference grid.
         grow = QHBoxLayout()
         grow.addWidget(QLabel("격자"))
-        self.sb_g1 = self._grid_box(4, self._apply_grids)    # left: reference
-        self.sb_g2 = self._grid_box(16, self._apply_grids)   # right: snap basis
+        self.sb_g1 = self._grid_box(16, self._apply_grids)   # left: snap basis
+        self.sb_g2 = self._grid_box(4, self._apply_grids)    # right: reference
         grow.addWidget(self.sb_g1)
         grow.addWidget(self.sb_g2)
         grow.addStretch(1)
@@ -378,9 +378,9 @@ class MainWindow(QMainWindow):
         vbar.setValue(int(self.view.y_for(center_abs) - vp_h / 2))
 
     def _apply_grids(self) -> None:
-        # Right box drives the snap grid; left box is the reference grid.
-        self.view.set_grid_main(self.sb_g2.value())
-        self.view.set_grid_sub(self.sb_g1.value())
+        # Left box drives the snap grid; right box is the reference grid.
+        self.view.set_grid_main(self.sb_g1.value())
+        self.view.set_grid_sub(self.sb_g2.value())
 
     def _toggle_snap(self, on: bool) -> None:
         self.view.set_snap_on(on)
