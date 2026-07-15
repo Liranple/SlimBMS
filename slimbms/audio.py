@@ -27,10 +27,11 @@ except Exception:  # noqa: BLE001
 MIN_SPEED = 0.25
 MAX_SPEED = 2.0
 
-# Phase-vocoder parameters. hop = n_fft/2 (50% overlap) keeps the stretch fast
-# enough to run in the background within a few seconds for a full song.
+# Phase-vocoder parameters. hop = n_fft/4 (75% overlap) — the standard overlap
+# for good reconstruction quality; less time-smearing / overshoot than 50%.
+# It's ~2x slower, but the stretch runs in the background and is cached.
 _N_FFT = 2048
-_HOP = 1024
+_HOP = 512
 
 
 def _time_stretch(x, speed: float):
@@ -234,6 +235,15 @@ class AudioPlayer:
             inter = _np.empty((length, self._channels), dtype=_np.float32)
             for c, ch in enumerate(stretched):
                 inter[:, c] = ch[:length]
+            # Match the original's loudness (RMS), then hard-limit: the phase
+            # vocoder overshoots (esp. on transients), and peak-normalising would
+            # make the whole thing far too quiet, so scale by RMS and clip only
+            # the few remaining peaks.
+            in_ms = _np.mean([float((ch.astype(_np.float64) ** 2).mean())
+                              for ch in self._chans]) if self._chans else 0.0
+            out_ms = float((inter.astype(_np.float64) ** 2).mean()) if inter.size else 0.0
+            if out_ms > 1e-12 and in_ms > 0.0:
+                inter *= float(_np.sqrt(in_ms / out_ms))
             inter = _np.clip(inter * 32768.0, -32768, 32767).astype(_np.int16)
             self._stretched = inter.tobytes()
             self._stretched_speed = speed
