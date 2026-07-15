@@ -1,7 +1,7 @@
 """Shared horizontal lane layout used by both the canvas and its header.
 
-Left to right: a single BGM lane, then the 4K / 5K / 6K lane groups, each
-separated by a gap so the three key modes can be compared side by side.
+Left to right: a single BGM lane, then the 4K / 6K lane groups, each
+separated by a gap so the key modes can be compared side by side.
 """
 
 from __future__ import annotations

@@ -54,13 +54,13 @@ def main() -> int:
     win = MainWindow(Project(title="Smoke", bpm=150, measures=16))
     view = win.view
 
-    # Click in the middle of the 5K group's first lane, somewhere in the timeline.
-    fivek_cols = [c for c in view.columns if c.kind == "key" and c.key_mode == 5]
-    col = fivek_cols[0]
+    # Click in the middle of the 6K group's first lane, somewhere in the timeline.
+    sixk_cols = [c for c in view.columns if c.kind == "key" and c.key_mode == 6]
+    col = sixk_cols[0]
     x = col.x + L.LANE_W / 2
     y = view.y_for(2.5)  # measure 2, half way
     click(view, x, y)
-    assert view.project.note_count(5) == 1, "note should have been placed in 5K"
+    assert view.project.note_count(6) == 1, "note should have been placed in 6K"
 
     # Place a BGM start object.
     bgm_col = view.columns[0]
@@ -69,13 +69,13 @@ def main() -> int:
 
     # Right-click the note erases it (recompute y from the actual note in case
     # the timeline auto-extended and shifted screen positions).
-    note = next(iter(view.project.charts[5]))
+    note = next(iter(view.project.charts[6]))
     click(view, x, view.y_for(note.absolute), Qt.RightButton)
-    assert view.project.note_count(5) == 0, "note should have been erased"
+    assert view.project.note_count(6) == 0, "note should have been erased"
 
     # Export path exercises the whole pipeline.
     from slimbms import bms_io
-    text = bms_io.export_bms(view.project, 5)
+    text = bms_io.export_bms(view.project, 6)
     assert "#TITLE Smoke" in text
 
     # Preview playback advances the playhead even without an audio device
@@ -126,15 +126,15 @@ def main() -> int:
     assert len(held) == 1 and held[0].length == Fraction(1), \
         f"hold should record a 1-measure long note, got {held}"
 
-    # 5K shares its middle lane between E and numpad-7.
-    win.keymode_combo.setCurrentIndex(1)    # 5K
-    assert view.selected_km == 5
+    # 6K maps E and numpad-7 to distinct lanes (2 and 3).
+    win._km_actions[6].trigger()            # switch to 6K
+    assert view.selected_km == 6
     view.set_playhead(6.0)
-    press(view, Qt.Key_E); release(view, Qt.Key_E)   # 5K lane 2
+    press(view, Qt.Key_E); release(view, Qt.Key_E)   # 6K lane 2
     view.set_playhead(7.0)
-    press(view, Qt.Key_7); release(view, Qt.Key_7)   # 5K lane 2 (duplicate mapping)
-    assert sorted(n.lane for n in view.project.charts[5]) == [2, 2], \
-        "E and 7 both target the 5K middle lane"
+    press(view, Qt.Key_7); release(view, Qt.Key_7)   # 6K lane 3
+    assert sorted(n.lane for n in view.project.charts[6]) == [2, 3], \
+        "E and 7 map to distinct 6K lanes"
     win.stop_play()
 
     print("GUI smoke test PASSED")

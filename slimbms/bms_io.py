@@ -76,6 +76,9 @@ def export_bms(project: Project, key_mode: int) -> str:
     lines: List[str] = []
     lines.append("*---------------------- HEADER FIELD")
     lines.append("#PLAYER 1")
+    # uBMSC key-mode extension: pins the play mode (e.g. #6K) so the game reads
+    # the chart as N keys instead of guessing "7+1 keys" from the channels used.
+    lines.append(f"#{key_mode}K")
     lines.append(f"#GENRE {project.genre}")
     lines.append(f"#TITLE {project.title}")
     lines.append(f"#ARTIST {project.artist}")

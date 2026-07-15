@@ -19,9 +19,6 @@ def make_project() -> Project:
     p.toggle_note(4, 0, Fraction(0, 1), 0)
     p.toggle_note(4, 0, Fraction(1, 4), 1)
     p.toggle_note(4, 1, Fraction(3, 8), 3)
-    # 5K chart
-    p.toggle_note(5, 0, Fraction(1, 2), 4)
-    p.toggle_note(5, 2, Fraction(1, 3), 2)
     # 6K chart
     p.toggle_note(6, 0, Fraction(0, 1), 5)
     p.toggle_note(6, 3, Fraction(5, 16), 0)
@@ -50,16 +47,19 @@ def test_measure_data_reduction():
 
 def test_bms_export_contains_header_and_body():
     p = make_project()
-    text = bms_io.export_bms(p, 5)
+    text = bms_io.export_bms(p, 6)
     assert "#TITLE Test Song" in text
     assert "#BPM 145" in text
     assert "#WAV01 song.ogg" in text
-    assert "#SLIMBMS_KEYMODE 5" in text
+    assert "#SLIMBMS_KEYMODE 6" in text
+    # uBMSC key-mode command so the game reads it as 6 keys, not "7+1".
+    assert any(line.strip() == "#6K" for line in text.splitlines())
+    assert "#4K" not in text
     # BGM object on channel 01, measure 000
     assert "#00001:" in text
-    # 5K lane 4 maps to key 6 (channel 18); make_project put a note there.
-    assert KEY_CHANNELS[5][4] == "18"
-    assert any(line.startswith("#00018:") for line in text.splitlines())
+    # 6K lane 5 maps to key 7 (channel 19); make_project put a note there.
+    assert KEY_CHANNELS[6][5] == "19"
+    assert any(line.startswith("#00019:") for line in text.splitlines())
 
 
 def test_export_only_selected_key_mode():
@@ -75,7 +75,7 @@ def test_bms_import_lands_in_import_lane():
     # Exporting a key mode then importing routes every note into the dedicated
     # import lane group. Timing positions and BGM/metadata must be preserved.
     p = make_project()
-    for km in (4, 5, 6):
+    for km in (4, 6):
         text = bms_io.export_bms(p, km)
         back = bms_io.parse_bms(text)
         assert not back.charts[km], "notes should not land back in the key-mode chart"
@@ -98,7 +98,7 @@ def test_project_json_roundtrip():
     assert back.bpm == p.bpm
     assert back.measures == p.measures
     assert back.bgm == p.bgm
-    for km in (4, 5, 6):
+    for km in (4, 6):
         assert back.charts[km] == p.charts[km]
 
 
@@ -114,11 +114,10 @@ def test_import_channels_map_to_import_lanes():
 
 def test_key_mode_channel_mapping():
     # Locks the uBMSC-matching layout: both hands split around the centre key,
-    # scratch (16) unused. 4K=keys2,3,5,6  5K=keys2,3,4,5,6  6K=keys1,2,3,5,6,7.
+    # scratch (16) unused. 4K=keys2,3,5,6  6K=keys1,2,3,5,6,7.
     assert KEY_CHANNELS[4] == ["12", "13", "15", "18"]
-    assert KEY_CHANNELS[5] == ["12", "13", "14", "15", "18"]
     assert KEY_CHANNELS[6] == ["11", "12", "13", "15", "18", "19"]
-    assert "16" not in sum((KEY_CHANNELS[k] for k in (4, 5, 6)), [])
+    assert "16" not in sum((KEY_CHANNELS[k] for k in (4, 6)), [])
 
 
 def test_long_note_exports_on_ln_channel():
@@ -150,13 +149,13 @@ def test_long_note_spanning_measures_pairs_back():
 
 def test_slbms_roundtrip_preserves_length():
     p = Project(title="Hold", bpm=130, measures=4)
-    p.charts[5].add(Note(0, Fraction(0), 1, Fraction(1, 3)))  # long
-    p.charts[5].add(Note(1, Fraction(1, 4), 2))              # tap
+    p.charts[6].add(Note(0, Fraction(0), 1, Fraction(1, 3)))  # long
+    p.charts[6].add(Note(1, Fraction(1, 4), 2))              # tap
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "p.slbms")
         bms_io.save_project(p, path)
         back = bms_io.load_project(path)
-    assert back.charts[5] == p.charts[5], "length must survive the JSON round-trip"
+    assert back.charts[6] == p.charts[6], "length must survive the JSON round-trip"
 
 
 def test_slbms_v1_without_length_still_loads():

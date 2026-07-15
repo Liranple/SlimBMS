@@ -51,11 +51,9 @@ C_SELECT_TINT = QColor(111, 208, 255, 20)  # faint fill over its lanes
 
 # Live-recording keys, per key mode: {Qt key -> lane index}. Left hand Q/W/E,
 # right hand numpad(or top-row) 7/8/9, mapped left-to-right across the lanes.
-# 5K shares its middle lane between E and 7. Top-row and numpad digits both
-# arrive as Key_7/8/9 (NumLock on), so both work.
+# Top-row and numpad digits both arrive as Key_7/8/9 (NumLock on), so both work.
 RECORD_KEYS = {
     4: {Qt.Key_Q: 0, Qt.Key_W: 1, Qt.Key_8: 2, Qt.Key_9: 3},
-    5: {Qt.Key_Q: 0, Qt.Key_W: 1, Qt.Key_E: 2, Qt.Key_7: 2, Qt.Key_8: 3, Qt.Key_9: 4},
     6: {Qt.Key_Q: 0, Qt.Key_W: 1, Qt.Key_E: 2, Qt.Key_7: 3, Qt.Key_8: 4, Qt.Key_9: 5},
 }
 

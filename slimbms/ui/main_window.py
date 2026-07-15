@@ -8,9 +8,8 @@ from typing import Optional
 import threading
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -87,7 +86,7 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._update_title()
         self._on_mode_changed("add")
-        self._on_keymode_changed(self.keymode_combo.currentIndex())
+        self._set_keymode(KEY_MODES[0])
 
         # Silent update check shortly after launch.
         QTimer.singleShot(1500, lambda: self.check_for_updates(manual=False))
@@ -315,11 +314,18 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
         tb.addWidget(QLabel(" 선택한 키 "))
-        self.keymode_combo = QComboBox()
+        # Two-option segmented toggle (4K / 6K) instead of a dropdown; the
+        # checked one is highlighted like the mode buttons.
+        self._km_actions = {}
+        km_group = QActionGroup(self)
+        km_group.setExclusive(True)
         for km in KEY_MODES:
-            self.keymode_combo.addItem(f"{km}K")
-        self.keymode_combo.currentIndexChanged.connect(self._on_keymode_changed)
-        tb.addWidget(self.keymode_combo)
+            act = QAction(f"{km}K", self)
+            act.setCheckable(True)
+            act.triggered.connect(lambda checked, m=km: self._set_keymode(m))
+            km_group.addAction(act)
+            tb.addAction(act)
+            self._km_actions[km] = act
         export_action = QAction("이 키로 .bms 저장", self)
         export_action.triggered.connect(self.export_bms)
         tb.addAction(export_action)
@@ -431,10 +437,12 @@ class MainWindow(QMainWindow):
     def _set_mode(self, mode: str) -> None:
         self.view.set_mode(mode)
 
-    def _on_keymode_changed(self, index: int) -> None:
-        km = KEY_MODES[index]
+    def _set_keymode(self, km: int) -> None:
         self.view.set_selected_km(km)
         self.header.set_selected_km(km)
+        act = self._km_actions.get(km)
+        if act is not None and not act.isChecked():
+            act.setChecked(True)   # keep the toggle in sync when set in code
 
     def _on_mode_changed(self, mode: str) -> None:
         self.add_mode_action.setChecked(mode == "add")
@@ -481,7 +489,7 @@ class MainWindow(QMainWindow):
         self.view.set_live(True)
         self.view.setFocus()   # so recording keys reach the canvas
         km = self.view.selected_km
-        keys = {4: "Q W 8 9", 5: "Q W E/7 8 9", 6: "Q W E 7 8 9"}.get(km, "")
+        keys = {4: "Q W 8 9", 6: "Q W E 7 8 9"}.get(km, "")
         self.statusBar().showMessage(
             f"재생 중 — {km}K 녹음 키: {keys} · 누르면 노트, 꾹 누르면 롱노트로 기록됩니다")
 
@@ -614,7 +622,7 @@ class MainWindow(QMainWindow):
         self._reload_view()
 
     def export_bms(self) -> None:
-        km = KEY_MODES[self.keymode_combo.currentIndex()]
+        km = self.view.selected_km
         if not self.project.bgm:
             QMessageBox.warning(
                 self, "BGM 없음",
@@ -661,7 +669,7 @@ class MainWindow(QMainWindow):
     def show_about(self) -> None:
         QMessageBox.information(
             self, "SlimBMS 정보",
-            f"SlimBMS v{__version__}\n무키음 4K/5K/6K BMS 채보 에디터")
+            f"SlimBMS v{__version__}\n무키음 4K/6K BMS 채보 에디터")
 
     def check_for_updates(self, manual: bool) -> None:
         self._update_manual = manual
@@ -684,17 +692,8 @@ class MainWindow(QMainWindow):
                                         f"이미 최신 버전입니다 (v{__version__}).")
             return
 
-        notes = (info.notes or "").strip()
-        if len(notes) > 500:
-            notes = notes[:500] + "…"
-        msg = f"새 버전 {info.tag} 이 있습니다. (현재 v{__version__})\n"
-        if notes:
-            msg += f"\n{notes}\n"
-        msg += "\n지금 업데이트할까요?"
-        if QMessageBox.question(self, "업데이트", msg,
-                                QMessageBox.Yes | QMessageBox.No,
-                                QMessageBox.Yes) != QMessageBox.Yes:
-            return
+        # A newer version exists: apply it right away, no confirmation prompt or
+        # changelog — just download and restart.
         self._begin_update(info)
 
     def _begin_update(self, info) -> None:
@@ -725,9 +724,7 @@ class MainWindow(QMainWindow):
     def _on_update_downloaded(self, result) -> None:
         self._progress.close()
         new_app_dir, tmp_root = result
-        QMessageBox.information(
-            self, "업데이트",
-            "다운로드가 끝났습니다. 프로그램을 재시작하여 업데이트를 적용합니다.")
+        # Restart straight into the new version without a further prompt.
         self.stop_play()
         updater.swap_and_restart(new_app_dir, tmp_root)  # exits the process
 
@@ -743,13 +740,29 @@ class MainWindow(QMainWindow):
         return base + suffix
 
     def _confirm_discard(self) -> bool:
+        """When there are unsaved changes, ask whether to save, discard, or
+        cancel. Returns True to proceed (discarded, or saved successfully),
+        False to abort the current action."""
         if not self._dirty:
             return True
-        res = QMessageBox.question(
-            self, "저장하지 않은 변경",
-            "저장하지 않은 변경사항이 있습니다. 계속할까요?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        return res == QMessageBox.Yes
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("저장하지 않은 변경")
+        box.setText("저장하지 않은 변경사항이 있습니다.\n저장할까요?")
+        save_btn = box.addButton("저장", QMessageBox.AcceptRole)
+        discard_btn = box.addButton("저장 안 함", QMessageBox.DestructiveRole)
+        cancel_btn = box.addButton("취소", QMessageBox.RejectRole)
+        box.setDefaultButton(save_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is cancel_btn:
+            return False
+        if clicked is discard_btn:
+            return True
+        # Save: proceed only if it actually completed (a cancelled Save As, or a
+        # save error, leaves the project dirty).
+        self.save_project()
+        return not self._dirty
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._confirm_discard():

@@ -1,7 +1,7 @@
 """Data model for SlimBMS.
 
-A :class:`Project` holds one song's metadata plus three independent charts
-(one per key mode: 4K / 5K / 6K) that share the same BGM audio and timing.
+A :class:`Project` holds one song's metadata plus independent charts
+(one per key mode: 4K / 6K) that share the same BGM audio and timing.
 Notes carry no keysounds — the sound of the song comes entirely from a single
 BGM audio file placed on the BGM lane.
 """
@@ -16,21 +16,20 @@ from typing import Dict, List, Set
 # Constants
 # --------------------------------------------------------------------------- #
 
-KEY_MODES = (4, 5, 6)          # editable / exportable key modes
+KEY_MODES = (4, 6)             # editable / exportable key modes
 IMPORT_MODE = 8                # dedicated "import" lane group (A1~A8)
-ALL_MODES = (4, 5, 6, IMPORT_MODE)   # everything the project stores
-DISPLAY_MODES = (4, 5, 6, IMPORT_MODE)  # left-to-right order in the editor
+ALL_MODES = (4, 6, IMPORT_MODE)   # everything the project stores
+DISPLAY_MODES = (4, 6, IMPORT_MODE)  # left-to-right order in the editor
 
 # Lane index -> BMS object channel, per mode (1P visible channels).
 # Channels are the standard BMS 1P keys: 11-15 = keys 1-5, 18/19 = keys 6/7,
-# and 16 = scratch (never used here). The three modes match uBMSC's playfields,
-# with both hands split around the centre key so the game reads them correctly:
-#   4K = keys 2,3,5,6      5K = keys 2,3,4,5,6      6K = keys 1,2,3,5,6,7
+# and 16 = scratch (never used here). The modes match uBMSC's playfields, with
+# both hands split around the centre key so the game reads them correctly:
+#   4K = keys 2,3,5,6      6K = keys 1,2,3,5,6,7
 # The IMPORT_MODE group carries all eight 1P channels (A1~A8 in uBMSC) so any
 # loaded .bms lands there without losing notes.
 KEY_CHANNELS: Dict[int, List[str]] = {
     4: ["12", "13", "15", "18"],
-    5: ["12", "13", "14", "15", "18"],
     6: ["11", "12", "13", "15", "18", "19"],
     IMPORT_MODE: ["11", "12", "13", "14", "15", "16", "18", "19"],
 }
@@ -40,13 +39,12 @@ KEY_CHANNELS: Dict[int, List[str]] = {
 # above, so lanes look like the keyboard they map to.
 LANE_COLORS: Dict[int, str] = {
     4: "BWWB",       # keys 2,3,5,6
-    5: "BWBWB",      # keys 2,3,4,5,6
     6: "WBWWBW",     # keys 1,2,3,5,6,7
     IMPORT_MODE: "GGGGGGGG",
 }
 
 DISPLAY_LABELS: Dict[int, str] = {
-    4: "4K", 5: "5K", 6: "6K", IMPORT_MODE: "불러오기",
+    4: "4K", 6: "6K", IMPORT_MODE: "불러오기",
 }
 
 # Channel used for the background-music object (whole-song audio start timing).
