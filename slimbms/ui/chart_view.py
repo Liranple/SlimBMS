@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..model import (
     DISPLAY_LABELS,
+    DISPLAY_MODES,
     KEY_MODES,
     LANE_COLORS,
     Note,
@@ -50,6 +51,13 @@ LANE_TINT = {
 }
 
 FREE_DIV = 192  # placement resolution when snap is off / Shift held
+
+# Global left-to-right lane order across the key modes (4K, 6K, LOAD), so
+# arrow-key moves can carry a note across mode boundaries as one continuous
+# space. Index 0 = 4K lane 0 … last = LOAD lane 7.
+_GLOBAL_LANES = [(km, lane) for km in DISPLAY_MODES for lane in range(lanes_for(km))]
+_GLOBAL_INDEX = {ml: i for i, ml in enumerate(_GLOBAL_LANES)}
+
 HIT_FLASH_SEC = 0.18   # how long a note's hit flash lasts
 HIT_MAX_STEP = 0.15    # ignore playhead jumps bigger than this (seeks, not playback)
 
@@ -1183,21 +1191,33 @@ class ChartView(QWidget):
         if not self.selection:
             return
         step = self.grid_main
-        new_sel = set()
-        for mode, n in self.selection:
-            self._target_for(mode).discard(n)
+        hi = Fraction(self.project.measures) - step
+        # Compute every note's target first; if ANY would cross a wall (the left
+        # edge of 4K, the right edge of LOAD, or the top/bottom), abort the whole
+        # move so the selection never gets squished against an edge. Key notes
+        # move through 4K→6K→LOAD as one continuous lane space.
+        proposed = []
         for mode, n in self.selection:
             new_abs = n.absolute + d_cells * step
-            new_abs = max(Fraction(0), min(Fraction(self.project.measures) - step, new_abs))
+            if new_abs < 0 or new_abs > hi:
+                return
+            if mode == "bgm":
+                newmode, newlane = "bgm", 0
+            else:
+                g = _GLOBAL_INDEX[(mode, n.lane)] + d_lane
+                if g < 0 or g >= len(_GLOBAL_LANES):
+                    return
+                newmode, newlane = _GLOBAL_LANES[g]
+            proposed.append((mode, n, newmode, newlane, new_abs))
+        for mode, n, *_ in proposed:
+            self._target_for(mode).discard(n)
+        new_sel = set()
+        for mode, n, newmode, newlane, new_abs in proposed:
             measure = int(new_abs)
             pos = new_abs - measure
-            if mode == "bgm":
-                lane = 0
-            else:
-                lane = min(max(n.lane + d_lane, 0), lanes_for(mode) - 1)
-            moved = Note(measure, pos, lane, n.length)
-            self._target_for(mode).add(moved)
-            new_sel.add((mode, moved))
+            moved = Note(measure, pos, newlane, n.length)
+            self._target_for(newmode).add(moved)
+            new_sel.add((newmode, moved))
         self.selection = new_sel
         self.changed.emit()
         self.update()
@@ -1241,24 +1261,42 @@ class ChartView(QWidget):
     def _copy_selection(self, cut: bool) -> None:
         if not self.selection:
             return
-        anchor = min(n.absolute for _mode, n in self.selection)
-        self._clipboard = [(mode, n.absolute - anchor, n.lane, n.length)
-                           for mode, n in self.selection]
+        base = min(n.measure for _mode, n in self.selection)
+        span = max(n.measure for _mode, n in self.selection) - base + 1
+        # Measure-aligned: keep each note's measure offset from the block start.
+        self._clipboard = (span, [(mode, n.measure - base, n.pos, n.lane, n.length)
+                                  for mode, n in self.selection])
         if cut:
             self._delete_selection()
+
+    def _measures_occupied(self, start: int, span: int, modes) -> bool:
+        """Whether any note (in the clipboard's modes) sits in measures
+        ``[start, start+span)``."""
+        for mode in modes:
+            for n in self._target_for(mode):
+                if start <= n.measure < start + span:
+                    return True
+        return False
 
     def _paste(self) -> None:
         if not self._clipboard:
             return
-        anchor = Fraction(self._paste_anchor).limit_denominator(192)
+        span, items = self._clipboard
+        modes = {mode for mode, *_ in items}
+        max_start = self.project.measures - span
+        if max_start < 0:
+            return
+        # Start at the paste anchor's measure, then walk forward to the first run
+        # of ``span`` empty measures (fills empty measures; drops it straight in
+        # when the target is already clear).
+        start = min(max_start, int(max(0.0, self._paste_anchor)))
+        while start < max_start and self._measures_occupied(start, span, modes):
+            start += 1
+        if self._measures_occupied(start, span, modes):
+            return   # no empty room left
         new_sel = set()
-        for mode, d_abs, lane, length in self._clipboard:
-            new_abs = anchor + d_abs
-            if new_abs < 0 or new_abs >= self.project.measures:
-                continue
-            measure = int(new_abs)
-            pos = new_abs - measure
-            note = Note(measure, pos, lane, length)
+        for mode, m_off, pos, lane, length in items:
+            note = Note(start + m_off, pos, lane, length)
             self._target_for(mode).add(note)
             new_sel.add((mode, note))
         if new_sel:
