@@ -372,8 +372,8 @@ class MainWindow(QMainWindow):
         # Two plain number boxes: the LEFT is the snap basis (cells per measure
         # that notes land on); the RIGHT is a lighter reference grid.
         grid = CollapsibleSection("격자")
-        self.sb_g1 = self._flat_field(self._grid_box(16, self._apply_grids))  # snap basis
-        self.sb_g2 = self._flat_field(self._grid_box(4, self._apply_grids))   # reference
+        self.sb_g1 = self._grid_box(16, self._apply_grids)   # snap basis
+        self.sb_g2 = self._grid_box(4, self._apply_grids)    # reference
         grow = QHBoxLayout()
         grow.setSpacing(12)
         grow.addWidget(self._labeled("스냅 격자", self.sb_g1))
@@ -401,13 +401,13 @@ class MainWindow(QMainWindow):
 
         # -- Tempo changes -------------------------------------------------- #
         tempo = CollapsibleSection("BPM 변화")
-        self.bpm_measure = self._flat_field(NoWheelSpinBox())
+        self.bpm_measure = NoWheelSpinBox()
         self.bpm_measure.setRange(0, 9999)
-        self.bpm_cell = self._flat_field(NoWheelSpinBox())
+        self.bpm_cell = NoWheelSpinBox()
         # Position within the measure, counted in snap-grid cells: one measure is
         # split into `스냅 격자` cells, so the max follows the snap-grid setting.
         self.bpm_cell.setRange(0, self.sb_g1.value())
-        self.bpm_value = self._flat_field(NoWheelDoubleSpinBox())
+        self.bpm_value = NoWheelDoubleSpinBox()
         self.bpm_value.setRange(1.0, 999.0)
         self.bpm_value.setDecimals(2)
         self.bpm_value.setValue(120.0)
@@ -426,7 +426,6 @@ class MainWindow(QMainWindow):
         del_bpm = QPushButton("선택 삭제")
         del_bpm.clicked.connect(self._remove_bpm_change)
         tempo.add_widget(del_bpm)
-        tempo.add_widget(self._hint("곡 시작 템포는 위 '곡 정보'의 BPM"))
         outer.addWidget(tempo)
 
         # -- Audio ---------------------------------------------------------- #
@@ -459,7 +458,6 @@ class MainWindow(QMainWindow):
         self.rec_offset.setRange(-300, 300)    # latency comp, either direction
         self.rec_offset.setSingleStep(5)
         self.rec_offset.setSuffix(" ms")
-        self._flat_field(self.rec_offset)
         self.rec_offset.valueChanged.connect(self._update_record_offset)
         rec.add_widget(self._labeled("입력 지연 보정", self.rec_offset))
         self.rec_countin = QPushButton("카운트인 : 꺼짐")
@@ -497,18 +495,13 @@ class MainWindow(QMainWindow):
         label.setWordWrap(True)
         return label
 
-    def _flat_field(self, w: QWidget) -> QWidget:
-        """Strip the dark filled box from a numeric input — transparent with
-        just a thin underline, so the value reads cleanly on the panel instead
-        of sitting inside a black rectangle."""
-        w.setStyleSheet(
-            "QAbstractSpinBox { background: transparent; border: none;"
-            " border-bottom: 1px solid #33333d; border-radius: 0; padding: 2px 2px; }"
-            "QAbstractSpinBox:focus { border-bottom: 1px solid #6fd0ff; }")
-        return w
-
     def _labeled(self, caption: str, widget: QWidget) -> QWidget:
         box = QWidget()
+        # A plain wrapper QWidget otherwise inherits the app-wide dark QWidget
+        # background (a near-black box behind the caption). Scope it transparent
+        # so the caption sits flat on the panel, just like a standalone hint.
+        box.setObjectName("FlatRow")
+        box.setStyleSheet("QWidget#FlatRow { background: transparent; }")
         col = QVBoxLayout(box)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(3)
