@@ -21,15 +21,18 @@ from ..model import (
 )
 from ..timing import TimeMap
 from . import layout as L
+from . import palette
 
-# Colours (dark theme).
-C_BG = QColor("#1e1e24")
+# Colours (dark theme). Colours shared with the Qt theme come from ``palette``
+# so the canvas and the surrounding chrome can never drift apart; the rest are
+# canvas-only and owned here.
+C_BG = QColor(palette.CANVAS)
 C_GROUP_BG_A = QColor("#23232b")
 C_GROUP_BG_B = QColor("#1b1b21")
 C_MEASURE = QColor("#8a8a99")
 C_GRID_FINE = QColor("#313139")   # fine snap grid (faint)
 C_GRID_REF = QColor("#5a5a76")    # reference grid (brighter, drawn on top)
-C_LANE_SEP = QColor("#33333d")
+C_LANE_SEP = QColor(palette.BORDER)
 C_GROUP_SEP = QColor("#55556a")
 C_TEXT = QColor("#c8c8d0")
 C_NOTE_WHITE = QColor("#eef0f4")
@@ -63,7 +66,7 @@ _GLOBAL_INDEX = {ml: i for i, ml in enumerate(_GLOBAL_LANES)}
 HIT_FLASH_SEC = 0.18   # how long a note's hit flash lasts
 HIT_MAX_STEP = 0.15    # ignore playhead jumps bigger than this (seeks, not playback)
 
-C_SELECT = QColor("#6fd0ff")            # accent for the selected key mode
+C_SELECT = QColor(palette.ACCENT)       # accent for the selected key mode
 C_SELECT_TINT = QColor(111, 208, 255, 20)  # faint fill over its lanes
 
 # Live-recording keys, per key mode: {Qt key -> lane index}. Left hand Q/W/E,
@@ -129,7 +132,8 @@ class ChartView(QWidget):
         self._history_timer = QTimer(self)
         self._history_timer.setSingleShot(True)
         self._history_timer.timeout.connect(self._flush_history)
-        self.columns, self.groups, self._width = L.build_layout(self.lane_w, self.bgm_w)
+        self._colx = {}
+        self._build_layout()
         # Paint caches, rebuilt on edit (not per paint): overlap flags plus a
         # by-measure index so painting only touches notes near the viewport.
         self._conflicts = set()          # {(km, Note)} overlapping notes
@@ -146,6 +150,13 @@ class ChartView(QWidget):
 
     # -- geometry ----------------------------------------------------------- #
 
+    def _build_layout(self) -> None:
+        """(Re)build the column/group layout and cache the key-lane x lookup so
+        paints and hit-tests don't rebuild that dict on every call."""
+        self.columns, self.groups, self._width = L.build_layout(self.lane_w, self.bgm_w)
+        self._colx = {(c.key_mode, c.lane): c.x
+                      for c in self.columns if c.kind == "key"}
+
     def _apply_size(self) -> None:
         height = self.project.measures * self.measure_px + 2 * self.v_pad
         self.setFixedSize(self._width, int(height))
@@ -158,13 +169,13 @@ class ChartView(QWidget):
 
     def set_lane_width(self, lane_w: int) -> None:
         self.lane_w = max(14, min(80, lane_w))
-        self.columns, self.groups, self._width = L.build_layout(self.lane_w, self.bgm_w)
+        self._build_layout()
         self._apply_size()
         self.update()
 
     def set_bgm_width(self, bgm_w: int) -> None:
         self.bgm_w = max(20, min(400, int(bgm_w)))
-        self.columns, self.groups, self._width = L.build_layout(self.lane_w, self.bgm_w)
+        self._build_layout()
         self._apply_size()
         self.update()
 
@@ -407,7 +418,7 @@ class ChartView(QWidget):
             p.setPen(Qt.NoPen)
             p.setBrush(C_BPM)
             p.drawRoundedRect(tag, 4, 4)
-            p.setPen(QPen(QColor("#1b1b21"), 1))
+            p.setPen(QPen(C_GROUP_BG_B, 1))     # dark ink on the accent pill
             p.drawText(tag, Qt.AlignCenter, label)
 
     def set_playhead(self, absolute: Optional[float]) -> None:
@@ -458,12 +469,11 @@ class ChartView(QWidget):
                 p.fillRect(QRect(col.x, top, self.lane_w, height),
                            LANE_TINT[code[col.lane]])
 
-    def _grid_line_ys(self, step: Fraction):
-        """Yield pixel y for every grid line at ``step`` spacing (skipping the
-        measure line at k=0, drawn separately)."""
-        measures = self.project.measures
+    def _grid_line_ys(self, step: Fraction, m_lo: int, m_hi: int):
+        """Yield pixel y for every grid line at ``step`` spacing within measures
+        ``[m_lo, m_hi)`` (skipping the measure line at k=0, drawn separately)."""
         step_f = float(step)
-        for m in range(measures):
+        for m in range(m_lo, m_hi):
             k = 1
             while k * step_f < 1.0:
                 yield self.y_for(m + k * step_f)
@@ -480,6 +490,15 @@ class ChartView(QWidget):
 
         lo, hi = self._vis_lo, self._vis_hi
 
+        # Only measures overlapping the exposed strip can contribute visible
+        # lines, so iterate just those (O(viewport)) instead of the whole song.
+        # draw_row still culls exactly; this range is a strict superset of what
+        # it accepts, so the drawn output is unchanged. (+/-1 measure of margin.)
+        abs_top = self.absolute_at(lo)          # smaller y = larger position
+        abs_bot = self.absolute_at(hi)
+        gm_lo = max(0, int(abs_bot) - 1)
+        gm_hi = min(measures, int(abs_top) + 2)   # exclusive bound for cell grids
+
         def draw_row(y: float) -> None:
             yi = int(y)
             if yi < lo or yi > hi:
@@ -491,14 +510,14 @@ class ChartView(QWidget):
         # so its guide lines stay visible even where they coincide with the
         # denser snap lines.
         p.setPen(QPen(C_GRID_FINE, 1))
-        for y in self._grid_line_ys(self.grid_main):
+        for y in self._grid_line_ys(self.grid_main, gm_lo, gm_hi):
             draw_row(y)
         p.setPen(QPen(C_GRID_REF, 1))
-        for y in self._grid_line_ys(self.grid_sub):
+        for y in self._grid_line_ys(self.grid_sub, gm_lo, gm_hi):
             draw_row(y)
 
-        # Measure lines + numbers.
-        for m in range(measures + 1):
+        # Measure lines + numbers (measure `measures` is the final top boundary).
+        for m in range(gm_lo, min(measures, gm_hi) + 1):
             y = self.y_for(m)
             p.setPen(QPen(C_MEASURE, 1))
             draw_row(y)
@@ -649,10 +668,7 @@ class ChartView(QWidget):
         for m in range(m_lo, m_hi + 1):
             for n in self._bgm_by_measure.get(m, ()):
                 p.fillRect(self._note_rect(bgm_x, n.absolute, self.bgm_w), C_NOTE_BGM)
-        col_index = {}
-        for col in self.columns:
-            if col.kind == "key":
-                col_index[(col.key_mode, col.lane)] = col.x
+        col_index = self._colx
         conflicts = self._conflicts
         for km in self.project.charts:
             tm = self._taps_by_measure.get(km, {})
@@ -723,7 +739,7 @@ class ChartView(QWidget):
         p.setBrush(Qt.NoBrush)
 
     def _col_x(self):
-        return {(c.key_mode, c.lane): c.x for c in self.columns if c.kind == "key"}
+        return self._colx   # cached; rebuilt in _build_layout on any layout change
 
     def _sel_rect(self, x: int, note: Note, w: Optional[int] = None) -> QRect:
         """Bounding outline for a note — the head cell for a tap, or the whole

@@ -5,30 +5,20 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-import threading
-
 from PySide6.QtCore import (
     QEvent,
-    QObject,
-    QPoint,
-    QRect,
     QSettings,
     QSize,
     QStandardPaths,
     Qt,
     QTimer,
-    Signal,
 )
-from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QPainter
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
-    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
-    QKeySequenceEdit,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -37,7 +27,6 @@ from PySide6.QtWidgets import (
     QProgressDialog,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -49,185 +38,28 @@ from ..model import IMPORT_MODE, KEY_MODES, Project
 from ..timing import TimeMap
 from .appicon import build_icon
 from .chart_view import ChartView, LaneHeader
+from .dialogs import KeybindingsDialog
+from .playback import PlaybackController
 from .toolbar_icons import make_icon
-from .widgets import CollapsibleSection, NoWheelDoubleSpinBox, NoWheelSpinBox
+from .widgets import (
+    CollapsibleSection,
+    DragValue,
+    NoWheelDoubleSpinBox,
+    NoWheelSpinBox,
+)
+from .worker import _Worker
+
+# Org/app pair for QSettings, in one place so the string literals aren't
+# duplicated across every persisted-setting call site.
+_SETTINGS_ORG = "SlimBMS"
+_SETTINGS_APP = "SlimBMS"
 
 
-class _Worker(QObject):
-    """Runs a function on a daemon thread and delivers the result to the UI
-    thread via a queued signal."""
-
-    done = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, fn):
-        super().__init__()
-        self._fn = fn
-
-    def start(self) -> None:
-        threading.Thread(target=self._run, daemon=True).start()
-
-    def _run(self) -> None:
-        try:
-            self.done.emit(self._fn())
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
-
-class DragValue(QWidget):
-    """A compact 'drag to adjust' control, like a volume knob: press and slide
-    the mouse left or right to change a numeric value in fixed steps. An icon
-    sits on the left and the current value is shown on the right. Vertical
-    movement is ignored, so the mouse only needs to travel sideways."""
-
-    changed = Signal(float)
-    GROOVE_L = 28   # groove left edge (matches paintEvent)
-    GROOVE_R_PAD = 52  # space reserved on the right for the value text
-
-    def __init__(self, icon: str, minimum: float, maximum: float,
-                 step: float, value: float, parent=None):
-        super().__init__(parent)
-        self._icon = icon
-        self._min = float(minimum)
-        self._max = float(maximum)
-        self._step = float(step)
-        self._value = self._quant(value)
-        self._dragging = False
-        self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(30)
-        self.setMinimumWidth(160)
-
-    def _quant(self, v: float) -> float:
-        v = round(v / self._step) * self._step
-        return max(self._min, min(self._max, v))
-
-    def value(self) -> float:
-        return self._value
-
-    def set_value(self, v: float, notify: bool = True) -> None:
-        v = self._quant(v)
-        if abs(v - self._value) < 1e-9:
-            return
-        self._value = v
-        self.update()
-        if notify:
-            self.changed.emit(v)
-
-    def step_by(self, n: int) -> None:
-        self.set_value(self._value + n * self._step)
-
-    # -- interaction -------------------------------------------------------- #
-
-    def _value_at(self, x: float) -> float:
-        """The value the groove maps the widget-x position to (absolute, so the
-        handle follows the mouse)."""
-        gx0 = self.GROOVE_L
-        gx1 = self.width() - self.GROOVE_R_PAD
-        if gx1 <= gx0:
-            return self._value
-        frac = max(0.0, min(1.0, (x - gx0) / (gx1 - gx0)))
-        return self._min + frac * (self._max - self._min)
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.LeftButton:
-            self._dragging = True
-            self.set_value(self._value_at(event.position().x()))
-            event.accept()
-
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if self._dragging:
-            self.set_value(self._value_at(event.position().x()))
-            event.accept()
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        self._dragging = False
-
-    def wheelEvent(self, event) -> None:  # noqa: N802
-        event.ignore()   # no wheel adjustment; let the sidebar scroll instead
-
-    # -- painting ----------------------------------------------------------- #
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
-        cy = h / 2
-
-        # Icon on the left.
-        icon_font = QFont()
-        icon_font.setPointSize(14)
-        p.setFont(icon_font)
-        p.setPen(QColor("#9fb4c8"))
-        p.drawText(QRect(0, 0, 22, h), Qt.AlignCenter, self._icon)
-
-        # Current value on the right.
-        val_font = QFont()
-        val_font.setPointSize(9)
-        val_font.setBold(True)
-        p.setFont(val_font)
-        p.setPen(QColor("#e6ecf2"))
-        p.drawText(QRect(w - 46, 0, 46, h),
-                   Qt.AlignRight | Qt.AlignVCenter, f"{self._value:.2f}")
-
-        # Groove between icon and value, with a filled portion and a round handle.
-        gx0, gx1 = self.GROOVE_L, w - self.GROOVE_R_PAD
-        if gx1 <= gx0:
-            p.end()
-            return
-        span = self._max - self._min
-        frac = (self._value - self._min) / span if span > 0 else 0.0
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#31313b"))
-        p.drawRoundedRect(QRect(gx0, int(cy) - 3, gx1 - gx0, 6), 3, 3)
-        fill_w = int((gx1 - gx0) * frac)
-        p.setBrush(QColor("#6fd0ff"))
-        p.drawRoundedRect(QRect(gx0, int(cy) - 3, fill_w, 6), 3, 3)
-        p.setBrush(QColor("#dbe7f2"))
-        p.drawEllipse(QPoint(gx0 + fill_w, int(cy)), 6, 6)
-        p.end()
+def _settings() -> QSettings:
+    """The app's persistent settings store (window geometry, last folders, …)."""
+    return QSettings(_SETTINGS_ORG, _SETTINGS_APP)
 
 
-class KeybindingsDialog(QDialog):
-    """Lets the user reassign the app's configurable shortcuts."""
-
-    def __init__(self, key_actions, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("단축키 설정")
-        self.setMinimumWidth(340)
-        self._edits = {}
-        self._defaults = {k: d for k, (_a, _l, d) in key_actions.items()}
-
-        v = QVBoxLayout(self)
-        form = QFormLayout()
-        form.setHorizontalSpacing(14)
-        form.setVerticalSpacing(8)
-        for key, (act, label, _default) in key_actions.items():
-            edit = QKeySequenceEdit(act.shortcut())
-            self._edits[key] = edit
-            form.addRow(label, edit)
-        v.addLayout(form)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
-            | QDialogButtonBox.RestoreDefaults)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        buttons.button(QDialogButtonBox.RestoreDefaults).clicked.connect(
-            self._restore_defaults)
-        v.addWidget(buttons)
-
-    def _restore_defaults(self) -> None:
-        for key, edit in self._edits.items():
-            edit.setKeySequence(QKeySequence(self._defaults[key]))
-
-    def result_shortcuts(self):
-        return {key: edit.keySequence().toString()
-                for key, edit in self._edits.items()}
-
-
-PREVIEW_FPS = 60
-# Where the playhead sits within the viewport (fraction from the top). Notes
-# scroll upward, so keeping it low leaves upcoming notes visible above it.
-PLAYHEAD_VIEWPORT_FRACTION = 0.72
 
 
 class MainWindow(QMainWindow):
@@ -238,25 +70,10 @@ class MainWindow(QMainWindow):
         self._dirty = False
         self._last_dirs = {}  # per-operation last folder (open/save/import/export/bgm)
 
-        # Playback / preview.
+        # Playback / preview (transport handled by PlaybackController).
         self.audio = AudioPlayer()
         self._bgm_path: Optional[str] = None   # full path for playback
-        self._timemap: Optional[TimeMap] = None
-        self._preview_active = False
-        self._play_timer = QTimer(self)
-        self._play_timer.setInterval(int(1000 / PREVIEW_FPS))
-        self._play_timer.timeout.connect(self._on_play_tick)
-        # Recording aids: count-in beats + metronome beat tracking.
-        self._counting_in = False
-        self._countin_left = 0
-        self._last_beat = -1
-        self._countin_timer = QTimer(self)
-        self._countin_timer.timeout.connect(self._countin_tick)
-        # Debounce speed-gauge drags: rebuild the stretch once the drag settles.
-        self._pending_speed = 1.0
-        self._speed_timer = QTimer(self)
-        self._speed_timer.setSingleShot(True)
-        self._speed_timer.timeout.connect(self._commit_speed)
+        self.playback = PlaybackController(self)
 
         self.setWindowTitle("SlimBMS")
         self.setWindowIcon(build_icon())
@@ -706,7 +523,7 @@ class MainWindow(QMainWindow):
         act.setShortcuts(seqs)
 
     def _load_shortcuts(self) -> None:
-        s = QSettings("SlimBMS", "SlimBMS")
+        s = _settings()
         for key, (act, _label, default) in self._key_actions.items():
             seq = s.value(f"shortcuts/{key}", default)
             self._apply_shortcut(key, seq)
@@ -714,7 +531,7 @@ class MainWindow(QMainWindow):
     def open_keybindings(self) -> None:
         dlg = KeybindingsDialog(self._key_actions, self)
         if dlg.exec():
-            s = QSettings("SlimBMS", "SlimBMS")
+            s = _settings()
             for key, seq in dlg.result_shortcuts().items():
                 self._apply_shortcut(key, seq)
                 s.setValue(f"shortcuts/{key}", seq)
@@ -861,10 +678,10 @@ class MainWindow(QMainWindow):
     def _set_bgm_width(self, w: int) -> None:
         self.view.set_bgm_width(w)
         self.header.set_bgm_width(self.view.bgm_w)   # keep header in sync (clamped)
-        QSettings("SlimBMS", "SlimBMS").setValue("sidebar/bgm_width", self.view.bgm_w)
+        _settings().setValue("sidebar/bgm_width", self.view.bgm_w)
 
     def _load_layout_prefs(self) -> None:
-        raw = QSettings("SlimBMS", "SlimBMS").value("sidebar/bgm_width", 64)
+        raw = _settings().value("sidebar/bgm_width", 64)
         try:
             w = int(raw)
         except (TypeError, ValueError):
@@ -873,12 +690,12 @@ class MainWindow(QMainWindow):
         self.header.set_bgm_width(self.view.bgm_w)
 
     def _restore_geometry(self) -> None:
-        geo = QSettings("SlimBMS", "SlimBMS").value("window/geometry")
+        geo = _settings().value("window/geometry")
         if geo is not None:
             self.restoreGeometry(geo)   # size + position + maximized state
 
     def _save_geometry(self) -> None:
-        QSettings("SlimBMS", "SlimBMS").setValue("window/geometry", self.saveGeometry())
+        _settings().setValue("window/geometry", self.saveGeometry())
 
     # -- tempo changes ------------------------------------------------------ #
 
@@ -976,190 +793,49 @@ class MainWindow(QMainWindow):
         self.header.set_lane_width(self.view.lane_w)
         hbar.setValue(int(self.view._width * center_frac - vp_w / 2))
 
-    # -- playback / preview ------------------------------------------------- #
+    # -- playback / preview (transport lives in PlaybackController) --------- #
 
     def _set_speed(self, factor: float) -> None:
-        # Debounce: the gauge fires on every 0.05 step while dragging, but the
-        # pitch-preserving stretch is heavy, so only rebuild once it settles.
-        self._pending_speed = factor
-        self._speed_timer.start(280)
+        self.playback._set_speed(factor)
 
     def _commit_speed(self) -> None:
-        factor = self._pending_speed
-        if abs(factor - self.audio.speed) < 1e-9:
-            return
-        was_playing = self.audio.playing
-        pos = self.audio.position()
-        # Stop audio + clock while we rebuild the stretch (pitch preserved).
-        self._play_timer.stop()
-        self.audio.stop()
-        self.view.set_live(False)
-        self.audio.set_speed(factor)
-        if not self.audio.loaded or self.audio.stretch_ready():
-            self._speed_ready(pos, was_playing)   # 1.0x / no audio: nothing to build
-            return
-        self.statusBar().showMessage(f"재생 속도 {factor:.2f}× 처리 중…")
-        worker = self._speed_worker = _Worker(self.audio.build_stretch)
-        worker.done.connect(lambda _=None: self._speed_ready(pos, was_playing))
-        worker.failed.connect(lambda _msg: self._speed_ready(pos, was_playing))
-        worker.start()
-
-    def _speed_ready(self, pos: float, was_playing: bool) -> None:
-        self.statusBar().clearMessage()
-        self.audio.seek(pos)
-        if was_playing:
-            self._start_play()
-        elif self._preview_active:
-            self.view.set_playhead(self._ensure_timemap().chart_pos(pos))
-
-    def _ensure_timemap(self) -> TimeMap:
-        # Rebuilt on demand so BPM / BGM-offset edits always take effect.
-        self._timemap = TimeMap(self.project)
-        return self._timemap
-
-    def _current_chart_pos(self) -> float:
-        return self._ensure_timemap().chart_pos(self.audio.position())
-
-    def _update_record_offset(self) -> None:
-        # Convert the ms offset to measures at the current tempo for recording.
-        mps = TimeMap(self.project).measures_per_second
-        self.view.record_offset_measures = (self.rec_offset.value() / 1000.0) * mps
+        self.playback._commit_speed()
 
     def toggle_play(self) -> None:
-        if self._counting_in:
-            self._cancel_countin()
-            self.stop_play()
-        elif self.audio.playing:
-            self._pause_play()
-        else:
-            self._start_play()
+        self.playback.toggle_play()
 
     def _start_play(self) -> None:
-        # A count-in plays four beats before a fresh start (not when resuming).
-        if self.rec_countin.isChecked() and not self.audio.paused and not self._counting_in:
-            self._begin_countin()
-            return
-        self._do_start_play()
+        self.playback._start_play()
 
     def _do_start_play(self) -> None:
-        self._ensure_timemap()
-        self._preview_active = True
-        self._update_record_offset()
-        self._last_beat = -1
-        # Un-pause in place when we were paused (no re-seek, so the audio stays
-        # in sync); otherwise start/seek to the current position.
-        if self.audio.paused:
-            self.audio.resume()
-        else:
-            self.audio.play(self.audio.position())
-        self.play_action.setIcon(self._icon_pause)
-        self._play_timer.start()
-        self.view.set_live(True)
-        self.view.setFocus()   # so recording keys reach the canvas
-
-    def _begin_countin(self) -> None:
-        self._counting_in = True
-        self._countin_left = 3          # first beat plays now, three more follow
-        self.play_action.setIcon(self._icon_pause)
-        self.statusBar().showMessage("카운트인…")
-        self.audio.play_click(accent=True)
-        interval = int(60000.0 / max(1.0, self.project.bpm))
-        self._countin_timer.setInterval(interval)
-        self._countin_timer.start()
+        self.playback._do_start_play()
 
     def _countin_tick(self) -> None:
-        if not self._counting_in:
-            self._countin_timer.stop()
-            return
-        if self._countin_left <= 0:
-            self._countin_timer.stop()
-            self._counting_in = False
-            self.statusBar().clearMessage()
-            self._do_start_play()
-            return
-        self.audio.play_click(accent=False)
-        self._countin_left -= 1
-
-    def _cancel_countin(self) -> None:
-        self._countin_timer.stop()
-        self._counting_in = False
-        self.statusBar().clearMessage()
+        self.playback._countin_tick()
 
     def _pause_play(self) -> None:
-        self.audio.pause()
-        self._play_timer.stop()
-        self.play_action.setIcon(self._icon_play)
-        self.view.set_live(False)
-        self._on_mode_changed(self.view.mode)
-        # Keep the playhead visible where we paused so seeking has a reference.
-        self.view.set_playhead(self._current_chart_pos())
+        self.playback._pause_play()
 
     def stop_play(self) -> None:
-        self._cancel_countin()
-        self.audio.stop()
-        self._play_timer.stop()
-        self.play_action.setIcon(self._icon_play)
-        self._preview_active = False
-        self.view.set_live(False)
-        self._on_mode_changed(self.view.mode)
-        self.view.set_playhead(None)
+        self.playback.stop_play()
 
     def go_to_start(self) -> None:
-        self._seek_audio(0.0)
+        self.playback.go_to_start()
 
     def seek_seconds(self, d_seconds: float) -> None:
-        self._seek_audio(self.audio.position() + d_seconds)
+        self.playback.seek_seconds(d_seconds)
 
     def _seek_audio(self, seconds: float) -> None:
-        seconds = max(0.0, seconds)
-        self.audio.seek(seconds)
-        self._preview_active = True
-        chart_pos = self._ensure_timemap().chart_pos(seconds)
-        self.view.set_playhead(chart_pos)
-        self._follow_playhead(chart_pos)
+        self.playback._seek_audio(seconds)
 
     def _seek_to_chart(self, absolute: float) -> None:
-        # Click-to-seek: put the playhead where clicked (no scroll jump); the
-        # next play starts from there.
-        seconds = self._ensure_timemap().audio_seconds(absolute)
-        self.audio.seek(seconds)
-        self._preview_active = True
-        self.view.set_playhead(max(0.0, absolute))
+        self.playback._seek_to_chart(absolute)
 
     def _on_play_tick(self) -> None:
-        if self._timemap is None:
-            return
-        pos = self.audio.position()
-        chart_pos = self._timemap.chart_pos(pos)
-        # Stop at the end of the timeline (or audio).
-        if chart_pos >= self.project.measures or (
-            self.audio.duration and pos >= self.audio.duration
-        ):
-            self.stop_play()
-            return
-        if self.rec_metronome.isChecked():
-            beat = int(chart_pos * 4)   # 4 beats per measure (4/4)
-            if beat > self._last_beat:
-                self.audio.play_click(accent=(beat % 4 == 0))
-                self._last_beat = beat
-        self.view.set_playhead(chart_pos)
-        self._follow_playhead(chart_pos)
+        self.playback._on_play_tick()
 
-    def _viewport_chart_pos(self) -> float:
-        """Chart position currently at the playhead line in the viewport."""
-        vbar = self.scroll.verticalScrollBar()
-        vp_h = self.scroll.viewport().height()
-        y_in_view = vbar.value() + vp_h * PLAYHEAD_VIEWPORT_FRACTION
-        absolute = self.project.measures - (y_in_view - self.view.v_pad) / self.view.measure_px
-        return max(0.0, absolute)
-
-    def _follow_playhead(self, chart_pos: float) -> None:
-        vbar = self.scroll.verticalScrollBar()
-        vp_h = self.scroll.viewport().height()
-        y = self.view.y_for(chart_pos)
-        target = int(y - vp_h * PLAYHEAD_VIEWPORT_FRACTION)
-        target = max(vbar.minimum(), min(vbar.maximum(), target))
-        vbar.setValue(target)
+    def _update_record_offset(self) -> None:
+        self.playback._update_record_offset()
 
     # -- autosave / recovery ------------------------------------------------ #
 
@@ -1489,14 +1165,14 @@ class MainWindow(QMainWindow):
         export/bgm), remembered separately and persisted across sessions."""
         d = self._last_dirs.get(key)
         if d is None:
-            d = QSettings("SlimBMS", "SlimBMS").value(f"paths/{key}", "") or ""
+            d = _settings().value(f"paths/{key}", "") or ""
             self._last_dirs[key] = d
         return d
 
     def _remember_dir(self, key: str, path: str) -> None:
         d = os.path.dirname(path)
         self._last_dirs[key] = d
-        QSettings("SlimBMS", "SlimBMS").setValue(f"paths/{key}", d)
+        _settings().setValue(f"paths/{key}", d)
 
     def _dialog_path(self, key: str, name: str) -> str:
         """Default path for a save dialog: the ``key`` operation's last folder +

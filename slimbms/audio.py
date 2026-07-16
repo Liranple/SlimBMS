@@ -178,38 +178,48 @@ class AudioPlayer:
         if not self.available:
             self.path = path
             return False
+        # Decode into locals first and commit only once every step has
+        # succeeded, so a mid-load failure leaves the previously-loaded song
+        # fully intact instead of a mix of old and new state.
         try:
             snd = self._pygame.mixer.Sound(path)
-            self.duration = float(snd.get_length())
-            self._raw = snd.get_raw()
+            duration = float(snd.get_length())
+            raw = snd.get_raw()
             freq, size, channels = self._pygame.mixer.get_init()
-            self._rate = freq
-            self._channels = channels
-            self._width = abs(size) // 8
-            self._chans = self._decode_channels(self._raw)
-            self.path = path
-            self.loaded = True
-            self._playing = False
-            self._paused = False
-            self._paused_pos = 0.0
-            self._sound = None
-            self._channel = None
-            # Invalidate the stretch cache; 1.0x needs no processing.
-            self._stretched = self._raw
-            self._stretched_speed = 1.0 if abs(self._speed - 1.0) < 1e-9 else None
-            return True
+            width = abs(size) // 8
+            chans = self._decode_channels(raw, channels, width)
         except Exception:  # noqa: BLE001
-            self.loaded = False
-            return False
+            return False   # leave all prior state (incl. current playback) intact
 
-    def _decode_channels(self, raw: bytes) -> List:
-        if _np is None or self._width != 2:
+        # Success: stop any playback of the previous song before swapping it in,
+        # otherwise the old channel keeps playing after we drop the reference.
+        self._stop_channel()
+        self.duration = duration
+        self._raw = raw
+        self._rate = freq
+        self._channels = channels
+        self._width = width
+        self._chans = chans
+        self.path = path
+        self.loaded = True
+        self._playing = False
+        self._paused = False
+        self._paused_pos = 0.0
+        self._sound = None
+        self._channel = None
+        # Invalidate the stretch cache; 1.0x needs no processing.
+        self._stretched = self._raw
+        self._stretched_speed = 1.0 if abs(self._speed - 1.0) < 1e-9 else None
+        return True
+
+    def _decode_channels(self, raw: bytes, channels: int, width: int) -> List:
+        if _np is None or width != 2:
             return []
         arr = _np.frombuffer(raw, dtype=_np.int16)
-        if self._channels > 1:
-            arr = arr.reshape(-1, self._channels)
+        if channels > 1:
+            arr = arr.reshape(-1, channels)
             return [arr[:, c].astype(_np.float32) / 32768.0
-                    for c in range(self._channels)]
+                    for c in range(channels)]
         return [arr.astype(_np.float32) / 32768.0]
 
     # -- speed / stretch ---------------------------------------------------- #
@@ -259,6 +269,11 @@ class AudioPlayer:
         """Set playback speed (0.25–2.0). Only records the speed and invalidates
         the cache; rebuild with :meth:`build_stretch` and restart playback."""
         speed = max(MIN_SPEED, min(MAX_SPEED, speed))
+        if _np is None:
+            # Without numpy we can't time-stretch with pitch preserved, so speed
+            # control is disabled (documented contract): stay at 1.0x instead of
+            # playing raw audio against a speed-scaled clock (which would drift).
+            speed = 1.0
         if abs(speed - self._speed) < 1e-9:
             return
         self._speed = speed

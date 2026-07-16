@@ -81,6 +81,17 @@ def test_snapshot_restore():
     assert p.measures == 16
 
 
+def test_snapshot_excludes_base_bpm():
+    # Base BPM is metadata (edited via the sidebar like title/level) and is NOT
+    # part of the undo history, so snapshot/restore must leave it untouched
+    # rather than reverting a later base-BPM edit.
+    p = Project(bpm=120.0)
+    snap = p.snapshot()
+    p.bpm = 180.0
+    p.restore(snap)
+    assert p.bpm == 180.0
+
+
 if __name__ == "__main__":
     import traceback
 

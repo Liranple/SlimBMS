@@ -12,18 +12,20 @@ from __future__ import annotations
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication
 
-# Palette — kept in step with the canvas colours in ``chart_view``.
-APP_BG = "#17171c"       # window backdrop
-PANEL = "#212129"        # toolbar / sidebar surfaces
-CANVAS = "#1e1e24"       # chart area (matches ChartView C_BG)
-FIELD = "#2a2a33"        # text inputs
-BORDER = "#33333d"       # hairlines
-BORDER_STRONG = "#44444f"
-TEXT = "#d6d6de"         # primary text
-TEXT_DIM = "#9a9aa6"     # secondary / hints
-ACCENT = "#6fd0ff"       # selection / focus (matches C_SELECT)
-ACCENT_INK = "#0c1116"   # text on an accent fill
-DANGER = "#ff6b81"
+# Colour tokens live in ``palette`` (one source of truth shared with the canvas).
+from .palette import (  # noqa: E402,F401  (re-exported for the stylesheet below)
+    ACCENT,
+    ACCENT_INK,
+    APP_BG,
+    BORDER,
+    BORDER_STRONG,
+    CANVAS,
+    DANGER,
+    FIELD,
+    PANEL,
+    TEXT,
+    TEXT_DIM,
+)
 
 FONT_STACK = '"Segoe UI", "Malgun Gothic", "Noto Sans KR", sans-serif'
 
