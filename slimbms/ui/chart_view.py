@@ -1026,18 +1026,19 @@ class ChartView(QWidget):
         return best
 
     def _apply_len_drag(self, event: QMouseEvent) -> None:
-        """Resize a long note by dragging its head or tail to the cursor."""
+        """Resize a long note by dragging its head or tail to the cursor.
+        Shrinking down to a single cell (head meets tail) collapses it back
+        into a plain tap; dragging out again regrows a long note."""
         ld = self._len_drag
         mode, note = ld["mode"], ld["note"]
         measure, pos = self.pos_at(event.position().y(), self._snap_now(event))
         cur = Fraction(measure) + pos
-        step = self.grid_main
         head, tail = note.absolute, note.end_absolute
         if ld["end"] == "tail":
-            new_end = max(head + step, min(cur, Fraction(self.project.measures)))
+            new_end = max(head, min(cur, Fraction(self.project.measures)))
             new = self._relen(mode, note, head, new_end - head)
         else:
-            new_head = max(Fraction(0), min(cur, tail - step))
+            new_head = max(Fraction(0), min(cur, tail))
             new = self._relen(mode, note, new_head, tail - new_head)
         ld["note"] = new
         self.selection = {(mode, new)}
