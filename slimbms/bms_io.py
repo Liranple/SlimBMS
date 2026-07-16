@@ -81,6 +81,10 @@ def _measure_data(objects: List[Note], value: str = OBJ_VALUE) -> str:
     slots = ["00"] * length
     for n in objects:
         idx = n.pos.numerator * (length // n.pos.denominator)
+        # An object at pos >= the measure's length falls past a shortened
+        # measure's end (e.g. a long-note tail or BPM change the UI let slip
+        # through). Clamp it to the last slot rather than crash the whole export.
+        idx = min(idx, length - 1)
         slots[idx] = value
     # Reduce: if every filled index shares a factor with the length, shrink it.
     g = length
@@ -103,7 +107,8 @@ def _measure_data_valued(items) -> str:
         length = length * pos.denominator // gcd(length, pos.denominator)
     slots = ["00"] * length
     for pos, val in items:
-        slots[pos.numerator * (length // pos.denominator)] = val
+        idx = min(pos.numerator * (length // pos.denominator), length - 1)
+        slots[idx] = val
     g = length
     for i, v in enumerate(slots):
         if v != "00":

@@ -301,18 +301,34 @@ class ChartView(QWidget):
         note/BGM it holds (can't collapse a cell that has an object in it)."""
         step = self.grid_main
         max_ext = Fraction(0)
-        def consider(n):
+        def reserve(ext):
+            # Every object needs a live slot: reserve up to one cell PAST its
+            # position, so the shortened measure still has a slot to hold it.
+            # (Reserving only up to the position lets the measure end exactly on
+            # a long-note tail / BPM change, which then overflows on export.)
             nonlocal max_ext
-            ext = min(Fraction(1), n.end_absolute - m) if n.is_long else n.pos + step
-            if ext > max_ext:
-                max_ext = ext
+            max_ext = max(max_ext, min(Fraction(1), ext))
+        def consider(n):
+            if n.is_long:
+                if int(n.end_absolute) > m:
+                    reserve(Fraction(1))            # hold passes clear through
+                else:
+                    reserve(n.end_absolute - m + step)   # tail lands in this measure
+                if n.measure == m:
+                    reserve(n.pos + step)           # head slot
+            elif n.measure == m:
+                reserve(n.pos + step)
         for chart in self.project.charts.values():
             for n in chart:
-                if n.measure == m:
+                # A note pins measure m if it starts here or a hold reaches into it.
+                if n.measure == m or (n.is_long and n.measure < m <= int(n.end_absolute)):
                     consider(n)
         for n in self.project.bgm:
             if n.measure == m:
                 consider(n)
+        for pos in self.project.bpm_changes:
+            if int(pos) == m:
+                reserve((pos - m) + step)           # BPM object slot in this measure
         if max_ext <= 0:
             return 1
         import math
