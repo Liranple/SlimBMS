@@ -255,6 +255,7 @@ class MainWindow(QMainWindow):
         tempo.add_widget(add_bpm)
         self.bpm_list = QListWidget()
         self.bpm_list.setMaximumHeight(84)
+        self.bpm_list.itemDoubleClicked.connect(self._edit_bpm_change)
         tempo.add_widget(self.bpm_list)
         del_bpm = QPushButton("선택 삭제")
         del_bpm.clicked.connect(self._remove_bpm_change)
@@ -819,6 +820,23 @@ class MainWindow(QMainWindow):
             text = f"마디 {measure} · 칸 {cell}/{grid} → {bpm:g} BPM"
             self.bpm_list.addItem(text)
             self.bpm_list.item(self.bpm_list.count() - 1).setData(Qt.UserRole, pos)
+
+    def _edit_bpm_change(self, item) -> None:
+        """Double-click a list entry: load its (마디/칸/BPM) into the inputs and
+        scroll the canvas so that change sits at the vertical centre."""
+        pos = item.data(Qt.UserRole)
+        if pos not in self.project.bpm_changes:
+            return
+        grid = max(1, self.sb_g1.value())
+        measure = int(pos)
+        cell = int(round(float(pos - measure) * grid))
+        self.bpm_measure.setValue(measure)
+        self.bpm_cell.setValue(cell)
+        self.bpm_value.setValue(self.project.bpm_changes[pos])
+        # Centre the canvas on the change's position.
+        vbar = self.scroll.verticalScrollBar()
+        vp_h = self.scroll.viewport().height()
+        vbar.setValue(int(self.view.y_for(float(pos)) - vp_h / 2))
 
     def _set_mode(self, mode: str) -> None:
         self.view.set_mode(mode)
