@@ -57,6 +57,22 @@ def test_variable_bpm():
         assert abs(tm.audio_seconds(tm.chart_pos(secs)) - secs) < 1e-6
 
 
+def test_variable_measure_length():
+    # 120 bpm -> 0.5 m/s -> 2 s per full measure. Halving measure 1 makes it take
+    # 1 s, so everything after it plays 1 s earlier and stays in sync.
+    p = Project(bpm=120.0)
+    p.toggle_bgm(0, Fraction(0))
+    p.measure_scales[1] = Fraction(1, 2)
+    tm = TimeMap(p)
+    assert abs(tm.audio_seconds(1.0) - 2.0) < 1e-9      # measure 1 starts at 2 s
+    assert abs(tm.audio_seconds(2.0) - 3.0) < 1e-9      # +1 s for the half measure
+    assert abs(tm.audio_seconds(3.0) - 5.0) < 1e-9      # then full 2 s measures
+    # A note at real offset 1/4 inside the half measure keeps that offset in time.
+    assert abs(tm.audio_seconds(1.25) - 2.5) < 1e-9
+    for secs in (0.0, 2.5, 3.0, 7.0):
+        assert abs(tm.audio_seconds(tm.chart_pos(secs)) - secs) < 1e-6
+
+
 def test_bpm_at():
     p = Project(bpm=100.0)
     p.bpm_changes[Fraction(4)] = 150.0

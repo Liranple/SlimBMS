@@ -34,8 +34,15 @@ from .model import (
 
 BPM_CH_INT = "03"    # inline integer BPM (2-hex-digit value)
 BPM_CH_EXT = "08"    # extended BPM: value indexes a #BPMxx definition
+MEASURE_LEN_CH = "02"   # measure length (a decimal multiplier of a full measure)
 
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _format_length(length: Fraction) -> str:
+    """A short decimal string for a measure-length multiplier (channel 02)."""
+    s = ("%.10f" % float(length)).rstrip("0").rstrip(".")
+    return s or "0"
 
 
 def _b36(n: int) -> str:
@@ -150,15 +157,26 @@ def export_bms(project: Project, key_mode: int) -> str:
     for measure in range(project.measures):
         rows: List[str] = []
 
+        # Measure length (channel 02) when this measure is shortened. Object
+        # positions below are given as a fraction of the shortened measure, so a
+        # note at offset ``pos`` becomes ``pos / mlen``.
+        mlen = project.measure_length(measure)
+        if mlen != 1:
+            rows.append(f"#{measure:03d}{MEASURE_LEN_CH}:{_format_length(mlen)}")
+
+        def frac(pos: Fraction) -> Fraction:
+            return pos / mlen if mlen != 1 else pos
+
         # Tempo changes on channel 08 (extended BPM).
-        bpm_here = [(pos - measure, idx) for pos, idx in bpm_index.items()
+        bpm_here = [(frac(pos - measure), idx) for pos, idx in bpm_index.items()
                     if int(pos) == measure]
         data = _measure_data_valued(bpm_here)
         if data:
             rows.append(f"#{measure:03d}{BPM_CH_EXT}:{data}")
 
         # BGM objects on channel 01.
-        bgm_here = [n for n in project.bgm if n.measure == measure]
+        bgm_here = [Note(measure, frac(n.pos), 0)
+                    for n in project.bgm if n.measure == measure]
         data = _measure_data(bgm_here)
         if data:
             rows.append(f"#{measure:03d}{BGM_CHANNEL}:{data}")
@@ -169,7 +187,8 @@ def export_bms(project: Project, key_mode: int) -> str:
         chart = project.charts[key_mode]
         for lane, channel in enumerate(channels):
             lane_notes = [n for n in chart if n.lane == lane]
-            taps = [n for n in lane_notes if not n.is_long and n.measure == measure]
+            taps = [Note(measure, frac(n.pos), lane)
+                    for n in lane_notes if not n.is_long and n.measure == measure]
             data = _measure_data(taps, NOTE_VALUE)
             if data:
                 rows.append(f"#{measure:03d}{channel}:{data}")
@@ -179,11 +198,11 @@ def export_bms(project: Project, key_mode: int) -> str:
                 if not n.is_long:
                     continue
                 if n.measure == measure:
-                    endpoints.append(Note(measure, n.pos, lane))
+                    endpoints.append(Note(measure, frac(n.pos), lane))
                 end_abs = n.end_absolute
                 end_measure = int(end_abs)
                 if end_measure == measure:
-                    endpoints.append(Note(measure, end_abs - end_measure, lane))
+                    endpoints.append(Note(measure, frac(end_abs - end_measure), lane))
             data = _measure_data(endpoints, NOTE_VALUE)
             if data:
                 rows.append(f"#{measure:03d}{_ln_channel(channel)}:{data}")
@@ -210,6 +229,16 @@ def _parse_objects(data: str) -> List[Fraction]:
     return out
 
 
+def _parse_length(data: str):
+    """Parse a channel-02 measure-length value (a decimal like ``0.5``) into a
+    tidy Fraction, or ``None`` if it isn't a positive number."""
+    try:
+        length = Fraction(data.strip()).limit_denominator(4096)
+    except (ValueError, ZeroDivisionError):
+        return None
+    return length if length > 0 else None
+
+
 def _parse_valued(data: str):
     """Like :func:`_parse_objects` but keeps each slot's 2-char value:
     a list of ``(Fraction pos, str value)``."""
@@ -234,7 +263,8 @@ def parse_bms(text: str) -> Project:
     max_measure = 0
     key_hint: Optional[int] = None
     bpm_defs: Dict[str, float] = {}   # #BPMxx index -> value
-    tempo_objs: List = []             # (absolute pos, channel, 2-char value)
+    tempo_objs: List = []             # (measure, Fraction pos, channel, value)
+    measure_lengths: Dict[int, Fraction] = {}   # measure -> length multiplier
 
     for raw in text.splitlines():
         line = raw.strip()
@@ -283,9 +313,15 @@ def parse_bms(text: str) -> Project:
                 continue
             channel = line[4:6]
             data = line[7:].strip()
+            if channel == MEASURE_LEN_CH:
+                length = _parse_length(data)
+                if length is not None and length != 1:
+                    measure_lengths[measure] = length
+                max_measure = max(max_measure, measure)
+                continue
             if channel in (BPM_CH_INT, BPM_CH_EXT):
                 for pos, val in _parse_valued(data):
-                    tempo_objs.append((measure + pos, channel, val))
+                    tempo_objs.append((measure, pos, channel, val))
                 max_measure = max(max_measure, measure)
                 continue
             positions = _parse_objects(data)
@@ -294,8 +330,12 @@ def parse_bms(text: str) -> Project:
             body.setdefault(measure, {}).setdefault(channel, []).extend(positions)
             max_measure = max(max_measure, measure)
 
+    def mlen(m: int) -> Fraction:
+        return measure_lengths.get(m, Fraction(1))
+
     # Resolve tempo changes; a change at the very start becomes the base BPM.
-    for abs_pos, channel, val in tempo_objs:
+    # A within-measure fraction maps to the shortened measure: pos -> pos * len.
+    for measure, pos, channel, val in tempo_objs:
         if channel == BPM_CH_INT:
             try:
                 bpm = float(int(val, 16))
@@ -305,11 +345,13 @@ def parse_bms(text: str) -> Project:
             bpm = bpm_defs.get(val.upper())
             if bpm is None:
                 continue
+        abs_pos = measure + pos * mlen(measure)
         if abs_pos <= 0:
             project.bpm = bpm
         else:
             project.bpm_changes[abs_pos] = bpm
 
+    project.measure_scales = dict(measure_lengths)
     project.measures = max(16, max_measure + 1)
 
     # Load into the hinted key mode's lanes when known, else the catch-all
@@ -324,16 +366,18 @@ def parse_bms(text: str) -> Project:
     # can be matched in time order.
     ln_points: Dict[str, List[Fraction]] = {}
     for measure, chans in body.items():
+        L = mlen(measure)
         for channel, positions in chans.items():
             if channel == BGM_CHANNEL:
                 for pos in positions:
-                    project.bgm.add(Note(measure, pos, 0))
+                    project.bgm.add(Note(measure, pos * L, 0))
             elif channel in import_lane:
                 lane = import_lane[channel]
                 for pos in positions:
-                    chart.append(Note(measure, pos, lane))
+                    chart.append(Note(measure, pos * L, lane))
             elif channel in ln_lane:
-                ln_points.setdefault(channel, []).extend(measure + pos for pos in positions)
+                ln_points.setdefault(channel, []).extend(
+                    measure + pos * L for pos in positions)
 
     # Pair consecutive LN endpoints into hold notes (head, tail, head, tail…).
     for channel, points in ln_points.items():

@@ -134,9 +134,7 @@ def test_bpm_change_slbms_roundtrip():
     assert back.bpm_changes == p.bpm_changes
 
 
-def test_measure_scales_slbms_roundtrip_and_export_invariant():
-    # Per-measure display lengths persist in .slbms but never touch the exported
-    # .bms (they are a pure editor convenience — no timing/channel-02 effect).
+def test_measure_scales_slbms_roundtrip():
     p = make_project()
     p.measure_scales[1] = Fraction(1, 2)
     p.measure_scales[3] = Fraction(3, 4)
@@ -145,10 +143,22 @@ def test_measure_scales_slbms_roundtrip_and_export_invariant():
         bms_io.save_project(p, path)
         back = bms_io.load_project(path)
     assert back.measure_scales == p.measure_scales
-    # Export ignores the scales entirely.
-    scaled = bms_io.export_bms(p, 4)
-    p.measure_scales.clear()
-    assert scaled == bms_io.export_bms(p, 4)
+
+
+def test_measure_length_channel02_export_and_roundtrip():
+    # A shortened measure is real (BMS channel 02): it emits #mmm02 and the note
+    # inside it keeps its real offset through a .bms export -> re-import.
+    p = Project(bpm=120, measures=8)
+    p.measure_scales[2] = Fraction(1, 2)          # measure 2 is half length
+    p.toggle_note(4, 2, Fraction(1, 4), 0)        # note at offset 1/4 (< 1/2)
+    p.toggle_bgm(0, Fraction(0))
+    text = bms_io.export_bms(p, 4)
+    assert "#00202:0.5" in text                   # measure-length line
+    # The note's data fraction is pos/len = (1/4)/(1/2) = 1/2 of the short measure.
+    back = bms_io.parse_bms(text)
+    assert back.measure_scales.get(2) == Fraction(1, 2)
+    got = [n for n in back.charts[4] if n.measure == 2]
+    assert len(got) == 1 and got[0].pos == Fraction(1, 4)   # real offset preserved
 
 
 def test_import_honors_key_mode_command():

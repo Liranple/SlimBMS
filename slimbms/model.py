@@ -129,10 +129,10 @@ class Project:
     # Mid-song tempo changes: absolute chart position (measures) -> BPM. The
     # base ``bpm`` applies before the first change.
     bpm_changes: Dict[Fraction, float] = field(default_factory=dict)
-    # Per-measure *display* length: a measure -> visible fraction in (0, 1].
-    # Purely an editor convenience (collapse the empty tail of a measure so it
-    # shows fewer grid cells and takes less height). It does NOT change note
-    # timing, audio or the exported .bms — a note stays at absolute measure+pos.
+    # Per-measure length: a measure -> length multiplier in (0, 1], default 1.
+    # A shortened measure genuinely takes less time, so the audio, waveform,
+    # playhead and everything after it shift up together (this is BMS channel
+    # 02). A note keeps its offset ``pos`` within the (shorter) measure.
     measure_scales: Dict[int, Fraction] = field(default_factory=dict)
     # Editor/session settings (selected key mode, grid, zoom, speed, volume);
     # saved in .slbms so the workspace comes back as you left it.
@@ -148,6 +148,22 @@ class Project:
             if p <= pos and (best is None or p > best):
                 best, bpm = p, val
         return max(1.0, bpm)
+
+    # -- measure lengths ---------------------------------------------------- #
+
+    def measure_length(self, m: int) -> Fraction:
+        """Length multiplier of measure ``m`` (1 = a full measure)."""
+        s = self.measure_scales.get(m)
+        return s if s is not None else Fraction(1)
+
+    def cumulative_lengths(self):
+        """Prefix sums of measure lengths: ``out[m]`` is the total length of all
+        measures before ``m`` (so ``out[measures]`` is the whole song length in
+        measure units). Used to convert absolute chart positions to real time."""
+        out = [Fraction(0)]
+        for m in range(self.measures):
+            out.append(out[-1] + self.measure_length(m))
+        return out
 
     # -- undo/redo snapshots ------------------------------------------------ #
 
