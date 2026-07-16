@@ -39,6 +39,7 @@ from ..timing import TimeMap
 from .appicon import build_icon
 from .chart_view import ChartView, LaneHeader
 from .dialogs import KeybindingsDialog
+from .palette import DANGER
 from .playback import PlaybackController
 from .toolbar_icons import make_icon
 from .widgets import (
@@ -188,7 +189,7 @@ class MainWindow(QMainWindow):
 
         # -- Images (STAGEFILE / BANNER / BACKBMP) -------------------------- #
         images = CollapsibleSection("이미지")
-        self._image_labels: Dict[str, QLabel] = {}
+        self._image_buttons: Dict[str, QPushButton] = {}
         for field, caption in (
             ("stagefile", "대표 이미지"),
             ("banner", "배너 이미지"),
@@ -347,37 +348,62 @@ class MainWindow(QMainWindow):
         return box
 
     def _image_row(self, field: str, caption: str) -> QWidget:
-        """A caption + 'select file' button + filename label for one BMS image
-        header (STAGEFILE / BANNER / BACKBMP)."""
+        """One horizontal row for a BMS image header (STAGEFILE / BANNER /
+        BACKBMP): a caption on the left, and a single button on the right that
+        picks a file — or, once one is set, turns into a red '취소' that clears
+        it (only one file per field, so no filename label is needed)."""
         box = QWidget()
         box.setObjectName("FlatRow")
         box.setStyleSheet("QWidget#FlatRow { background: transparent; }")
-        col = QVBoxLayout(box)
-        col.setContentsMargins(0, 0, 0, 6)
-        col.setSpacing(3)
+        row = QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
         cap = QLabel(caption)
         cap.setObjectName("Hint")
-        col.addWidget(cap)
-        btn = QPushButton("파일 선택")
-        btn.clicked.connect(lambda: self._choose_image(field, caption))
-        col.addWidget(btn)
-        label = QLabel("(없음)")
-        label.setObjectName("Hint")
-        label.setWordWrap(True)
-        col.addWidget(label)
-        self._image_labels[field] = label
+        row.addWidget(cap)
+        row.addStretch(1)
+        btn = QPushButton()
+        btn.setFixedWidth(96)
+        btn.clicked.connect(lambda: self._toggle_image(field, caption))
+        row.addWidget(btn)
+        self._image_buttons[field] = btn
+        self._refresh_image_button(field)
         return box
 
-    def _choose_image(self, field: str, caption: str) -> None:
+    _IMAGE_CANCEL_QSS = (
+        "QPushButton { background: %s; color: #2a0d12; border: none; }"
+        "QPushButton:hover { background: #ff8494; }" % DANGER
+    )
+
+    def _refresh_image_button(self, field: str) -> None:
+        """Sync a row's button to the project: '파일 선택' when empty, a red
+        '취소' (tooltip = filename) once a file is chosen."""
+        btn = self._image_buttons[field]
+        name = getattr(self.project, field, "")
+        if name:
+            btn.setText("취소")
+            btn.setToolTip(name)
+            btn.setStyleSheet(self._IMAGE_CANCEL_QSS)
+        else:
+            btn.setText("파일 선택")
+            btn.setToolTip("")
+            btn.setStyleSheet("")
+
+    def _toggle_image(self, field: str, caption: str) -> None:
+        # A file is already set → this click clears it.
+        if getattr(self.project, field, ""):
+            setattr(self.project, field, "")
+            self._refresh_image_button(field)
+            self._on_changed()
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, f"{caption} 선택", self._dir_for("image"),
             "이미지 (*.png *.jpg *.jpeg *.bmp *.gif);;모든 파일 (*)")
         if not path:
             return
         self._remember_dir("image", path)
-        name = os.path.basename(path)
-        setattr(self.project, field, name)
-        self._image_labels[field].setText(name)
+        setattr(self.project, field, os.path.basename(path))
+        self._refresh_image_button(field)
         self._on_changed()
 
     def _hline(self) -> QFrame:
@@ -617,8 +643,8 @@ class MainWindow(QMainWindow):
         for w, val in ((self.sb_bpm, p.bpm), (self.sb_level, p.level)):
             w.blockSignals(True); w.setValue(val); w.blockSignals(False)
         self.sb_bgm_label.setText(p.bgm_file or "(없음)")
-        for field, label in self._image_labels.items():
-            label.setText(getattr(p, field) or "(없음)")
+        for field in self._image_buttons:
+            self._refresh_image_button(field)
         self._refresh_bpm_list()
 
     def _set_meta(self, field: str, value) -> None:
