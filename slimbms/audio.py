@@ -368,6 +368,21 @@ class AudioPlayer:
         self._paused_pos = 0.0
         self._stop_channel()
 
+    def unload(self) -> None:
+        """Drop the currently-loaded BGM entirely and reset to the no-song
+        state (used when starting a fresh project)."""
+        self.stop()
+        self.loaded = False
+        self.path = None
+        self.duration = 0.0
+        self._anchor_pos = 0.0
+        self._anchor_t = 0.0
+        self._raw = b""
+        self._chans = []
+        self._stretched = b""
+        self._stretched_speed = None
+        self._sound = None
+
     def seek(self, seconds: float) -> None:
         seconds = max(0.0, seconds)
         if self._playing:

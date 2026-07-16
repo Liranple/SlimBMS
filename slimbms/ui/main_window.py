@@ -940,7 +940,28 @@ class MainWindow(QMainWindow):
         self.project_path = None
         self._dirty = False
         self._clear_recovery()
+        self._reset_editor_settings()
         self._reload_view()
+
+    def _reset_editor_settings(self) -> None:
+        """Put every editor/session control back to its default and drop the
+        loaded audio, so 'New' starts from a clean slate."""
+        self.audio.unload()
+        self._bgm_path = None
+        self.view.set_waveform(None, 200)
+        for w, val in (
+            (self.sb_g1, 16), (self.sb_g2, 4),
+        ):
+            w.setValue(val)
+        self.sb_snap.setChecked(True)
+        self.sb_wave.setChecked(True)
+        self.zoom_v.set_value(1.0)
+        self.zoom_h.set_value(1.0)
+        self.speed.set_value(1.0)
+        self.volume.set_value(1.0)
+        self._set_keymode(KEY_MODES[0])
+        for sec in self._sections.values():
+            sec.set_expanded(True)
 
     def open_project(self) -> None:
         if not self._confirm_discard():
@@ -1038,7 +1059,7 @@ class MainWindow(QMainWindow):
         self._remember_dir("export", path)
         QMessageBox.information(
             self, "내보내기 완료",
-            f"{km}K 채보를 저장했습니다:\n{path}\n\n노트 수: {self.project.note_count(km)}")
+            f"{km}K 채보를 저장했습니다.\n\n노트 수: {self.project.note_count(km)}")
 
     # -- song actions ------------------------------------------------------- #
 
