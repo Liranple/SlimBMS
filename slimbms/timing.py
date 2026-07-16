@@ -24,8 +24,7 @@ class TimeMap:
         self.t0 = float(min((n.absolute for n in project.bgm), default=Fraction(0)))
 
         # Breakpoints (chart position, bpm) from the song start (t0) onward.
-        changes = sorted((float(p), max(1.0, b))
-                         for p, b in project.effective_bpm_changes().items())
+        changes = sorted((float(p), max(1.0, b)) for p, b in project.bpm_changes.items())
         start_bpm = max(1.0, project.bpm)
         for p, b in changes:
             if p <= self.t0:
