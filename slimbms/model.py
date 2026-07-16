@@ -12,6 +12,11 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Dict, List, Optional, Set
 
+# Sampling step used to turn a smooth BPM ramp into the discrete #BPM points that
+# BMS (and our piecewise-constant TimeMap) actually understand: one point every
+# 1/16 of a measure — a 16th note — which reads as a smooth accelerando/ritard.
+RAMP_STEP = Fraction(1, 16)
+
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
@@ -100,6 +105,46 @@ class Note:
 
 
 # --------------------------------------------------------------------------- #
+# Tempo ramp
+# --------------------------------------------------------------------------- #
+
+@dataclass(frozen=True)
+class BpmRamp:
+    """A gradual tempo change: the BPM slides linearly from ``start_bpm`` at
+    absolute position ``start`` to ``end_bpm`` at ``end`` (e.g. measure 78 →
+    80 ramping 126 → 252). Stored as one editable object, but expanded into
+    many discrete #BPM points at export/timing time (BMS has no native ramp)."""
+
+    start: Fraction
+    end: Fraction
+    start_bpm: float
+    end_bpm: float
+
+    def value_at(self, pos) -> float:
+        """Interpolated BPM at absolute position ``pos`` (clamped to the span)."""
+        span = self.end - self.start
+        if span <= 0:
+            return self.end_bpm
+        t = float((Fraction(pos) - self.start) / span)
+        t = min(1.0, max(0.0, t))
+        return self.start_bpm + (self.end_bpm - self.start_bpm) * t
+
+    def points(self) -> Dict[Fraction, float]:
+        """The discrete BPM breakpoints approximating this ramp: one every
+        :data:`RAMP_STEP`, plus the exact endpoint carrying ``end_bpm``."""
+        pts: Dict[Fraction, float] = {}
+        if self.end <= self.start:
+            pts[self.start] = self.end_bpm
+            return pts
+        pos = self.start
+        while pos < self.end:
+            pts[pos] = round(self.value_at(pos), 3)
+            pos += RAMP_STEP
+        pts[self.end] = round(self.end_bpm, 3)
+        return pts
+
+
+# --------------------------------------------------------------------------- #
 # Project
 # --------------------------------------------------------------------------- #
 
@@ -129,17 +174,30 @@ class Project:
     # Mid-song tempo changes: absolute chart position (measures) -> BPM. The
     # base ``bpm`` applies before the first change.
     bpm_changes: Dict[Fraction, float] = field(default_factory=dict)
+    # Gradual tempo ramps (e.g. an accelerando from measure 78 to 80). Kept as
+    # editable objects; expanded into discrete points for timing/export.
+    bpm_ramps: List[BpmRamp] = field(default_factory=list)
     # Editor/session settings (selected key mode, grid, zoom, speed, volume);
     # saved in .slbms so the workspace comes back as you left it.
     editor: Dict = field(default_factory=dict)
 
     # -- tempo -------------------------------------------------------------- #
 
+    def effective_bpm_changes(self) -> Dict[Fraction, float]:
+        """All tempo breakpoints the timing/exporter should see: the ramps
+        expanded into discrete points, then explicit ``bpm_changes`` layered on
+        top (an explicit point at the same position wins)."""
+        merged: Dict[Fraction, float] = {}
+        for ramp in self.bpm_ramps:
+            merged.update(ramp.points())
+        merged.update(self.bpm_changes)
+        return merged
+
     def bpm_at(self, pos) -> float:
         """The BPM in effect at absolute chart position ``pos``."""
         bpm = self.bpm
         best: Optional[Fraction] = None
-        for p, val in self.bpm_changes.items():
+        for p, val in self.effective_bpm_changes().items():
             if p <= pos and (best is None or p > best):
                 best, bpm = p, val
         return max(1.0, bpm)
@@ -154,14 +212,16 @@ class Project:
             set(self.bgm),
             dict(self.bpm_changes),
             self.measures,
+            list(self.bpm_ramps),
         )
 
     def restore(self, snap) -> None:
-        charts, bgm, bpm_changes, measures = snap
+        charts, bgm, bpm_changes, measures, bpm_ramps = snap
         self.charts = {km: list(s) for km, s in charts.items()}
         self.bgm = set(bgm)
         self.bpm_changes = dict(bpm_changes)
         self.measures = measures
+        self.bpm_ramps = list(bpm_ramps)
 
     # -- note editing ------------------------------------------------------- #
 

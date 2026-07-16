@@ -7,7 +7,8 @@ from fractions import Fraction
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from slimbms.model import IMPORT_MODE, KEY_CHANNELS, Note, Project  # noqa: E402
+from slimbms.model import (  # noqa: E402
+    IMPORT_MODE, KEY_CHANNELS, BpmRamp, Note, Project)
 from slimbms import bms_io  # noqa: E402
 
 
@@ -132,6 +133,32 @@ def test_bpm_change_slbms_roundtrip():
         bms_io.save_project(p, path)
         back = bms_io.load_project(path)
     assert back.bpm_changes == p.bpm_changes
+
+
+def test_bpm_ramp_expands_and_exports():
+    # A ramp from measure 78 (126 BPM) to 80 (252 BPM) expands into many discrete
+    # #BPM points, with the exact endpoints preserved and a smooth interior.
+    p = Project(bpm=126.0, measures=90)
+    p.bpm_ramps.append(BpmRamp(Fraction(78), Fraction(80), 126.0, 252.0))
+    eff = p.effective_bpm_changes()
+    assert eff[Fraction(78)] == 126.0
+    assert eff[Fraction(80)] == 252.0
+    assert abs(eff[Fraction(79)] - 189.0) < 1.0     # linear midpoint
+    assert len(eff) > 20                             # actually a smooth ramp
+    # Exported to BMS: many #BPM definitions land on the tempo channel (08).
+    txt = bms_io.export_bms(p, 4)
+    assert any(line.startswith("#07808:") for line in txt.splitlines())
+
+
+def test_bpm_ramp_slbms_roundtrip():
+    p = Project(bpm=120.0, measures=8)
+    ramp = BpmRamp(Fraction(2), Fraction(9, 2), 120.0, 200.0)
+    p.bpm_ramps.append(ramp)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "p.slbms")
+        bms_io.save_project(p, path)
+        back = bms_io.load_project(path)
+    assert back.bpm_ramps == [ramp]
 
 
 def test_import_honors_key_mode_command():

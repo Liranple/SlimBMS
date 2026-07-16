@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 
 from .. import __version__, bms_io, updater
 from ..audio import AudioPlayer
-from ..model import IMPORT_MODE, KEY_MODES, Project
+from ..model import IMPORT_MODE, KEY_MODES, BpmRamp, Project
 from ..timing import TimeMap
 from .appicon import build_icon
 from .chart_view import ChartView, LaneHeader
@@ -231,6 +231,7 @@ class MainWindow(QMainWindow):
 
         # -- Tempo changes -------------------------------------------------- #
         tempo = CollapsibleSection("BPM 변화")
+        # Start point (also used on its own for a single instant tempo change).
         self.bpm_measure = NoWheelSpinBox()
         self.bpm_measure.setRange(0, 9999)
         self.bpm_cell = NoWheelSpinBox()
@@ -241,17 +242,40 @@ class MainWindow(QMainWindow):
         self.bpm_value.setRange(1.0, 999.0)
         self.bpm_value.setDecimals(2)
         self.bpm_value.setValue(120.0)
+        tempo.add_widget(self._hint("시작"))
         brow = QHBoxLayout()
         brow.setSpacing(8)
         brow.addWidget(self._labeled("마디", self.bpm_measure))
         brow.addWidget(self._labeled("칸", self.bpm_cell))
         brow.addWidget(self._labeled("BPM", self.bpm_value))
         tempo.add_layout(brow)
-        add_bpm = QPushButton("추가 / 변경")
+        add_bpm = QPushButton("한 지점 추가 / 변경")
         add_bpm.clicked.connect(self._add_bpm_change)
         tempo.add_widget(add_bpm)
+
+        # End point — only used when building a ramp (start BPM → end BPM).
+        self.bpm_measure2 = NoWheelSpinBox()
+        self.bpm_measure2.setRange(0, 9999)
+        self.bpm_cell2 = NoWheelSpinBox()
+        self.bpm_cell2.setRange(0, self.sb_g1.value())
+        self.bpm_value2 = NoWheelDoubleSpinBox()
+        self.bpm_value2.setRange(1.0, 999.0)
+        self.bpm_value2.setDecimals(2)
+        self.bpm_value2.setValue(240.0)
+        tempo.add_widget(self._hint("끝 (구간 변화)"))
+        brow2 = QHBoxLayout()
+        brow2.setSpacing(8)
+        brow2.addWidget(self._labeled("마디", self.bpm_measure2))
+        brow2.addWidget(self._labeled("칸", self.bpm_cell2))
+        brow2.addWidget(self._labeled("BPM", self.bpm_value2))
+        tempo.add_layout(brow2)
+        add_ramp = QPushButton("구간 변화 추가")
+        add_ramp.clicked.connect(self._add_bpm_ramp)
+        tempo.add_widget(add_ramp)
+        tempo.add_widget(self._hint("시작→끝 구간의 BPM이 점점 변함"))
+
         self.bpm_list = QListWidget()
-        self.bpm_list.setMaximumHeight(84)
+        self.bpm_list.setMaximumHeight(96)
         tempo.add_widget(self.bpm_list)
         del_bpm = QPushButton("선택 삭제")
         del_bpm.clicked.connect(self._remove_bpm_change)
@@ -740,6 +764,7 @@ class MainWindow(QMainWindow):
         # caps at the snap-grid value (a bigger cell is clamped down to it).
         if hasattr(self, "bpm_cell"):
             self.bpm_cell.setMaximum(self.sb_g1.value())
+            self.bpm_cell2.setMaximum(self.sb_g1.value())
 
     def _toggle_snap(self, on: bool) -> None:
         self.view.set_snap_on(on)
@@ -773,13 +798,29 @@ class MainWindow(QMainWindow):
 
     # -- tempo changes ------------------------------------------------------ #
 
-    def _add_bpm_change(self) -> None:
+    def _bpm_pos(self, measure_box, cell_box) -> "Fraction":
         from fractions import Fraction
         grid = max(1, self.sb_g1.value())
-        cell = min(self.bpm_cell.value(), grid)   # never past one measure of cells
-        pos = Fraction(self.bpm_measure.value()) + Fraction(cell, grid)
+        cell = min(cell_box.value(), grid)        # never past one measure of cells
+        return Fraction(measure_box.value()) + Fraction(cell, grid)
+
+    def _add_bpm_change(self) -> None:
+        pos = self._bpm_pos(self.bpm_measure, self.bpm_cell)
         self.project.bpm_changes[pos] = float(self.bpm_value.value())
         self.view.changed.emit()   # marks dirty + schedules an undo entry
+        self.view.update()
+        self._refresh_bpm_list()
+
+    def _add_bpm_ramp(self) -> None:
+        start = self._bpm_pos(self.bpm_measure, self.bpm_cell)
+        end = self._bpm_pos(self.bpm_measure2, self.bpm_cell2)
+        if end <= start:
+            QMessageBox.warning(self, "구간 변화",
+                                "끝 지점이 시작 지점보다 뒤에 있어야 합니다.")
+            return
+        self.project.bpm_ramps.append(BpmRamp(
+            start, end, float(self.bpm_value.value()), float(self.bpm_value2.value())))
+        self.view.changed.emit()
         self.view.update()
         self._refresh_bpm_list()
 
@@ -787,23 +828,38 @@ class MainWindow(QMainWindow):
         item = self.bpm_list.currentItem()
         if item is None:
             return
-        pos = item.data(Qt.UserRole)
-        if pos in self.project.bpm_changes:
-            del self.project.bpm_changes[pos]
-            self.view.changed.emit()
-            self.view.update()
-            self._refresh_bpm_list()
+        kind, ref = item.data(Qt.UserRole)
+        if kind == "point" and ref in self.project.bpm_changes:
+            del self.project.bpm_changes[ref]
+        elif kind == "ramp" and ref in self.project.bpm_ramps:
+            self.project.bpm_ramps.remove(ref)
+        else:
+            return
+        self.view.changed.emit()
+        self.view.update()
+        self._refresh_bpm_list()
+
+    def _cell_label(self, pos, grid: int) -> str:
+        measure = int(pos)
+        cell = int(round(float(pos - measure) * grid))
+        return f"마디 {measure} · 칸 {cell}/{grid}"
 
     def _refresh_bpm_list(self) -> None:
         self.bpm_list.clear()
         grid = max(1, self.sb_g1.value())
-        for pos, bpm in sorted(self.project.bpm_changes.items()):
-            measure = int(pos)
-            frac = pos - measure
-            cell = int(round(float(frac) * grid))
-            text = f"마디 {measure} · 칸 {cell}/{grid} → {bpm:g} BPM"
+        # Single points and ramps in one list, ordered by their start position.
+        entries = []
+        for pos, bpm in self.project.bpm_changes.items():
+            entries.append((pos, f"{self._cell_label(pos, grid)} → {bpm:g} BPM",
+                            ("point", pos)))
+        for ramp in self.project.bpm_ramps:
+            text = (f"{self._cell_label(ramp.start, grid)} "
+                    f"{ramp.start_bpm:g}→{ramp.end_bpm:g} BPM "
+                    f"~ {self._cell_label(ramp.end, grid)}")
+            entries.append((ramp.start, text, ("ramp", ramp)))
+        for _, text, data in sorted(entries, key=lambda e: e[0]):
             self.bpm_list.addItem(text)
-            self.bpm_list.item(self.bpm_list.count() - 1).setData(Qt.UserRole, pos)
+            self.bpm_list.item(self.bpm_list.count() - 1).setData(Qt.UserRole, data)
 
     def _set_mode(self, mode: str) -> None:
         self.view.set_mode(mode)
@@ -986,7 +1042,8 @@ class MainWindow(QMainWindow):
         p = self.project
         lines = [
             f"마디 수 : {p.measures}",
-            f"기본 BPM : {p.bpm:g}    BPM 변화 : {len(p.bpm_changes)}개",
+            f"기본 BPM : {p.bpm:g}    BPM 변화 : {len(p.bpm_changes)}개"
+            f"    구간 변화 : {len(p.bpm_ramps)}개",
             f"BGM 마커 : {len(p.bgm)}개",
             "",
         ]

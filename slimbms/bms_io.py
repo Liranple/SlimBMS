@@ -24,6 +24,7 @@ from .model import (
     NOTE_VALUE,
     OBJ_VALUE,
     BGM_WAV_INDEX,
+    BpmRamp,
     Note,
     Project,
 )
@@ -133,7 +134,8 @@ def export_bms(project: Project, key_mode: int) -> str:
     lines.append(f"#SLIMBMS_KEYMODE {key_mode}")  # hint for lossless re-import
 
     # Mid-song tempo changes: define #BPMxx values and place them on channel 08.
-    bpm_changes = sorted(project.bpm_changes.items())
+    # Ramps are already expanded into discrete points by effective_bpm_changes.
+    bpm_changes = sorted(project.effective_bpm_changes().items())
     bpm_index = {}   # absolute position -> 2-char index
     for i, (pos, bpm) in enumerate(bpm_changes, start=1):
         idx = _b36(i)
@@ -384,6 +386,9 @@ def project_to_dict(project: Project) -> dict:
         "measures": project.measures,
         "bpm_changes": sorted([p.numerator, p.denominator, b]
                               for p, b in project.bpm_changes.items()),
+        "bpm_ramps": [[r.start.numerator, r.start.denominator,
+                       r.end.numerator, r.end.denominator,
+                       r.start_bpm, r.end_bpm] for r in project.bpm_ramps],
         "bgm": notes(project.bgm),
         "charts": {str(km): notes(project.charts[km]) for km in ALL_MODES},
     }
@@ -411,6 +416,11 @@ def project_from_dict(data: dict) -> Project:
 
     for row in data.get("bpm_changes", []):
         project.bpm_changes[Fraction(int(row[0]), int(row[1]))] = float(row[2])
+    for row in data.get("bpm_ramps", []):
+        project.bpm_ramps.append(BpmRamp(
+            Fraction(int(row[0]), int(row[1])),
+            Fraction(int(row[2]), int(row[3])),
+            float(row[4]), float(row[5])))
     for row in data.get("bgm", []):
         project.bgm.add(to_note(row))
     for km_str, objs in data.get("charts", {}).items():

@@ -7,7 +7,16 @@ from fractions import Fraction
 from typing import Optional
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QPolygon
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QLinearGradient,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QPolygon,
+)
 from PySide6.QtWidgets import QWidget
 
 from ..model import (
@@ -286,6 +295,7 @@ class ChartView(QWidget):
         p.fillRect(clip, C_BG)
         self._paint_lane_backgrounds(p)
         self._paint_bpm_regions(p)
+        self._paint_bpm_ramp_regions(p)
         self._paint_waveform(p)
         self._paint_horizontal_lines(p)
         self._paint_separators(p)
@@ -296,6 +306,7 @@ class ChartView(QWidget):
         self._paint_hover(p)
         self._paint_drag(p)
         self._paint_bpm_changes(p)
+        self._paint_bpm_ramps(p)
         self._paint_playhead(p)
         p.end()
 
@@ -419,6 +430,59 @@ class ChartView(QWidget):
             p.setBrush(C_BPM)
             p.drawRoundedRect(tag, 4, 4)
             p.setPen(QPen(C_GROUP_BG_B, 1))     # dark ink on the accent pill
+            p.drawText(tag, Qt.AlignCenter, label)
+
+    def _paint_bpm_ramp_regions(self, p: QPainter) -> None:
+        """Tint each tempo-ramp span with a vertical purple gradient — faint at
+        the start, stronger toward the end — so a ramp reads as one region.
+        Painted under the grid/notes at low alpha."""
+        if not self.project.bpm_ramps:
+            return
+        x0 = self.groups[0].x0
+        x1 = self.groups[-1].x1
+        for ramp in self.project.bpm_ramps:
+            lo, hi = float(ramp.start), float(ramp.end)
+            if hi <= lo:
+                continue
+            y_top = int(self.y_for(hi))           # end = later = smaller y
+            y_bot = int(self.y_for(lo))           # start = lower on screen
+            if y_bot < self._vis_lo or y_top > self._vis_hi:
+                continue
+            grad = QLinearGradient(0, y_bot, 0, y_top)
+            c0 = QColor(C_BPM); c0.setAlpha(16)
+            c1 = QColor(C_BPM); c1.setAlpha(56)
+            grad.setColorAt(0.0, c0)
+            grad.setColorAt(1.0, c1)
+            p.fillRect(QRect(x0, y_top, x1 - x0, y_bot - y_top), QBrush(grad))
+
+    def _paint_bpm_ramps(self, p: QPainter) -> None:
+        """Mark each ramp's start and end with a line, and a pill at the start
+        naming the tempo slide (e.g. '♩ 126→252')."""
+        if not self.project.bpm_ramps:
+            return
+        x0 = L.LEFT_MARGIN
+        x1 = self.groups[-1].x1
+        font = QFont()
+        font.setPointSize(9)
+        font.setBold(True)
+        for ramp in self.project.bpm_ramps:
+            y_lo = int(self.y_for(float(ramp.start)))   # start (lower on screen)
+            y_hi = int(self.y_for(float(ramp.end)))     # end (upper)
+            p.setPen(QPen(C_BPM, 2))
+            for y in (y_lo, y_hi):
+                if self._vis_lo - 2 <= y <= self._vis_hi + 2:
+                    p.drawLine(x0, y, x1, y)
+            if not (self._vis_lo - 20 <= y_lo <= self._vis_hi + 20):
+                continue
+            label = f"♩ {ramp.start_bpm:g}→{ramp.end_bpm:g}"
+            p.setFont(font)
+            fm = p.fontMetrics()
+            tw = fm.horizontalAdvance(label) + 12
+            tag = QRect(x0 + 2, y_lo - 19, tw, 17)
+            p.setPen(Qt.NoPen)
+            p.setBrush(C_BPM)
+            p.drawRoundedRect(tag, 4, 4)
+            p.setPen(QPen(C_GROUP_BG_B, 1))
             p.drawText(tag, Qt.AlignCenter, label)
 
     def set_playhead(self, absolute: Optional[float]) -> None:
