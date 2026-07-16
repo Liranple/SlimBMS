@@ -12,7 +12,7 @@ from PySide6.QtCore import QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QKeyEvent, QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from slimbms.model import Project  # noqa: E402
+from slimbms.model import Note, Project  # noqa: E402
 from slimbms.ui.main_window import MainWindow  # noqa: E402
 from slimbms.ui import layout as L  # noqa: E402
 
@@ -137,6 +137,27 @@ def main() -> int:
     assert sorted(n.lane for n in view.project.charts[6]) == [2, 3], \
         "E and 7 map to distinct 6K lanes"
     win.stop_play()
+
+    # Arrow-key moves must never absorb another note: moving onto an occupied
+    # cell keeps both (overlap, flagged) and fires a one-shot overlap warning.
+    view.overlap_warning.disconnect(win._warn_overlap)   # avoid the modal in tests
+    warned = []
+    view.overlap_warning.connect(lambda: warned.append(1))
+    view.set_mode("edit")
+    view.grid_main = Fraction(1)
+    for km in view.project.charts.values():
+        km.clear()
+    a = Note(1, Fraction(0), 0)
+    b = Note(2, Fraction(0), 0)
+    view.project.charts[4].append(a)
+    view.project.charts[4].append(b)
+    view.selection = {(4, a)}
+    view._move_selection(0, 1)              # a: measure 1 -> 2, right onto b
+    assert len(view.project.charts[4]) == 2, "a move must not absorb another note"
+    assert warned, "overlapping another note should warn"
+    view._move_selection(0, 1)              # a passes through to measure 3, b stays
+    assert sorted(int(n.measure) for n in view.project.charts[4]) == [2, 3], \
+        "the passed-over note must stay put"
 
     print("GUI smoke test PASSED")
     return 0

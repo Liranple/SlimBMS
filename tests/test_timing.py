@@ -69,10 +69,10 @@ def test_bpm_at():
 def test_snapshot_restore():
     from slimbms.model import Note
     p = Project(bpm=120.0)
-    p.charts[4].add(Note(0, Fraction(0), 0))
+    p.charts[4].append(Note(0, Fraction(0), 0))
     p.bpm_changes[Fraction(2)] = 140.0
     snap = p.snapshot()
-    p.charts[4].add(Note(1, Fraction(0), 1))
+    p.charts[4].append(Note(1, Fraction(0), 1))
     p.bpm_changes[Fraction(3)] = 90.0
     p.measures = 40
     p.restore(snap)

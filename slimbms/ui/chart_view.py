@@ -85,6 +85,7 @@ class ChartView(QWidget):
     cursor_info = Signal(str)   # live "group · grid coords" text for the status bar
     scroll_h = Signal(int)      # Shift+wheel: horizontal scroll by this angle delta
     seek_requested = Signal(float)  # set playback to this absolute chart position
+    overlap_warning = Signal()      # a move left the selection overlapping another note
 
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
@@ -108,6 +109,7 @@ class ChartView(QWidget):
         self._hover = None            # (Column, measure, Fraction pos) or None
         self.mode = "add"             # "add" (F3) or "edit" (F2)
         self.selection = set()        # {(mode, Note)} ; mode is int or "bgm"
+        self._overlap_warned = False  # debounce: warn once per continuous overlap
         self._clipboard = None        # [(mode, Fraction d_abs, lane)]
         self._drag_start = None       # (x, y) rubber-band anchor (empty-area drag)
         self._drag_cur = None
@@ -797,24 +799,24 @@ class ChartView(QWidget):
     def _add_note(self, col, measure, pos) -> Note:
         if col.kind == "bgm":
             note = Note(measure, pos, 0)
-            self.project.bgm.add(note)
+            self.project.add_object("bgm", note)
         else:
             note = Note(measure, pos, col.lane)
-            self.project.charts[col.key_mode].add(note)
+            self.project.add_object(col.key_mode, note)
         self.changed.emit()
         self.update()
         return note
 
-    def _relen(self, target, note: Note, lo: Fraction, length: Fraction) -> Note:
-        """Replace ``note`` in ``target`` with one starting at absolute ``lo``
+    def _relen(self, mode, note: Note, lo: Fraction, length: Fraction) -> Note:
+        """Replace ``note`` in lane ``mode`` with one starting at absolute ``lo``
         with the given ``length`` (0 collapses it back to a tap). Returns the
         new note."""
-        target.discard(note)
+        self.project.remove_object(mode, note)
         measure = int(lo)
         pos = lo - measure
         new = Note(measure, pos, note.lane, length) if length > 0 \
             else Note(measure, pos, note.lane)
-        target.add(new)
+        self.project.add_object(mode, new)
         return new
 
     def _grow_add_drag(self, event: QMouseEvent) -> None:
@@ -825,7 +827,7 @@ class ChartView(QWidget):
         end_abs = measure + pos
         lo = min(start_abs, end_abs)
         hi = min(max(start_abs, end_abs), Fraction(self.project.measures))
-        new = self._relen(self.project.charts[mode_key], note, lo, hi - lo)
+        new = self._relen(mode_key, note, lo, hi - lo)
         self._add_drag = (mode_key, new, start_abs, col)
         self.changed.emit()
         self.update()
@@ -846,7 +848,7 @@ class ChartView(QWidget):
         limit = Fraction(self.project.measures) - step
         # Remove the currently-placed (possibly already-moved) notes first.
         for mode, n in self.selection:
-            self._target_for(mode).discard(n)
+            self.project.remove_object(mode, n)
         new_sel = set()
         for mode, orig in md["origs"]:
             new_abs = max(Fraction(0), min(limit, orig.absolute + d_abs))
@@ -857,7 +859,7 @@ class ChartView(QWidget):
             else:
                 lane = min(max(orig.lane + d_lane, 0), lanes_for(mode) - 1)
             moved = Note(measure, pos, lane, orig.length)
-            self._target_for(mode).add(moved)
+            self.project.add_object(mode, moved)
             new_sel.add((mode, moved))
         self.selection = new_sel
         md["moved"] = True
@@ -880,17 +882,16 @@ class ChartView(QWidget):
         """Resize a long note by dragging its head or tail to the cursor."""
         ld = self._len_drag
         mode, note = ld["mode"], ld["note"]
-        target = self._target_for(mode)
         measure, pos = self.pos_at(event.position().y(), self._snap_now(event))
         cur = Fraction(measure) + pos
         step = self.grid_main
         head, tail = note.absolute, note.end_absolute
         if ld["end"] == "tail":
             new_end = max(head + step, min(cur, Fraction(self.project.measures)))
-            new = self._relen(target, note, head, new_end - head)
+            new = self._relen(mode, note, head, new_end - head)
         else:
             new_head = max(Fraction(0), min(cur, tail - step))
-            new = self._relen(target, note, new_head, tail - new_head)
+            new = self._relen(mode, note, new_head, tail - new_head)
         ld["note"] = new
         self.selection = {(mode, new)}
         self.changed.emit()
@@ -901,8 +902,7 @@ class ChartView(QWidget):
         if hit is None:
             return
         mode, n = hit
-        target = self.project.bgm if mode == "bgm" else self.project.charts[mode]
-        target.discard(n)
+        self.project.remove_object(mode, n)
         self.selection.discard(hit)
         self.changed.emit()
         self.update()
@@ -987,6 +987,7 @@ class ChartView(QWidget):
         if event.button() != Qt.LeftButton:
             return
         self._paste_anchor = self.absolute_at(y)
+        self._overlap_warned = False   # a fresh interaction may warn again
         self._drag_shift = bool(event.modifiers() & Qt.ShiftModifier)
         hit = self._note_at_point(col, y) if col is not None else None
 
@@ -1027,6 +1028,7 @@ class ChartView(QWidget):
             return
         if self._move_drag is not None:     # finished dragging notes to move them
             self._move_drag = None
+            self._flag_overlap(self._selection_overlaps())
             self.update()
             return
         if self.mode != "edit" or self._drag_start is None:
@@ -1107,7 +1109,7 @@ class ChartView(QWidget):
         if measure < 0 or measure >= self.project.measures:
             return
         note = Note(measure, pos, lane)
-        self.project.charts[self.selected_km].add(note)
+        self.project.add_object(self.selected_km, note)
         self._rec_pending[key] = note   # held; only used to ignore auto-repeat
         self.changed.emit()
         self.update()
@@ -1218,7 +1220,7 @@ class ChartView(QWidget):
         if not self.selection:
             return
         for mode, n in self.selection:
-            self._target_for(mode).discard(n)
+            self.project.remove_object(mode, n)
         self.selection = set()
         self.changed.emit()
         self.update()
@@ -1245,18 +1247,52 @@ class ChartView(QWidget):
                     return
                 newmode, newlane = _GLOBAL_LANES[g]
             proposed.append((mode, n, newmode, newlane, new_abs))
+        # Lift the selected notes out first; the remaining ("stationary") notes
+        # are the ones a move must never delete. Notes overlap freely now (charts
+        # are lists), so a move can pass through others instead of absorbing them.
         for mode, n, *_ in proposed:
-            self._target_for(mode).discard(n)
+            self.project.remove_object(mode, n)
+        stationary = {m: list(c) for m, c in self.project.charts.items()}
         new_sel = set()
+        overlap = False
         for mode, n, newmode, newlane, new_abs in proposed:
             measure = int(new_abs)
             pos = new_abs - measure
             moved = Note(measure, pos, newlane, n.length)
-            self._target_for(newmode).add(moved)
+            if newmode != "bgm":
+                for other in stationary.get(newmode, ()):
+                    if other.lane == newlane and self._overlaps(moved, other):
+                        overlap = True
+                        break
+            self.project.add_object(newmode, moved)
             new_sel.add((newmode, moved))
         self.selection = new_sel
+        self._flag_overlap(overlap)
         self.changed.emit()
         self.update()
+
+    def _flag_overlap(self, overlap: bool) -> None:
+        """Emit a one-shot warning when a move first lands the selection on top
+        of another note; stays quiet until the selection leaves the overlap."""
+        if overlap:
+            if not self._overlap_warned:
+                self._overlap_warned = True
+                self.overlap_warning.emit()
+        else:
+            self._overlap_warned = False
+
+    def _selection_overlaps(self) -> bool:
+        """True if any selected note overlaps a note (same lane) that isn't part
+        of the selection — used to warn after a drag-move."""
+        for mode, moved in self.selection:
+            if mode == "bgm":
+                continue
+            for other in self.project.charts.get(mode, ()):
+                if other.lane != moved.lane or (mode, other) in self.selection:
+                    continue
+                if self._overlaps(moved, other):
+                    return True
+        return False
 
     def select_all(self) -> None:
         """Select every note (all key modes + BGM); switches to edit mode so the
@@ -1281,14 +1317,14 @@ class ChartView(QWidget):
             return
         new_sel = set()
         for mode, n in self.selection:
-            self._target_for(mode).discard(n)
+            self.project.remove_object(mode, n)
         for mode, n in self.selection:
             if mode == "bgm":
                 flipped = n
             else:
                 lane = lanes_for(mode) - 1 - n.lane
                 flipped = Note(n.measure, n.pos, lane, n.length)
-            self._target_for(mode).add(flipped)
+            self.project.add_object(mode, flipped)
             new_sel.add((mode, flipped))
         self.selection = new_sel
         self.changed.emit()
@@ -1333,7 +1369,7 @@ class ChartView(QWidget):
         new_sel = set()
         for mode, m_off, pos, lane, length in items:
             note = Note(start + m_off, pos, lane, length)
-            self._target_for(mode).add(note)
+            self.project.add_object(mode, note)
             new_sel.add((mode, note))
         if new_sel:
             self.selection = new_sel

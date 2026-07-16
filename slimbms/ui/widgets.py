@@ -108,3 +108,17 @@ class CollapsibleSection(QWidget):
         # Uncap while open so the section can still grow with its content.
         if self._expanded:
             self.content.setMaximumHeight(_UNLIMITED)
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def set_expanded(self, expanded: bool) -> None:
+        """Set the open/closed state instantly (no animation) — used when
+        restoring a saved layout."""
+        if bool(expanded) == self._expanded:
+            return
+        self._expanded = bool(expanded)
+        self.header.setChecked(self._expanded)
+        self.header.setArrowType(Qt.DownArrow if self._expanded else Qt.RightArrow)
+        self._anim.stop()
+        self.content.setMaximumHeight(_UNLIMITED if self._expanded else 0)

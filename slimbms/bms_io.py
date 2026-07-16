@@ -317,7 +317,7 @@ def parse_bms(text: str) -> Project:
             elif channel in import_lane:
                 lane = import_lane[channel]
                 for pos in positions:
-                    chart.add(Note(measure, pos, lane))
+                    chart.append(Note(measure, pos, lane))
             elif channel in ln_lane:
                 ln_points.setdefault(channel, []).extend(measure + pos for pos in positions)
 
@@ -328,11 +328,11 @@ def parse_bms(text: str) -> Project:
         for i in range(0, len(points) - 1, 2):
             start, end = points[i], points[i + 1]
             m = int(start)
-            chart.add(Note(m, start - m, lane, end - start))
+            chart.append(Note(m, start - m, lane, end - start))
         if len(points) % 2:  # dangling head with no tail -> a plain tap
             start = points[-1]
             m = int(start)
-            chart.add(Note(m, start - m, lane))
+            chart.append(Note(m, start - m, lane))
     return project
 
 
@@ -397,7 +397,7 @@ def project_from_dict(data: dict) -> Project:
         km = int(km_str)
         if km in ALL_MODES:
             for row in objs:
-                project.charts[km].add(to_note(row))
+                project.charts[km].append(to_note(row))
     return project
 
 

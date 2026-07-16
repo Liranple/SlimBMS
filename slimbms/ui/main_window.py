@@ -309,6 +309,7 @@ class MainWindow(QMainWindow):
         self.view.cursor_info.connect(self._show_cursor)
         self.view.scroll_h.connect(self._scroll_horizontal)
         self.view.seek_requested.connect(self._seek_to_chart)
+        self.view.overlap_warning.connect(self._warn_overlap)
         self.scroll.setWidget(self.view)
         self.scroll.horizontalScrollBar().valueChanged.connect(self.header.set_x_offset)
         self.header.bgm_width_changed.connect(self._set_bgm_width)
@@ -472,6 +473,11 @@ class MainWindow(QMainWindow):
         rec.add_widget(self.rec_metronome)
         rec.add_widget(self._hint("보정값을 늘리면 노트가 더 빠르게 기록됨"))
         outer.addWidget(rec)
+
+        # Keyed by title so the collapsed/expanded state can be saved & restored.
+        self._sections = {
+            s.header.text(): s for s in (info, grid, zoom, tempo, audio, rec)
+        }
 
         outer.addStretch(1)
         # Scrollable so the (tall) sidebar never clips its lower sections.
@@ -766,6 +772,7 @@ class MainWindow(QMainWindow):
             "zoom_h": self.zoom_h.value(),
             "speed": self.speed.value(),
             "volume": self.volume.value(),
+            "sections": {t: s.is_expanded() for t, s in self._sections.items()},
         }
 
     def _apply_editor_settings(self) -> None:
@@ -786,6 +793,10 @@ class MainWindow(QMainWindow):
             self.speed.set_value(float(e["speed"]))
         if "volume" in e:
             self.volume.set_value(float(e["volume"]))
+        for title, expanded in (e.get("sections") or {}).items():
+            sec = self._sections.get(title)
+            if sec is not None:
+                sec.set_expanded(bool(expanded))
 
     def _autofit_measures(self) -> None:
         """Grow the timeline to cover all notes and the BGM length (never
@@ -803,6 +814,23 @@ class MainWindow(QMainWindow):
         need = max(16, need)
         if need > self.project.measures:
             self._resize_measures(need)
+
+    def _center_on_last_note(self) -> None:
+        """Scroll so the last-placed note sits at the vertical centre of the
+        view. Falls back to the song start (bottom) when there are no notes.
+        BGM objects don't count — this centres on the actual chart."""
+        vbar = self.scroll.verticalScrollBar()
+        vp_h = self.scroll.viewport().height()
+        last = None
+        for chart in self.project.charts.values():
+            for n in chart:
+                end = float(n.end_absolute)
+                if last is None or end > last:
+                    last = end
+        if last is None:
+            vbar.setValue(vbar.maximum())          # empty chart -> song start
+        else:
+            vbar.setValue(int(self.view.y_for(last) - vp_h / 2))
 
     def _resize_measures(self, need: int) -> None:
         # Preserve the chart position at the viewport centre across the resize.
@@ -906,6 +934,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(text)
         else:
             self.statusBar().clearMessage()
+
+    def _warn_overlap(self) -> None:
+        # Non-modal: a brief status-bar note (the overlap also shows as a red
+        # outline on the notes). No blocking dialog.
+        self.statusBar().showMessage(
+            "⚠ 노트가 다른 노트와 겹쳤습니다 (빨간 테두리로 표시됨)", 4000)
 
     # Pixel size at zoom factor 1.00 (matches the view's defaults).
     V_ZOOM_BASE = 150   # vertical: pixels per measure
@@ -1251,6 +1285,9 @@ class MainWindow(QMainWindow):
         self._reload_view()
         self._auto_load_bgm()          # reconnect the audio automatically
         self._apply_editor_settings()  # key mode, grid, zoom, speed, volume
+        # Defer centring until the layout settles so the scrollbar range is
+        # final (zoom/grid changes above resize the view).
+        QTimer.singleShot(0, self._center_on_last_note)
 
     def save_project(self) -> None:
         if not self.project_path:

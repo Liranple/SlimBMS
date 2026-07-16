@@ -112,8 +112,12 @@ class Project:
     bgm_file: str = ""            # audio filename, e.g. "song.ogg" (portable)
     bgm_path: str = ""            # full audio path, to auto-reconnect on open
     measures: int = 16           # number of measures in the timeline
-    charts: Dict[int, Set[Note]] = field(
-        default_factory=lambda: {k: set() for k in ALL_MODES}
+    # Key-mode charts are LISTS, not sets: two notes can legitimately overlap
+    # (they're flagged as a conflict, never silently merged), so an edit must
+    # never make one absorb another. BGM stays a set (a repeated trigger at the
+    # same time is genuinely the same object).
+    charts: Dict[int, List[Note]] = field(
+        default_factory=lambda: {k: [] for k in ALL_MODES}
     )
     bgm: Set[Note] = field(default_factory=set)  # BGM objects (lane 0)
     # Mid-song tempo changes: absolute chart position (measures) -> BPM. The
@@ -138,9 +142,9 @@ class Project:
 
     def snapshot(self):
         """A cheap copy of all editable note/tempo/length state (Notes are
-        immutable, so copying the sets just copies references)."""
+        immutable, so copying the lists/set just copies references)."""
         return (
-            {km: set(s) for km, s in self.charts.items()},
+            {km: list(s) for km, s in self.charts.items()},
             set(self.bgm),
             dict(self.bpm_changes),
             self.measures,
@@ -148,7 +152,7 @@ class Project:
 
     def restore(self, snap) -> None:
         charts, bgm, bpm_changes, measures = snap
-        self.charts = {km: set(s) for km, s in charts.items()}
+        self.charts = {km: list(s) for km, s in charts.items()}
         self.bgm = set(bgm)
         self.bpm_changes = dict(bpm_changes)
         self.measures = measures
@@ -161,10 +165,28 @@ class Project:
         note = Note(measure, pos, lane)
         chart = self.charts[key_mode]
         if note in chart:
-            chart.discard(note)
+            chart.remove(note)
             return False
-        chart.add(note)
+        chart.append(note)
         return True
+
+    def add_object(self, mode, note: Note) -> None:
+        """Place a note on a key-mode chart (``mode`` is the int key mode) or the
+        BGM lane (``mode == 'bgm'``). Charts allow overlaps; BGM dedups."""
+        if mode == "bgm":
+            self.bgm.add(note)
+        else:
+            self.charts[mode].append(note)
+
+    def remove_object(self, mode, note: Note) -> None:
+        """Remove one instance of ``note`` from the given lane, if present."""
+        if mode == "bgm":
+            self.bgm.discard(note)
+        else:
+            try:
+                self.charts[mode].remove(note)
+            except ValueError:
+                pass
 
     def toggle_bgm(self, measure: int, pos: Fraction) -> bool:
         note = Note(measure, pos, 0)
