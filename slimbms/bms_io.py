@@ -21,6 +21,7 @@ from .model import (
     IMPORT_MODE,
     KEY_CHANNELS,
     KEY_MODES,
+    NOTE_VALUE,
     OBJ_VALUE,
     BGM_WAV_INDEX,
     Note,
@@ -58,11 +59,12 @@ def _format_bpm(bpm: float) -> str:
     return repr(float(bpm))
 
 
-def _measure_data(objects: List[Note]) -> str:
+def _measure_data(objects: List[Note], value: str = OBJ_VALUE) -> str:
     """Build the ``ZZ...`` data string for one channel within one measure.
 
-    All objects use the same presence marker; the slot count is the least common
-    multiple of the positions' denominators, then reduced to the shortest form.
+    Every object uses ``value`` as its marker (BGM points at the song, chart
+    notes at a silent slot); the slot count is the least common multiple of the
+    positions' denominators, then reduced to the shortest form.
     """
     if not objects:
         return ""
@@ -72,7 +74,7 @@ def _measure_data(objects: List[Note]) -> str:
     slots = ["00"] * length
     for n in objects:
         idx = n.pos.numerator * (length // n.pos.denominator)
-        slots[idx] = OBJ_VALUE
+        slots[idx] = value
     # Reduce: if every filled index shares a factor with the length, shrink it.
     g = length
     for i, v in enumerate(slots):
@@ -162,7 +164,7 @@ def export_bms(project: Project, key_mode: int) -> str:
         for lane, channel in enumerate(channels):
             lane_notes = [n for n in chart if n.lane == lane]
             taps = [n for n in lane_notes if not n.is_long and n.measure == measure]
-            data = _measure_data(taps)
+            data = _measure_data(taps, NOTE_VALUE)
             if data:
                 rows.append(f"#{measure:03d}{channel}:{data}")
 
@@ -176,7 +178,7 @@ def export_bms(project: Project, key_mode: int) -> str:
                 end_measure = int(end_abs)
                 if end_measure == measure:
                     endpoints.append(Note(measure, end_abs - end_measure, lane))
-            data = _measure_data(endpoints)
+            data = _measure_data(endpoints, NOTE_VALUE)
             if data:
                 rows.append(f"#{measure:03d}{_ln_channel(channel)}:{data}")
 

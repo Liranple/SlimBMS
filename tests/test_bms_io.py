@@ -151,6 +151,21 @@ def test_key_mode_channel_mapping():
     assert "16" not in sum((KEY_CHANNELS[k] for k in (4, 6)), [])
 
 
+def test_keysoundless_bgm_and_notes_use_separate_slots():
+    # Keysound-less: BGM object -> WAV01 (the song); chart notes -> silent 02
+    # with no #WAV02 defined, so hitting a note makes no sound.
+    p = Project(title="KS", bgm_file="song.ogg", measures=2)
+    p.bgm.add(Note(0, Fraction(0), 0))
+    p.charts[4].append(Note(0, Fraction(0), 0))   # tap on channel 11
+    text = bms_io.export_bms(p, 4)
+    assert "#WAV01 song.ogg" in text
+    assert "#WAV02" not in text, "the note slot stays undefined (silent)"
+    bgm_row = [l for l in text.splitlines() if l.startswith("#00001:")][0]
+    assert bgm_row.split(":", 1)[1] == "01", "BGM object references the song (01)"
+    note_row = [l for l in text.splitlines() if l.startswith("#00011:")][0]
+    assert note_row.split(":", 1)[1] == "02", "chart note references the silent slot (02)"
+
+
 def test_long_note_exports_on_ln_channel():
     # A 4K long note in lane 0 (channel 11 -> LN channel 51) spanning half a
     # measure emits a head at its start and a tail at its end on channel 51.
@@ -161,8 +176,9 @@ def test_long_note_exports_on_ln_channel():
     ln = [line for line in text.splitlines() if line.startswith("#00051:")]
     assert ln, "long note should use LN channel 51"
     # Head at 1/4 and tail at 3/4 -> slots 1 and 3 of a length-4 data string.
+    # Chart notes carry the silent marker 02 (keysound-less); BGM uses 01.
     data = ln[0].split(":", 1)[1]
-    assert data == "00010001", f"unexpected LN data {data!r}"
+    assert data == "00020002", f"unexpected LN data {data!r}"
 
 
 def test_long_note_spanning_measures_pairs_back():

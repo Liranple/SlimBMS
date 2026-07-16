@@ -50,10 +50,13 @@ DISPLAY_LABELS: Dict[int, str] = {
 # Channel used for the background-music object (whole-song audio start timing).
 BGM_CHANNEL = "01"
 
-# All notes reference this single WAV index. For a keysound-less chart every
-# object simply points at the one BGM audio; the value is a presence marker.
-OBJ_VALUE = "01"
+# Keysound-less layout: the BGM object points at WAV01 (the imported song), so
+# only the background music makes sound. Playable chart notes carry a separate
+# marker (02) with NO #WAV defined for it, so hitting a note is silent — exactly
+# uBMSC's "song on slot 1, notes on slot 2" workflow.
+OBJ_VALUE = "01"          # BGM object -> WAV01 (the song)
 BGM_WAV_INDEX = "01"
+NOTE_VALUE = "02"         # chart notes -> silent slot (no #WAV02 emitted)
 
 
 def lanes_for(key_mode: int) -> int:
