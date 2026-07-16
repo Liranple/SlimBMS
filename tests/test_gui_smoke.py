@@ -115,16 +115,17 @@ def main() -> int:
         "recorded notes should snap to the nearest 1/16 grid line at the playhead"
     assert not any(n.is_long for n in view.project.charts[4]), "quick taps aren't long"
 
-    # Holding a key while the playhead advances records a long note.
+    # Holding a key records only a single tap — auto-repeat never grows a long
+    # note (removed in v0.38.1 so a brief hold on a fine grid can't become one).
     view.set_playhead(4.0)
-    press(view, Qt.Key_Q)                   # 4K lane 0 head at measure 4
+    press(view, Qt.Key_Q)                   # 4K lane 0 tap at measure 4
     view.set_playhead(4.75)                 # playhead advances while held
-    press(view, Qt.Key_Q, autorep=True)     # auto-repeat grows it
+    press(view, Qt.Key_Q, autorep=True)     # auto-repeat is ignored
     view.set_playhead(5.0)
-    release(view, Qt.Key_Q)                 # release fixes the tail at 5.0
-    held = [n for n in view.project.charts[4] if n.is_long and n.measure == 4]
-    assert len(held) == 1 and held[0].length == Fraction(1), \
-        f"hold should record a 1-measure long note, got {held}"
+    release(view, Qt.Key_Q)
+    held = [n for n in view.project.charts[4] if n.measure == 4]
+    assert len(held) == 1 and not held[0].is_long, \
+        f"a held key should record one plain tap, got {held}"
 
     # 6K maps E and numpad-7 to distinct lanes (2 and 3).
     win._km_actions[6].trigger()            # switch to 6K

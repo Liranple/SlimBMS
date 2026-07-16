@@ -39,6 +39,8 @@ C_NOTE_BGM = QColor("#ffb347")
 C_PLAYHEAD = QColor("#ff4d6d")
 C_CONFLICT = QColor("#ff4d4d")   # notes that overlap another note in the same lane
 C_BPM = QColor("#c792ea")        # mid-song tempo-change markers
+C_BPM_FAST = QColor(255, 70, 70, 26)   # faint tint where a segment is faster than base
+C_BPM_SLOW = QColor(70, 130, 255, 26)  # faint tint where a segment is slower than base
 C_WAVE = QColor(120, 180, 255, 70)  # BGM waveform in the BGM lane
 
 # Note colour by lane code.
@@ -270,6 +272,7 @@ class ChartView(QWidget):
         self._vis_hi = clip.bottom() + 2
         p.fillRect(clip, C_BG)
         self._paint_lane_backgrounds(p)
+        self._paint_bpm_regions(p)
         self._paint_waveform(p)
         self._paint_horizontal_lines(p)
         self._paint_separators(p)
@@ -284,10 +287,21 @@ class ChartView(QWidget):
         p.end()
 
     def _paint_hits(self, p: QPainter) -> None:
-        """Flash notes that just crossed the playhead — a bright pop that fades."""
+        """Flash notes that just crossed the playhead — a bright pop that fades.
+        A long note keeps its flash refreshed for as long as the playhead sits
+        inside its body, so the effect lasts the whole hold and only fades once
+        it's released."""
+        now = time.monotonic()
+        # Keep held long notes lit: refresh their flash every frame while the
+        # playhead is between the head and the tail.
+        ph = self.playhead
+        if self.live_playing and ph is not None:
+            for km, longs in self._longs.items():
+                for n in longs:
+                    if n.absolute <= ph <= n.end_absolute:
+                        self._hits[(km, n)] = now
         if not self._hits:
             return
-        now = time.monotonic()
         bgmx = self.columns[0].x
         colx = self._col_x()
         p.setBrush(Qt.NoBrush)
@@ -303,10 +317,13 @@ class ChartView(QWidget):
                 x, w = colx.get((mode, n.lane)), self.lane_w
             if x is None:
                 continue
-            rect = self._note_rect(x, n.absolute, w)
-            grow = int(3 * inten)          # the pop expands outward as it fades
+            is_long = mode != "bgm" and n.is_long
+            # Long notes glow over their whole body; taps pop from the head cell.
+            rect = self._sel_rect(x, n, w) if is_long else self._note_rect(x, n.absolute, w)
+            grow = int(6 * inten)          # the pop expands outward as it fades
             r = rect.adjusted(-grow, -grow, grow, grow)
-            p.fillRect(r, QColor(255, 255, 255, int(150 * inten)))
+            fill_a = int((70 if is_long else 150) * inten)
+            p.fillRect(r, QColor(255, 255, 255, fill_a))
             p.setPen(QPen(QColor(255, 255, 255, int(230 * inten)), 2))
             p.drawRect(r)
         for k in expired:
@@ -335,29 +352,59 @@ class ChartView(QWidget):
                 if a > 0.5:
                     p.drawLine(int(cx - a), y, int(cx + a), y)
 
+    def _paint_bpm_regions(self, p: QPainter) -> None:
+        """Faintly tint each tempo segment across the note lanes — red where it's
+        faster than the base BPM, blue where slower. Painted under the grid,
+        waveform and notes (with very low alpha) so nothing gets obscured."""
+        changes = self.project.bpm_changes
+        if not changes:
+            return
+        base = self.project.bpm
+        x0 = self.groups[0].x0
+        x1 = self.groups[-1].x1
+        end = float(self.project.measures)
+        items = sorted(changes.items())
+        for i, (pos, bpm) in enumerate(items):
+            if bpm > base:
+                col = C_BPM_FAST
+            elif bpm < base:
+                col = C_BPM_SLOW
+            else:
+                continue                          # same as base -> no tint
+            lo = float(pos)
+            hi = float(items[i + 1][0]) if i + 1 < len(items) else end
+            if hi <= lo:
+                continue
+            y_top = int(self.y_for(hi))           # later position = smaller y
+            y_bot = int(self.y_for(lo))
+            if y_bot < self._vis_lo or y_top > self._vis_hi:
+                continue                          # outside the exposed strip
+            p.fillRect(QRect(x0, y_top, x1 - x0, y_bot - y_top), col)
+
     def _paint_bpm_changes(self, p: QPainter) -> None:
         if not self.project.bpm_changes:
             return
         x0 = L.LEFT_MARGIN
         x1 = self.groups[-1].x1
         font = QFont()
-        font.setPointSize(8)
+        font.setPointSize(9)
         font.setBold(True)
         for pos, bpm in self.project.bpm_changes.items():
             y = int(self.y_for(float(pos)))
-            if y < self._vis_lo - 14 or y > self._vis_hi + 14:
+            if y < self._vis_lo - 20 or y > self._vis_hi + 20:
                 continue
-            p.setPen(QPen(C_BPM, 1, Qt.DashLine))
+            # A solid line across the lanes marks exactly where the tempo changes.
+            p.setPen(QPen(C_BPM, 2))
             p.drawLine(x0, y, x1, y)
-            # A small tag with the tempo at the left edge of the lanes.
-            label = f"♩{bpm:g}"
+            # A clear pill just above the line naming the new tempo.
+            label = f"♩ {bpm:g} BPM"
             p.setFont(font)
             fm = p.fontMetrics()
-            tw = fm.horizontalAdvance(label) + 8
-            tag = QRect(x0 + 2, y - 14, tw, 13)
+            tw = fm.horizontalAdvance(label) + 12
+            tag = QRect(x0 + 2, y - 19, tw, 17)
             p.setPen(Qt.NoPen)
             p.setBrush(C_BPM)
-            p.drawRoundedRect(tag, 3, 3)
+            p.drawRoundedRect(tag, 4, 4)
             p.setPen(QPen(QColor("#1b1b21"), 1))
             p.drawText(tag, Qt.AlignCenter, label)
 

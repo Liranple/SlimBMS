@@ -372,8 +372,8 @@ class MainWindow(QMainWindow):
         # Two plain number boxes: the LEFT is the snap basis (cells per measure
         # that notes land on); the RIGHT is a lighter reference grid.
         grid = CollapsibleSection("격자")
-        self.sb_g1 = self._grid_box(16, self._apply_grids)   # snap basis
-        self.sb_g2 = self._grid_box(4, self._apply_grids)    # reference
+        self.sb_g1 = self._flat_field(self._grid_box(16, self._apply_grids))  # snap basis
+        self.sb_g2 = self._flat_field(self._grid_box(4, self._apply_grids))   # reference
         grow = QHBoxLayout()
         grow.setSpacing(12)
         grow.addWidget(self._labeled("스냅 격자", self.sb_g1))
@@ -401,18 +401,20 @@ class MainWindow(QMainWindow):
 
         # -- Tempo changes -------------------------------------------------- #
         tempo = CollapsibleSection("BPM 변화")
-        self.bpm_measure = NoWheelSpinBox()
+        self.bpm_measure = self._flat_field(NoWheelSpinBox())
         self.bpm_measure.setRange(0, 9999)
-        self.bpm_cell = NoWheelSpinBox()
-        self.bpm_cell.setRange(0, 15)          # position within the measure, in 1/16
-        self.bpm_value = NoWheelDoubleSpinBox()
+        self.bpm_cell = self._flat_field(NoWheelSpinBox())
+        # Position within the measure, counted in snap-grid cells: one measure is
+        # split into `스냅 격자` cells, so the max follows the snap-grid setting.
+        self.bpm_cell.setRange(0, self.sb_g1.value())
+        self.bpm_value = self._flat_field(NoWheelDoubleSpinBox())
         self.bpm_value.setRange(1.0, 999.0)
         self.bpm_value.setDecimals(2)
         self.bpm_value.setValue(120.0)
         brow = QHBoxLayout()
         brow.setSpacing(8)
         brow.addWidget(self._labeled("마디", self.bpm_measure))
-        brow.addWidget(self._labeled("칸(1/16)", self.bpm_cell))
+        brow.addWidget(self._labeled("칸", self.bpm_cell))
         brow.addWidget(self._labeled("BPM", self.bpm_value))
         tempo.add_layout(brow)
         add_bpm = QPushButton("추가 / 변경")
@@ -452,13 +454,14 @@ class MainWindow(QMainWindow):
         outer.addWidget(audio)
 
         # -- Recording ------------------------------------------------------ #
-        rec = CollapsibleSection("녹음")
+        rec = CollapsibleSection("실시간 채보")
         self.rec_offset = NoWheelSpinBox()
-        self.rec_offset.setRange(-300, 300)
+        self.rec_offset.setRange(-300, 300)    # latency comp, either direction
         self.rec_offset.setSingleStep(5)
         self.rec_offset.setSuffix(" ms")
+        self._flat_field(self.rec_offset)
         self.rec_offset.valueChanged.connect(self._update_record_offset)
-        rec.add_widget(self._labeled("녹음 오프셋 (입력 지연 보정)", self.rec_offset))
+        rec.add_widget(self._labeled("입력 지연 보정", self.rec_offset))
         self.rec_countin = QPushButton("카운트인 : 꺼짐")
         self.rec_countin.setCheckable(True)
         self.rec_countin.toggled.connect(
@@ -469,7 +472,7 @@ class MainWindow(QMainWindow):
         self.rec_metronome.toggled.connect(
             lambda on: self.rec_metronome.setText("메트로놈 : 켜짐" if on else "메트로놈 : 꺼짐"))
         rec.add_widget(self.rec_metronome)
-        rec.add_widget(self._hint("오프셋을 늘리면 노트가 더 이르게 기록됨"))
+        rec.add_widget(self._hint("보정값을 늘리면 노트가 더 빠르게 기록됨"))
         outer.addWidget(rec)
 
         outer.addStretch(1)
@@ -493,6 +496,16 @@ class MainWindow(QMainWindow):
         label.setObjectName("Hint")
         label.setWordWrap(True)
         return label
+
+    def _flat_field(self, w: QWidget) -> QWidget:
+        """Strip the dark filled box from a numeric input — transparent with
+        just a thin underline, so the value reads cleanly on the panel instead
+        of sitting inside a black rectangle."""
+        w.setStyleSheet(
+            "QAbstractSpinBox { background: transparent; border: none;"
+            " border-bottom: 1px solid #33333d; border-radius: 0; padding: 2px 2px; }"
+            "QAbstractSpinBox:focus { border-bottom: 1px solid #6fd0ff; }")
+        return w
 
     def _labeled(self, caption: str, widget: QWidget) -> QWidget:
         box = QWidget()
@@ -677,18 +690,34 @@ class MainWindow(QMainWindow):
             "flip": (self.flip_action, "좌우 반전", "`"),
         }
 
+    # Seeking also accepts the numpad +/- keys. The OS reports these as separate
+    # keys carrying Qt.KeypadModifier, so the main-row binding never matches them
+    # — we register both the plain and the keypad-modified form explicitly.
+    _KEYPAD_EXTRAS = {
+        "forward": (Qt.Key_Plus, Qt.KeypadModifier | Qt.Key_Plus),
+        "back": (Qt.Key_Minus, Qt.KeypadModifier | Qt.Key_Minus),
+    }
+
+    def _apply_shortcut(self, key: str, seq: str) -> None:
+        """Set an action's shortcut, keeping the numpad seek keys alongside the
+        (configurable) primary one so they always work."""
+        act = self._key_actions[key][0]
+        seqs = [QKeySequence(seq)]
+        seqs += [QKeySequence(extra) for extra in self._KEYPAD_EXTRAS.get(key, ())]
+        act.setShortcuts(seqs)
+
     def _load_shortcuts(self) -> None:
         s = QSettings("SlimBMS", "SlimBMS")
         for key, (act, _label, default) in self._key_actions.items():
             seq = s.value(f"shortcuts/{key}", default)
-            act.setShortcut(QKeySequence(seq))
+            self._apply_shortcut(key, seq)
 
     def open_keybindings(self) -> None:
         dlg = KeybindingsDialog(self._key_actions, self)
         if dlg.exec():
             s = QSettings("SlimBMS", "SlimBMS")
             for key, seq in dlg.result_shortcuts().items():
-                self._key_actions[key][0].setShortcut(QKeySequence(seq))
+                self._apply_shortcut(key, seq)
                 s.setValue(f"shortcuts/{key}", seq)
 
     # -- state -------------------------------------------------------------- #
@@ -795,6 +824,10 @@ class MainWindow(QMainWindow):
         # Left box drives the snap grid; right box is the reference grid.
         self.view.set_grid_main(self.sb_g1.value())
         self.view.set_grid_sub(self.sb_g2.value())
+        # One measure holds exactly `스냅 격자` cells, so the BPM-change cell box
+        # caps at the snap-grid value (a bigger cell is clamped down to it).
+        if hasattr(self, "bpm_cell"):
+            self.bpm_cell.setMaximum(self.sb_g1.value())
 
     def _toggle_snap(self, on: bool) -> None:
         self.view.set_snap_on(on)
@@ -830,7 +863,9 @@ class MainWindow(QMainWindow):
 
     def _add_bpm_change(self) -> None:
         from fractions import Fraction
-        pos = Fraction(self.bpm_measure.value()) + Fraction(self.bpm_cell.value(), 16)
+        grid = max(1, self.sb_g1.value())
+        cell = min(self.bpm_cell.value(), grid)   # never past one measure of cells
+        pos = Fraction(self.bpm_measure.value()) + Fraction(cell, grid)
         self.project.bpm_changes[pos] = float(self.bpm_value.value())
         self.view.changed.emit()   # marks dirty + schedules an undo entry
         self.view.update()
@@ -849,11 +884,12 @@ class MainWindow(QMainWindow):
 
     def _refresh_bpm_list(self) -> None:
         self.bpm_list.clear()
+        grid = max(1, self.sb_g1.value())
         for pos, bpm in sorted(self.project.bpm_changes.items()):
             measure = int(pos)
             frac = pos - measure
-            cell = int(frac * 16)
-            text = f"마디 {measure} · {cell}/16 → BPM {bpm:g}"
+            cell = int(round(float(frac) * grid))
+            text = f"마디 {measure} · 칸 {cell}/{grid} → {bpm:g} BPM"
             self.bpm_list.addItem(text)
             self.bpm_list.item(self.bpm_list.count() - 1).setData(Qt.UserRole, pos)
 
