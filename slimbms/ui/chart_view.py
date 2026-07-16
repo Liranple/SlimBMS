@@ -1004,6 +1004,27 @@ class ChartView(QWidget):
             return None
         return "tail" if dt <= dh else "head"
 
+    def _long_endpoint_at(self, col, y: float):
+        """If ``y`` is near the head/tail of a long note in this column's lane,
+        return ``(mode, note, 'head'|'tail')``; else None. Used in add mode so
+        that clicking a long note's endpoint resizes it instead of dropping a
+        new tap there."""
+        if col.kind == "bgm":
+            return None
+        best = None
+        best_d = None
+        for n in self.project.charts[col.key_mode]:
+            if n.lane != col.lane or not n.is_long:
+                continue
+            end = self._endpoint_near(n, y)
+            if end is None:
+                continue
+            ref = n.absolute if end == "head" else n.end_absolute
+            d = abs(y - self.y_for(ref))
+            if best_d is None or d < best_d:
+                best, best_d = (col.key_mode, n, end), d
+        return best
+
     def _apply_len_drag(self, event: QMouseEvent) -> None:
         """Resize a long note by dragging its head or tail to the cursor."""
         ld = self._len_drag
@@ -1059,9 +1080,6 @@ class ChartView(QWidget):
         else:
             self.unsetCursor()
         self.cursor_info.emit(self._cursor_text(event))
-        if self.mode == "edit" and self._len_drag is not None:
-            self._apply_len_drag(event)
-            return
         if self.mode == "edit" and self._move_drag is not None:
             self._apply_move_drag(event)
             return
@@ -1070,6 +1088,9 @@ class ChartView(QWidget):
             self.update()
             return
         if self.mode == "add":
+            if self._len_drag is not None:
+                self._apply_len_drag(event)  # resizing a long note endpoint
+                return
             if self._add_drag is not None:
                 self._grow_add_drag(event)   # dragging out a long note
                 return
@@ -1116,7 +1137,26 @@ class ChartView(QWidget):
                 return
             c, measure, pos = resolved
             if event.button() == Qt.LeftButton:
-                # Left click drops a note; dragging up/down before release turns
+                # Pressing on an existing long note's head/tail grabs it for
+                # resizing instead of dropping a new tap there.
+                grab = self._long_endpoint_at(c, y)
+                if grab is not None:
+                    mode, note, end = grab
+                    self.selection = {(mode, note)}
+                    self._len_drag = {"mode": mode, "note": note, "end": end}
+                    self.update()
+                    return
+                # Pressing on an existing note: a plain click does nothing (no
+                # duplicate), but dragging grows an existing tap into a long
+                # note from where it sits.
+                hit = self._note_at_point(c, y)
+                if hit is not None:
+                    mode, note = hit
+                    if mode != "bgm" and not note.is_long:
+                        self._add_drag = (mode, note, note.absolute, c)
+                        self._hover = None
+                    return
+                # Empty cell: drop a note; dragging up/down before release turns
                 # it into a long note spanning the dragged range.
                 note = self._add_note(c, measure, pos)
                 mode_key = "bgm" if c.kind == "bgm" else c.key_mode
@@ -1140,14 +1180,6 @@ class ChartView(QWidget):
 
         if hit is not None and not self._drag_shift:
             mode, note = hit
-            # Near a long note's end → resize it; elsewhere on a note → move.
-            if mode != "bgm" and note.is_long:
-                end = self._endpoint_near(note, y)
-                if end is not None:
-                    self.selection = {hit}
-                    self._len_drag = {"mode": mode, "note": note, "end": end}
-                    self.update()
-                    return
             # Press on a note (no Shift) → drag to move it. Grab the whole
             # selection if the note is part of it, otherwise just this note.
             if hit not in self.selection:

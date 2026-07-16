@@ -493,15 +493,15 @@ class MainWindow(QMainWindow):
         self.addAction(self.speed_up_action)
 
         tb.addSeparator()
-        self.add_mode_action = QAction("추가", self)
+        self.edit_mode_action = QAction("편집[F2]", self)
+        self.edit_mode_action.setCheckable(True)
+        self.edit_mode_action.triggered.connect(lambda: self._set_mode("edit"))
+        tb.addAction(self.edit_mode_action)
+        self.add_mode_action = QAction("추가[F3]", self)
         self.add_mode_action.setCheckable(True)
         self.add_mode_action.setChecked(True)
         self.add_mode_action.triggered.connect(lambda: self._set_mode("add"))
         tb.addAction(self.add_mode_action)
-        self.edit_mode_action = QAction("편집", self)
-        self.edit_mode_action.setCheckable(True)
-        self.edit_mode_action.triggered.connect(lambda: self._set_mode("edit"))
-        tb.addAction(self.edit_mode_action)
 
         tb.addSeparator()
         # Two-option segmented toggle (4K / 6K); the checked one is highlighted.
