@@ -122,6 +122,12 @@ def export_bms(project: Project, key_mode: int) -> str:
     lines.append(f"#ARTIST {project.artist}")
     lines.append(f"#BPM {_format_bpm(project.bpm)}")
     lines.append(f"#PLAYLEVEL {int(project.level)}")
+    if project.stagefile:
+        lines.append(f"#STAGEFILE {project.stagefile}")
+    if project.banner:
+        lines.append(f"#BANNER {project.banner}")
+    if project.backbmp:
+        lines.append(f"#BACKBMP {project.backbmp}")
     lines.append("#RANK 3")
     lines.append("#LNTYPE 1")  # long notes use paired head/tail on the 5x channel
     lines.append(f"#SLIMBMS_KEYMODE {key_mode}")  # hint for lossless re-import
@@ -253,6 +259,12 @@ def parse_bms(text: str) -> Project:
                 bpm_defs[idx] = float(line.split(None, 1)[1])
             except (IndexError, ValueError):
                 pass
+        elif upper.startswith("#STAGEFILE "):
+            project.stagefile = line[len("#STAGEFILE "):].strip()
+        elif upper.startswith("#BANNER "):
+            project.banner = line[len("#BANNER "):].strip()
+        elif upper.startswith("#BACKBMP "):
+            project.backbmp = line[len("#BACKBMP "):].strip()
         elif upper.startswith(f"#WAV{BGM_WAV_INDEX}"):
             project.bgm_file = line[len("#WAV") + len(BGM_WAV_INDEX):].strip()
         elif upper.startswith("#SLIMBMS_KEYMODE"):
@@ -363,6 +375,9 @@ def project_to_dict(project: Project) -> dict:
         "genre": project.genre,
         "bpm": project.bpm,
         "level": project.level,
+        "stagefile": project.stagefile,
+        "banner": project.banner,
+        "backbmp": project.backbmp,
         "bgm_file": project.bgm_file,
         "bgm_path": project.bgm_path,
         "editor": project.editor,
@@ -381,6 +396,9 @@ def project_from_dict(data: dict) -> Project:
         genre=data.get("genre", ""),
         bpm=float(data.get("bpm", 120.0)),
         level=int(data.get("level", 1)),
+        stagefile=data.get("stagefile", ""),
+        banner=data.get("banner", ""),
+        backbmp=data.get("backbmp", ""),
         bgm_file=data.get("bgm_file", ""),
         bgm_path=data.get("bgm_path", ""),
         editor=data.get("editor", {}) or {},

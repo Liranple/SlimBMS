@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Dict, Optional
 
 from PySide6.QtCore import (
     QEvent,
@@ -186,6 +186,17 @@ class MainWindow(QMainWindow):
         info.add_layout(form)
         outer.addWidget(info)
 
+        # -- Images (STAGEFILE / BANNER / BACKBMP) -------------------------- #
+        images = CollapsibleSection("이미지")
+        self._image_labels: Dict[str, QLabel] = {}
+        for field, caption in (
+            ("stagefile", "대표 이미지"),
+            ("banner", "배너 이미지"),
+            ("backbmp", "배경 이미지"),
+        ):
+            images.add_widget(self._image_row(field, caption))
+        outer.addWidget(images)
+
         # -- Grid ----------------------------------------------------------- #
         # Two plain number boxes: the LEFT is the snap basis (cells per measure
         # that notes land on); the RIGHT is a lighter reference grid.
@@ -293,7 +304,8 @@ class MainWindow(QMainWindow):
 
         # Keyed by title so the collapsed/expanded state can be saved & restored.
         self._sections = {
-            s.header.text(): s for s in (info, grid, zoom, tempo, audio, rec)
+            s.header.text(): s
+            for s in (info, images, grid, zoom, tempo, audio, rec)
         }
 
         outer.addStretch(1)
@@ -333,6 +345,40 @@ class MainWindow(QMainWindow):
         col.addWidget(cap)
         col.addWidget(widget)
         return box
+
+    def _image_row(self, field: str, caption: str) -> QWidget:
+        """A caption + 'select file' button + filename label for one BMS image
+        header (STAGEFILE / BANNER / BACKBMP)."""
+        box = QWidget()
+        box.setObjectName("FlatRow")
+        box.setStyleSheet("QWidget#FlatRow { background: transparent; }")
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 0, 0, 6)
+        col.setSpacing(3)
+        cap = QLabel(caption)
+        cap.setObjectName("Hint")
+        col.addWidget(cap)
+        btn = QPushButton("파일 선택")
+        btn.clicked.connect(lambda: self._choose_image(field, caption))
+        col.addWidget(btn)
+        label = QLabel("(없음)")
+        label.setObjectName("Hint")
+        label.setWordWrap(True)
+        col.addWidget(label)
+        self._image_labels[field] = label
+        return box
+
+    def _choose_image(self, field: str, caption: str) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"{caption} 선택", self._dir_for("image"),
+            "이미지 (*.png *.jpg *.jpeg *.bmp *.gif);;모든 파일 (*)")
+        if not path:
+            return
+        self._remember_dir("image", path)
+        name = os.path.basename(path)
+        setattr(self.project, field, name)
+        self._image_labels[field].setText(name)
+        self._on_changed()
 
     def _hline(self) -> QFrame:
         line = QFrame()
@@ -571,6 +617,8 @@ class MainWindow(QMainWindow):
         for w, val in ((self.sb_bpm, p.bpm), (self.sb_level, p.level)):
             w.blockSignals(True); w.setValue(val); w.blockSignals(False)
         self.sb_bgm_label.setText(p.bgm_file or "(없음)")
+        for field, label in self._image_labels.items():
+            label.setText(getattr(p, field) or "(없음)")
         self._refresh_bpm_list()
 
     def _set_meta(self, field: str, value) -> None:

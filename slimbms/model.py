@@ -112,6 +112,9 @@ class Project:
     genre: str = ""
     bpm: float = 120.0           # base BPM, in effect from the song start
     level: int = 1               # play level / difficulty
+    stagefile: str = ""          # #STAGEFILE image filename (splash / cover)
+    banner: str = ""             # #BANNER image filename
+    backbmp: str = ""            # #BACKBMP background image filename
     bgm_file: str = ""            # audio filename, e.g. "song.ogg" (portable)
     bgm_path: str = ""            # full audio path, to auto-reconnect on open
     measures: int = 16           # number of measures in the timeline

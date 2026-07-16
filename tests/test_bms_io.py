@@ -217,6 +217,30 @@ def test_slbms_v1_without_length_still_loads():
     assert n.length == Fraction(0) and n.lane == 2
 
 
+def test_image_headers_roundtrip():
+    # STAGEFILE / BANNER / BACKBMP survive both the .bms and .slbms round-trips,
+    # and are omitted from .bms output when empty.
+    p = Project(title="T", stagefile="cover.png", banner="ban.jpg",
+                backbmp="bg.png")
+    txt = bms_io.export_bms(p, 4)
+    assert "#STAGEFILE cover.png" in txt
+    assert "#BANNER ban.jpg" in txt
+    assert "#BACKBMP bg.png" in txt
+    back = bms_io.parse_bms(txt)
+    assert (back.stagefile, back.banner, back.backbmp) == (
+        "cover.png", "ban.jpg", "bg.png")
+
+    d = bms_io.project_to_dict(p)
+    back2 = bms_io.project_from_dict(d)
+    assert (back2.stagefile, back2.banner, back2.backbmp) == (
+        "cover.png", "ban.jpg", "bg.png")
+
+    empty = bms_io.export_bms(Project(), 4)
+    assert "STAGEFILE" not in empty
+    assert "BANNER" not in empty
+    assert "BACKBMP" not in empty
+
+
 if __name__ == "__main__":
     import traceback
 
