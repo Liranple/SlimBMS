@@ -321,7 +321,9 @@ class ChartView(QWidget):
 
     def _apply_scale_drag(self, event: QMouseEvent) -> None:
         d = self._scale_drag
-        dy = d["y0"] - event.position().y()      # drag up = positive = grow taller
+        # Measures stack upward from their number, so grabbing the number and
+        # pushing it up should collapse the measure: drag up = fewer cells.
+        dy = event.position().y() - d["y0"]      # drag up = negative = shrink
         if not d["active"] and abs(dy) < 4:
             return                               # still might be a plain click
         d["active"] = True
