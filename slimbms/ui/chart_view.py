@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import time
 from fractions import Fraction
 from typing import Optional
@@ -122,6 +123,9 @@ class ChartView(QWidget):
         self._add_drag = None         # (mode_key, Note, start_abs, Column) while dragging a long note
         self._rec_pending = {}        # key -> (km, Note, start_abs) for keys held during recording
         self._len_drag = None         # {mode, note, end:'head'|'tail'} while dragging a long-note endpoint
+        self._scale_drag = None       # {measure, y0, start_cells, min_cells, active} while resizing a measure
+        self._vprefix = [0.0]         # cumulative display heights per measure (built in _apply_size)
+        self._vtotal = 0.0            # total display height in measure units
         # Undo/redo: snapshots of the project's editable state, coalesced by a
         # settle timer so bursts (drags, recording) collapse to one step.
         self._undo_stack = []
@@ -157,8 +161,29 @@ class ChartView(QWidget):
         self._colx = {(c.key_mode, c.lane): c.x
                       for c in self.columns if c.kind == "key"}
 
+    def _rebuild_scale_prefix(self) -> None:
+        """Cache the cumulative display height (in measure units) up to the start
+        of each measure, honouring per-measure display scales. A measure with
+        scale s occupies s * measure_px pixels; the collapsed tail (1 - s) takes
+        no space. Built here so y_for/absolute_at stay O(1) via prefix sums."""
+        measures = self.project.measures
+        scales = self.project.measure_scales
+        prefix = [0.0] * (measures + 1)
+        for m in range(measures):
+            s = scales.get(m)
+            prefix[m + 1] = prefix[m] + (float(s) if s is not None else 1.0)
+        self._vprefix = prefix
+        self._vtotal = prefix[measures]
+
+    def _scale_of(self, m: int) -> float:
+        if 0 <= m < self.project.measures:
+            s = self.project.measure_scales.get(m)
+            return float(s) if s is not None else 1.0
+        return 1.0
+
     def _apply_size(self) -> None:
-        height = self.project.measures * self.measure_px + 2 * self.v_pad
+        self._rebuild_scale_prefix()
+        height = self._vtotal * self.measure_px + 2 * self.v_pad
         self.setFixedSize(self._width, int(height))
         self.updateGeometry()
 
@@ -235,12 +260,89 @@ class ChartView(QWidget):
 
     # -- coordinate transforms --------------------------------------------- #
 
+    def _display_pos(self, absolute: float) -> float:
+        """Absolute position -> display position (measure units) after collapsing
+        the hidden tail of any scaled measure. Positions inside a collapsed tail
+        map to the measure's top edge."""
+        a = float(absolute)
+        m = int(a)
+        if m < 0:
+            return a
+        if m >= self.project.measures:
+            return self._vtotal + (a - self.project.measures)
+        return self._vprefix[m] + min(a - m, self._scale_of(m))
+
     def y_for(self, absolute: float) -> float:
         """Pixel y for an absolute position in measures (0 = song start)."""
-        return self.v_pad + (self.project.measures - absolute) * self.measure_px
+        return self.v_pad + (self._vtotal - self._display_pos(absolute)) * self.measure_px
 
     def absolute_at(self, y: float) -> float:
-        return max(0.0, self.project.measures - (y - self.v_pad) / self.measure_px)
+        v = self._vtotal - (y - self.v_pad) / self.measure_px
+        if v <= 0.0:
+            return 0.0
+        if v >= self._vtotal:
+            return float(self.project.measures) + (v - self._vtotal)
+        m = bisect.bisect_right(self._vprefix, v) - 1
+        m = max(0, min(self.project.measures - 1, m))
+        return max(0.0, m + (v - self._vprefix[m]))
+
+    # -- per-measure display length ---------------------------------------- #
+
+    def _base_cells(self) -> int:
+        """Grid cells in a full (unscaled) measure."""
+        return max(1, int(round(1.0 / float(self.grid_main))))
+
+    def _current_cells(self, m: int) -> int:
+        """Visible grid cells in measure ``m`` at the current scale."""
+        return max(1, int(round(self._scale_of(m) * self._base_cells())))
+
+    def _measure_min_cells(self, m: int) -> int:
+        """Fewest cells measure ``m`` can shrink to while still showing every
+        note/BGM it holds (can't collapse a cell that has an object in it)."""
+        step = self.grid_main
+        max_ext = Fraction(0)
+        def consider(n):
+            nonlocal max_ext
+            ext = min(Fraction(1), n.end_absolute - m) if n.is_long else n.pos + step
+            if ext > max_ext:
+                max_ext = ext
+        for chart in self.project.charts.values():
+            for n in chart:
+                if n.measure == m:
+                    consider(n)
+        for n in self.project.bgm:
+            if n.measure == m:
+                consider(n)
+        if max_ext <= 0:
+            return 1
+        import math
+        cells = math.ceil(float(max_ext) / float(step) - 1e-9)
+        return max(1, min(self._base_cells(), cells))
+
+    def _apply_scale_drag(self, event: QMouseEvent) -> None:
+        d = self._scale_drag
+        dy = d["y0"] - event.position().y()      # drag up = positive = grow taller
+        if not d["active"] and abs(dy) < 4:
+            return                               # still might be a plain click
+        d["active"] = True
+        cell_px = max(1.0, self.measure_px * float(self.grid_main))
+        cells = d["start_cells"] + int(round(dy / cell_px))
+        cells = max(d["min_cells"], min(self._base_cells(), cells))
+        if cells != self._current_cells(d["measure"]):
+            self._set_measure_cells(d["measure"], cells)
+        self.cursor_info.emit(f"마디 {d['measure']} · {cells}칸")
+
+    def _set_measure_cells(self, m: int, cells: int) -> None:
+        base = self._base_cells()
+        # Never collapse below the notes already in the measure, or above full.
+        cells = max(self._measure_min_cells(m), min(base, cells))
+        if cells >= base:
+            self.project.measure_scales.pop(m, None)
+        else:
+            self.project.measure_scales[m] = Fraction(cells) * self.grid_main
+        self._apply_size()
+        self.changed.emit()          # dirty + coalesced undo entry
+        self.update()
 
     def pos_at(self, y: float, snap: bool):
         """Return (measure, Fraction pos) for a pixel y. When ``snap`` the
@@ -471,11 +573,14 @@ class ChartView(QWidget):
 
     def _grid_line_ys(self, step: Fraction, m_lo: int, m_hi: int):
         """Yield pixel y for every grid line at ``step`` spacing within measures
-        ``[m_lo, m_hi)`` (skipping the measure line at k=0, drawn separately)."""
+        ``[m_lo, m_hi)`` (skipping the measure line at k=0, drawn separately).
+        Cells stay the same size; a scaled measure just shows fewer of them, so
+        we stop at that measure's visible fraction."""
         step_f = float(step)
         for m in range(m_lo, m_hi):
+            limit = self._scale_of(m)
             k = 1
-            while k * step_f < 1.0:
+            while k * step_f < limit - 1e-9:
                 yield self.y_for(m + k * step_f)
                 k += 1
 
@@ -854,10 +959,13 @@ class ChartView(QWidget):
         back and forth doesn't accumulate error."""
         md = self._move_drag
         dx = event.position().x() - md["px"]
-        dy = md["py"] - event.position().y()      # up (later in time) = positive
         step = self.grid_main
         d_lane = int(round(dx / self.lane_w))
-        d_cells = int(round((dy / self.measure_px) / float(step)))
+        # Track the cursor's actual chart position (via absolute_at, which honours
+        # per-measure display scales) so dragging stays 1:1 with the mouse even
+        # through collapsed measures; snap that delta to the grid.
+        d_abs_raw = self.absolute_at(event.position().y()) - self.absolute_at(md["py"])
+        d_cells = int(round(d_abs_raw / float(step)))
         if not md["moved"] and d_lane == 0 and d_cells == 0:
             return
         d_abs = d_cells * step
@@ -940,6 +1048,14 @@ class ChartView(QWidget):
         return f"{label} · 마디 {measure} · {cell}/{div} · {col.lane + 1}번"
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._scale_drag is not None:
+            self._apply_scale_drag(event)
+            return
+        # Hovering the left ruler hints that measures can be resized there.
+        if event.position().x() < L.LEFT_MARGIN:
+            self.setCursor(Qt.SplitVCursor)
+        else:
+            self.unsetCursor()
         self.cursor_info.emit(self._cursor_text(event))
         if self.mode == "edit" and self._len_drag is not None:
             self._apply_len_drag(event)
@@ -962,6 +1078,7 @@ class ChartView(QWidget):
 
     def leaveEvent(self, event) -> None:  # noqa: N802
         self.cursor_info.emit("")
+        self.unsetCursor()
         if self._hover is not None:
             self._hover = None
             self.update()
@@ -970,11 +1087,23 @@ class ChartView(QWidget):
         self.setFocus()
         x, y = event.position().x(), event.position().y()
 
-        # Click the left measure ruler (or middle-click anywhere) to set the
-        # playback position, without touching notes.
-        if (event.button() == Qt.LeftButton and x < L.LEFT_MARGIN) \
-                or event.button() == Qt.MiddleButton:
+        # Middle-click anywhere sets the playback position without touching notes.
+        if event.button() == Qt.MiddleButton:
             self.seek_requested.emit(self.absolute_at(y))
+            return
+
+        # Left button on the measure ruler: a plain click seeks (as before), but
+        # dragging up/down resizes that measure's display length (collapsing its
+        # empty tail so it shows fewer grid cells). We defer the decision to the
+        # release / first drag movement.
+        if event.button() == Qt.LeftButton and x < L.LEFT_MARGIN:
+            m = int(self.absolute_at(y))
+            if 0 <= m < self.project.measures:
+                self._scale_drag = {"measure": m, "y0": y, "active": False,
+                                    "start_cells": self._current_cells(m),
+                                    "min_cells": self._measure_min_cells(m)}
+            else:
+                self.seek_requested.emit(self.absolute_at(y))
             return
 
         col = L.column_at(self.columns, x)
@@ -1034,6 +1163,13 @@ class ChartView(QWidget):
         self._drag_cur = (x, y)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._scale_drag is not None:   # measure-ruler press: drag = resize
+            d = self._scale_drag
+            self._scale_drag = None
+            if not d["active"]:            # no drag -> it was a plain seek click
+                self.seek_requested.emit(self.absolute_at(d["y0"]))
+            self.update()
+            return
         if self._add_drag is not None:      # finished dragging out a long note
             self._add_drag = None
             self.update()

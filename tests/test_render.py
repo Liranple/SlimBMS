@@ -66,6 +66,37 @@ def test_paint_path_renders():
     v.render(pm)
 
 
+def test_measure_scale_geometry():
+    """A per-measure display scale collapses that measure's tail: it takes less
+    height and shows fewer grid cells, while y_for/absolute_at stay invertible
+    and the measures below it are pulled up with no gap."""
+    _app()
+    p = Project(bpm=120, measures=8)
+    v = ChartView(p)
+    v.measure_px = 150
+    v.set_grid_main(32)
+    full_h = v.height()
+    v._set_measure_cells(2, 16)                       # half of measure 2
+    assert p.measure_scales[2] == Fraction(1, 2)
+    assert v.height() == full_h - v.measure_px // 2   # lost half a measure
+    for a in (0.0, 1.0, 2.0, 2.25, 3.0, 7.0):         # round-trips through it
+        assert abs(v.absolute_at(v.y_for(a)) - a) < 1e-6
+    assert abs(v.y_for(3.0) - v.y_for(2.5)) < 1e-6    # no gap after the tail
+    assert len(list(v._grid_line_ys(v.grid_main, 2, 3))) == 15   # 16 cells
+    assert len(list(v._grid_line_ys(v.grid_main, 1, 2))) == 31   # 32 cells
+
+
+def test_measure_scale_blocks_shrink_past_notes():
+    """A measure can't collapse below a cell that holds a note."""
+    _app()
+    p = Project(bpm=120, measures=8)
+    p.charts[4].append(Note(3, Fraction(1, 2), 0))    # note at the measure midpoint
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v._set_measure_cells(3, 4)                         # try to over-shrink
+    assert v._current_cells(3) == 17                   # clamped to keep the note
+
+
 def test_colx_cache_tracks_layout():
     """The cached col_x lookup must stay consistent with the live columns after
     every layout change."""

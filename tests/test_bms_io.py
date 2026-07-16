@@ -134,6 +134,23 @@ def test_bpm_change_slbms_roundtrip():
     assert back.bpm_changes == p.bpm_changes
 
 
+def test_measure_scales_slbms_roundtrip_and_export_invariant():
+    # Per-measure display lengths persist in .slbms but never touch the exported
+    # .bms (they are a pure editor convenience — no timing/channel-02 effect).
+    p = make_project()
+    p.measure_scales[1] = Fraction(1, 2)
+    p.measure_scales[3] = Fraction(3, 4)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "p.slbms")
+        bms_io.save_project(p, path)
+        back = bms_io.load_project(path)
+    assert back.measure_scales == p.measure_scales
+    # Export ignores the scales entirely.
+    scaled = bms_io.export_bms(p, 4)
+    p.measure_scales.clear()
+    assert scaled == bms_io.export_bms(p, 4)
+
+
 def test_import_honors_key_mode_command():
     # A uBMSC #6K command (no SLIMBMS hint) routes notes into the 6K lanes.
     lines = ["#TITLE X", "#6K", "#00011:01", "#00019:01"]  # 6K channels 11, 19

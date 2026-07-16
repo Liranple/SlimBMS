@@ -384,6 +384,8 @@ def project_to_dict(project: Project) -> dict:
         "measures": project.measures,
         "bpm_changes": sorted([p.numerator, p.denominator, b]
                               for p, b in project.bpm_changes.items()),
+        "measure_scales": sorted([m, s.numerator, s.denominator]
+                                 for m, s in project.measure_scales.items()),
         "bgm": notes(project.bgm),
         "charts": {str(km): notes(project.charts[km]) for km in ALL_MODES},
     }
@@ -411,6 +413,8 @@ def project_from_dict(data: dict) -> Project:
 
     for row in data.get("bpm_changes", []):
         project.bpm_changes[Fraction(int(row[0]), int(row[1]))] = float(row[2])
+    for row in data.get("measure_scales", []):
+        project.measure_scales[int(row[0])] = Fraction(int(row[1]), int(row[2]))
     for row in data.get("bgm", []):
         project.bgm.add(to_note(row))
     for km_str, objs in data.get("charts", {}).items():

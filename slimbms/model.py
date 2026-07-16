@@ -129,6 +129,11 @@ class Project:
     # Mid-song tempo changes: absolute chart position (measures) -> BPM. The
     # base ``bpm`` applies before the first change.
     bpm_changes: Dict[Fraction, float] = field(default_factory=dict)
+    # Per-measure *display* length: a measure -> visible fraction in (0, 1].
+    # Purely an editor convenience (collapse the empty tail of a measure so it
+    # shows fewer grid cells and takes less height). It does NOT change note
+    # timing, audio or the exported .bms — a note stays at absolute measure+pos.
+    measure_scales: Dict[int, Fraction] = field(default_factory=dict)
     # Editor/session settings (selected key mode, grid, zoom, speed, volume);
     # saved in .slbms so the workspace comes back as you left it.
     editor: Dict = field(default_factory=dict)
@@ -154,14 +159,16 @@ class Project:
             set(self.bgm),
             dict(self.bpm_changes),
             self.measures,
+            dict(self.measure_scales),
         )
 
     def restore(self, snap) -> None:
-        charts, bgm, bpm_changes, measures = snap
+        charts, bgm, bpm_changes, measures, measure_scales = snap
         self.charts = {km: list(s) for km, s in charts.items()}
         self.bgm = set(bgm)
         self.bpm_changes = dict(bpm_changes)
         self.measures = measures
+        self.measure_scales = dict(measure_scales)
 
     # -- note editing ------------------------------------------------------- #
 
