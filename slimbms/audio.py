@@ -277,7 +277,14 @@ class AudioPlayer:
         if abs(speed - self._speed) < 1e-9:
             return
         self._speed = speed
-        self._stretched_speed = None if abs(speed - 1.0) >= 1e-9 else 1.0
+        if abs(speed - 1.0) < 1e-9:
+            # Back to 1.0x: no stretch, but the cached buffer still holds the
+            # previous speed's stretch. Reset it to the raw audio, otherwise
+            # playback keeps using the stale stretched bytes (wrong speed/pitch).
+            self._stretched = self._raw
+            self._stretched_speed = 1.0
+        else:
+            self._stretched_speed = None
         self._stop_channel()
 
     # -- stream helpers ----------------------------------------------------- #
