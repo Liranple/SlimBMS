@@ -68,6 +68,11 @@ class PlaybackController:
 
     def _speed_ready(self, pos: float, was_playing: bool) -> None:
         self.win.statusBar().clearMessage()
+        # If the stretch couldn't be built (out of memory) it degraded to 1.0x;
+        # resync the gauge so the UI matches what's actually playing.
+        if self.win.audio.build_failed():
+            self.win.statusBar().showMessage("메모리가 부족해 재생 속도를 1.0×로 되돌렸습니다.", 4000)
+            self.win.speed.set_value(self.win.audio.speed, notify=False)
         self.win.audio.seek(pos)
         if was_playing:
             self._start_play()

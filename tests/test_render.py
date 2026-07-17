@@ -86,15 +86,55 @@ def test_measure_scale_geometry():
     assert len(list(v._grid_line_ys(v.grid_main, 1, 2))) == 31   # 32 cells
 
 
-def test_measure_scale_blocks_shrink_past_notes():
-    """A measure can't collapse below a cell that holds a note."""
+def test_measure_scale_reflows_notes_past_shrink():
+    """Shrinking a measure past a note carries the note into the next measure
+    (grid 32, note at cell 16 of measure 3, halve the measure -> measure 4 cell
+    0). The note keeps its offset from the collapsed boundary."""
     _app()
     p = Project(bpm=120, measures=8)
-    p.charts[4].append(Note(3, Fraction(1, 2), 0))    # note at the measure midpoint
+    p.charts[4].append(Note(3, Fraction(1, 2), 0))    # cell 16 of a 32-cell grid
     v = ChartView(p)
     v.set_grid_main(32)
-    v._set_measure_cells(3, 4)                         # try to over-shrink
-    assert v._current_cells(3) == 17                   # clamped to keep the note
+    v._set_measure_cells(3, 16)                        # halve the measure
+    assert v._current_cells(3) == 16                   # no clamp — it really shrank
+    v._reflow_collapsed()                              # commit (as on drag release)
+    notes = p.charts[4]
+    assert len(notes) == 1
+    n = notes[0]
+    assert n.measure == 4 and n.pos == Fraction(0)     # moved to measure 4 cell 0
+
+
+def test_measure_scale_reflow_offsets_and_cascades():
+    """A note deeper in the collapsed tail keeps its cell offset past the seam,
+    and reflow cascades through consecutive shortened measures."""
+    _app()
+    p = Project(bpm=120, measures=8)
+    p.charts[4].append(Note(3, Fraction(20, 32), 0))   # cell 20
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v._set_measure_cells(3, 16)                         # keep cells 0..15
+    v._reflow_collapsed()
+    n = p.charts[4][0]
+    assert n.measure == 4 and n.pos == Fraction(4, 32)  # 20 - 16 = cell 4
+
+
+def test_hit_flash_across_shortened_measure():
+    """A note in the first cell right after a shortened measure must still flash
+    when the playhead crosses it. The absolute position jumps at the boundary of
+    a collapsed measure, so hit detection judges the crossing in display space —
+    otherwise the jump looks like a seek and the flash is skipped (issue: a note
+    at measure 54 cell 0 after halving measure 53 never lit)."""
+    _app()
+    p = Project(bpm=120, measures=8)
+    p.charts[4].append(Note(4, Fraction(0), 0))    # first cell of measure 4
+    p.measure_scales[3] = Fraction(1, 2)           # halve the measure before it
+    v = ChartView(p)
+    v.refresh()
+    v.set_live(True)
+    v.set_playhead(3.49)                           # inside collapsed measure 3
+    v.set_playhead(4.02)                           # into measure 4, past the note
+    flashed = [n for (_mode, n) in v._hits]
+    assert any(n.measure == 4 and n.pos == Fraction(0) for n in flashed)
 
 
 def test_colx_cache_tracks_layout():

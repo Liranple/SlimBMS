@@ -213,6 +213,26 @@ def test_build_stretch_caches_per_speed():
     assert len(a._stretched) < len(a._raw)
 
 
+def test_build_stretch_falls_back_on_failure():
+    """A stretch that can't be built (e.g. out of memory) must degrade to a
+    consistent 1.0x instead of crashing or leaving a stale/mismatched buffer."""
+    a = _player()
+    if a is None:
+        return
+    import slimbms.audio as audio_mod
+    a.set_speed(0.5)
+    saved = audio_mod._time_stretch
+    audio_mod._time_stretch = lambda *args: (_ for _ in ()).throw(MemoryError("boom"))
+    try:
+        a.build_stretch()
+    finally:
+        audio_mod._time_stretch = saved
+    assert a.build_failed() is True
+    assert abs(a.speed - 1.0) < 1e-9          # reverted to normal speed
+    assert a._stretched == a._raw             # buffer matches the 1.0x clock
+    assert a.stretch_ready() is True          # won't retry (no UI-thread rebuild)
+
+
 def test_speed_disabled_without_numpy():
     """Documented contract: with no numpy, speed control stays at 1.0x."""
     import slimbms.audio as audio_mod

@@ -92,13 +92,6 @@ QToolButton:checked {{
     color: {ACCENT};
 }}
 QToolButton:focus {{ border: 1px solid {ACCENT}; }}
-QToolButton#Primary {{
-    background: rgba(111, 208, 255, 0.16);
-    border: 1px solid {ACCENT};
-    color: {ACCENT};
-    font-weight: 600;
-}}
-QToolButton#Primary:hover {{ background: rgba(111, 208, 255, 0.26); }}
 
 /* Buttons ---------------------------------------------------------------- */
 QPushButton {{

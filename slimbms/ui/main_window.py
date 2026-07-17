@@ -472,9 +472,6 @@ class MainWindow(QMainWindow):
         self.play_action = QAction(self._icon_play, "재생", self)
         self.play_action.triggered.connect(self.toggle_play)
         tb.addAction(self.play_action)
-        play_btn = tb.widgetForAction(self.play_action)
-        if play_btn is not None:
-            play_btn.setObjectName("Primary")
 
         self.fwd_action = QAction(make_icon("forward"), "1초 앞으로", self)
         self.fwd_action.triggered.connect(lambda: self.seek_seconds(1.0))

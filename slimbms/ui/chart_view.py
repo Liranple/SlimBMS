@@ -296,45 +296,6 @@ class ChartView(QWidget):
         """Visible grid cells in measure ``m`` at the current scale."""
         return max(1, int(round(self._scale_of(m) * self._base_cells())))
 
-    def _measure_min_cells(self, m: int) -> int:
-        """Fewest cells measure ``m`` can shrink to while still showing every
-        note/BGM it holds (can't collapse a cell that has an object in it)."""
-        step = self.grid_main
-        max_ext = Fraction(0)
-        def reserve(ext):
-            # Every object needs a live slot: reserve up to one cell PAST its
-            # position, so the shortened measure still has a slot to hold it.
-            # (Reserving only up to the position lets the measure end exactly on
-            # a long-note tail / BPM change, which then overflows on export.)
-            nonlocal max_ext
-            max_ext = max(max_ext, min(Fraction(1), ext))
-        def consider(n):
-            if n.is_long:
-                if int(n.end_absolute) > m:
-                    reserve(Fraction(1))            # hold passes clear through
-                else:
-                    reserve(n.end_absolute - m + step)   # tail lands in this measure
-                if n.measure == m:
-                    reserve(n.pos + step)           # head slot
-            elif n.measure == m:
-                reserve(n.pos + step)
-        for chart in self.project.charts.values():
-            for n in chart:
-                # A note pins measure m if it starts here or a hold reaches into it.
-                if n.measure == m or (n.is_long and n.measure < m <= int(n.end_absolute)):
-                    consider(n)
-        for n in self.project.bgm:
-            if n.measure == m:
-                consider(n)
-        for pos in self.project.bpm_changes:
-            if int(pos) == m:
-                reserve((pos - m) + step)           # BPM object slot in this measure
-        if max_ext <= 0:
-            return 1
-        import math
-        cells = math.ceil(float(max_ext) / float(step) - 1e-9)
-        return max(1, min(self._base_cells(), cells))
-
     def _apply_scale_drag(self, event: QMouseEvent) -> None:
         d = self._scale_drag
         # Measures stack upward from their number, so grabbing the number and
@@ -352,8 +313,11 @@ class ChartView(QWidget):
 
     def _set_measure_cells(self, m: int, cells: int) -> None:
         base = self._base_cells()
-        # Never collapse below the notes already in the measure, or above full.
-        cells = max(self._measure_min_cells(m), min(base, cells))
+        # A measure can shrink all the way to a single cell; notes left in the
+        # collapsed tail aren't lost — they flow into the next measure once the
+        # drag is released (see :meth:`_reflow_collapsed`). Clamp only to
+        # [1, base] here so the live drag can preview the full range.
+        cells = max(1, min(base, cells))
         if cells >= base:
             self.project.measure_scales.pop(m, None)
         else:
@@ -361,6 +325,69 @@ class ChartView(QWidget):
         self._apply_size()
         self.changed.emit()          # dirty + coalesced undo entry
         self.update()
+
+    def _reflow_one(self, measure: int, pos: Fraction):
+        """Push a position forward out of any collapsed measure tail: while it
+        sits at/after its measure's (shortened) length, drop it into the next
+        measure. Returns ``(measure, pos, moved)``. Full measures have length 1,
+        so a note with ``pos < 1`` never moves — only newly-collapsed ones do."""
+        moved = False
+        while pos >= self.project.measure_length(measure):
+            pos -= self.project.measure_length(measure)
+            measure += 1
+            moved = True
+        return measure, pos, moved
+
+    def _reflow_collapsed(self) -> bool:
+        """Relocate every note / BGM / BPM object now stranded in a collapsed
+        measure tail into the following measure(s). Called once a measure-resize
+        drag settles, so shrinking a measure carries its trailing notes forward
+        (e.g. shrinking measure 53 to half moves the note at its 16th cell to the
+        first cell of measure 54). Returns True if anything moved."""
+        changed = False
+        highest = self.project.measures - 1
+
+        for chart in self.project.charts.values():
+            out = []
+            for n in chart:
+                m2, p2, moved = self._reflow_one(n.measure, n.pos)
+                if moved:
+                    changed = True
+                    n = Note(m2, p2, n.lane, n.length)
+                out.append(n)
+                highest = max(highest, int(n.end_absolute))
+            chart[:] = out
+
+        if self.project.bgm:
+            out_bgm = set()
+            for n in self.project.bgm:
+                m2, p2, moved = self._reflow_one(n.measure, n.pos)
+                if moved:
+                    changed = True
+                    n = Note(m2, p2, n.lane, n.length)
+                out_bgm.add(n)
+                highest = max(highest, n.measure)
+            self.project.bgm = out_bgm
+
+        if self.project.bpm_changes:
+            out_bpm = {}
+            for abspos, val in self.project.bpm_changes.items():
+                m = int(abspos)
+                m2, p2, moved = self._reflow_one(m, abspos - m)
+                if moved:
+                    changed = True
+                out_bpm[m2 + p2] = val
+                highest = max(highest, m2)
+            self.project.bpm_changes = out_bpm
+
+        if changed:
+            if highest + 1 > self.project.measures:
+                self.project.measures = highest + 1
+            self._rebuild_caches()
+            self._apply_size()
+            self.changed.emit()
+            self.update()
+        return changed
 
     def pos_at(self, y: float, snap: bool):
         """Return (measure, Fraction pos) for a pixel y. When ``snap`` the
@@ -545,25 +572,37 @@ class ChartView(QWidget):
         prev = self.playhead
         self.playhead = absolute
         # Flash notes the playhead just crossed (only during smooth playback —
-        # skip big jumps from seeking).
-        if (self.live_playing and absolute is not None and prev is not None
-                and 0 < absolute - prev <= HIT_MAX_STEP):
-            self._register_hits(prev, absolute)
+        # skip big jumps from seeking). Compare in *display* space (collapsed
+        # measure tails removed) so a shortened measure — where the absolute
+        # position jumps at the boundary but real playback time is continuous —
+        # neither looks like a seek nor skips the notes right after it.
+        if self.live_playing and absolute is not None and prev is not None:
+            d_prev = self._display_pos(prev)
+            d_cur = self._display_pos(absolute)
+            if 0 < d_cur - d_prev <= HIT_MAX_STEP:
+                self._register_hits(prev, absolute, d_prev, d_cur)
         self.update()
 
-    def _register_hits(self, prev: float, cur: float) -> None:
+    def _register_hits(self, prev: float, cur: float,
+                       d_prev: float, d_cur: float) -> None:
         now = time.monotonic()
+
+        def crossed(n) -> bool:
+            # Judge the crossing on display positions: a note in (or right after)
+            # a shortened measure lines up with real playback time this way.
+            return d_prev < self._display_pos(float(n.absolute)) <= d_cur
+
         for m in range(int(prev), int(cur) + 1):
             for km, chart in self.project.charts.items():
                 for n in self._taps_by_measure.get(km, {}).get(m, ()):
-                    if prev < n.absolute <= cur:
+                    if crossed(n):
                         self._hits[(km, n)] = now
             for n in self._bgm_by_measure.get(m, ()):
-                if prev < n.absolute <= cur:
+                if crossed(n):
                     self._hits[("bgm", n)] = now
         for km, longs in self._longs.items():
             for n in longs:
-                if prev < n.absolute <= cur:
+                if crossed(n):
                     self._hits[(km, n)] = now
 
     def _paint_playhead(self, p: QPainter) -> None:
@@ -1141,7 +1180,7 @@ class ChartView(QWidget):
             if 0 <= m < self.project.measures:
                 self._scale_drag = {"measure": m, "y0": y, "active": False,
                                     "start_cells": self._current_cells(m),
-                                    "min_cells": self._measure_min_cells(m)}
+                                    "min_cells": 1}
             else:
                 self.seek_requested.emit(self.absolute_at(y))
             return
@@ -1219,6 +1258,10 @@ class ChartView(QWidget):
             self._scale_drag = None
             if not d["active"]:            # no drag -> it was a plain seek click
                 self.seek_requested.emit(self.absolute_at(d["y0"]))
+            else:
+                # Carry any notes now stranded in the collapsed tail into the
+                # following measure(s), committed once the drag settles.
+                self._reflow_collapsed()
             self.update()
             return
         if self._add_drag is not None:      # finished dragging out a long note

@@ -34,9 +34,22 @@ _N_FFT = 2048
 _HOP = 512
 
 
+# Output frames processed per block. The old code built the whole song's STFT,
+# interpolated magnitude/phase and inverse-transformed it all at once; at slow
+# speeds that meant multi-gigabyte transient arrays that ran the machine out of
+# memory (the occasional crash). Streaming a bounded block of output frames at a
+# time caps peak memory to tens of MB with identical output.
+_STRETCH_BLOCK = 2048
+
+
 def _time_stretch(x, speed: float):
     """Time-stretch mono float32 ``x`` by ``speed`` (``>1`` = faster/shorter)
-    while preserving pitch, via a phase vocoder. Returns a float32 array."""
+    while preserving pitch, via a phase vocoder. Returns a float32 array.
+
+    Processed in bounded blocks of output frames so peak memory stays small
+    regardless of song length or how slow the speed is (a slow speed produces
+    many output frames). The output matches a whole-song transform because the
+    running phase accumulator is carried across block boundaries."""
     n_fft, hop = _N_FFT, _HOP
     win = _np.hanning(n_fft).astype(_np.float32)
     xp = _np.concatenate([_np.zeros(n_fft // 2, _np.float32), x,
@@ -44,43 +57,69 @@ def _time_stretch(x, speed: float):
     n_frames = 1 + (len(xp) - n_fft) // hop
     if n_frames < 2:
         return x.copy()
-    idx = _np.arange(n_fft)[None, :] + hop * _np.arange(n_frames)[:, None]
-    stft = _np.fft.rfft(xp[idx] * win, axis=1).T          # (bins, frames)
-    mag = _np.abs(stft).astype(_np.float32)
-    ang = _np.angle(stft).astype(_np.float32)
-    n_bins = mag.shape[0]
+    n_bins = n_fft // 2 + 1
+    phi = (2 * _np.pi * hop * _np.arange(n_bins) / n_fft).astype(_np.float32)[:, None]
 
     steps = _np.arange(0, n_frames, speed)
-    phi = (2 * _np.pi * hop * _np.arange(n_bins) / n_fft).astype(_np.float32)[:, None]
-    mag = _np.pad(mag, [(0, 0), (0, 2)])
-    ang = _np.pad(ang, [(0, 0), (0, 2)])
-    j = steps.astype(_np.int64)
-    frac = (steps - j).astype(_np.float32)[None, :]
-    out_mag = (1 - frac) * mag[:, j] + frac * mag[:, j + 1]
-    dphase = ang[:, j + 1] - ang[:, j] - phi
-    dphase -= 2 * _np.pi * _np.round(dphase / (2 * _np.pi))
-    inc = phi + dphase
-    acc = _np.empty_like(out_mag)
-    acc[:, 0] = ang[:, 0]
-    acc[:, 1:] = ang[:, 0][:, None] + _np.cumsum(inc, axis=1)[:, :-1]
-    spec = out_mag * _np.exp(1j * acc)
-
-    # Inverse STFT with overlap-add, grouped by overlap phase so each group is
-    # non-overlapping and can be added in one vectorised shot.
-    frames = (_np.fft.irfft(spec.T, n=n_fft, axis=1).astype(_np.float32)) * win
-    nf = frames.shape[0]
-    n = n_fft + hop * (nf - 1)
-    out = _np.zeros(n, _np.float32)
-    wsum = _np.zeros(n, _np.float32)
+    n_out = len(steps)
+    out_len = n_fft + hop * (n_out - 1)
+    out = _np.zeros(out_len, _np.float32)
+    wsum = _np.zeros(out_len, _np.float32)
     w2 = win ** 2
     ov = n_fft // hop
-    for r in range(ov):
-        grp = frames[r::ov]
-        block = grp.reshape(-1)
-        start = r * hop
-        length = min(len(block), n - start)
-        out[start:start + length] += block[:length]
-        wsum[start:start + length] += _np.tile(w2, grp.shape[0])[:length]
+
+    def frame_stft(f0: int, f1: int):
+        """STFT columns for input frames ``[f0, f1)``; frames past the signal
+        end are zero (matches the old whole-song zero-padding)."""
+        st = _np.zeros((n_bins, f1 - f0), _np.complex128)
+        avail = min(f1, n_frames) - f0
+        if avail > 0:
+            starts = f0 + _np.arange(avail)
+            idx = _np.arange(n_fft)[None, :] + hop * starts[:, None]
+            st[:, :avail] = _np.fft.rfft(xp[idx] * win, axis=1).T
+        return st
+
+    # ``prev_phase`` is the accumulated output phase for the next output frame,
+    # seeded (like the original) with the first input frame's phase.
+    prev_phase = None
+    for c0 in range(0, n_out, _STRETCH_BLOCK):
+        c1 = min(n_out, c0 + _STRETCH_BLOCK)
+        s = steps[c0:c1]
+        j = s.astype(_np.int64)
+        jmin, jmax = int(j[0]), int(j[-1])
+        st = frame_stft(jmin, jmax + 2)            # need j and j+1
+        mag = _np.abs(st).astype(_np.float32)
+        ang = _np.angle(st).astype(_np.float32)
+        jj = j - jmin
+        frac = (s - j).astype(_np.float32)[None, :]
+        out_mag = (1 - frac) * mag[:, jj] + frac * mag[:, jj + 1]
+        dphase = ang[:, jj + 1] - ang[:, jj] - phi
+        dphase -= 2 * _np.pi * _np.round(dphase / (2 * _np.pi))
+        # Accumulate phase in float64: over a long, slow-speed song there are
+        # hundreds of thousands of output frames, and float32 cumulative phase
+        # would drift audibly.
+        inc = (phi + dphase).astype(_np.float64)
+        if prev_phase is None:
+            prev_phase = ang[:, 0].astype(_np.float64)
+        csum = _np.cumsum(inc, axis=1)
+        acc = _np.empty_like(inc)
+        acc[:, 0] = prev_phase
+        acc[:, 1:] = prev_phase[:, None] + csum[:, :-1]
+        prev_phase = prev_phase + csum[:, -1]      # carry into the next block
+        spec = out_mag * _np.exp(1j * acc)
+        frames = (_np.fft.irfft(spec.T, n=n_fft, axis=1).astype(_np.float32)) * win
+        # Inverse STFT overlap-add, grouped by overlap phase so each group is
+        # internally non-overlapping and adds in one vectorised shot. Frame
+        # ``c0 + t`` lands at output sample ``(c0 + t) * hop``; blocks overlap at
+        # their seams and accumulate correctly via ``+=`` into the shared buffer.
+        base = c0 * hop
+        for r in range(ov):
+            grp = frames[r::ov]
+            block = grp.reshape(-1)
+            start = base + r * hop
+            length = min(len(block), out_len - start)
+            out[start:start + length] += block[:length]
+            wsum[start:start + length] += _np.tile(w2, grp.shape[0])[:length]
     wsum[wsum < 1e-8] = 1.0
     return out / wsum
 
@@ -108,6 +147,7 @@ class AudioPlayer:
         self._width = 2                # bytes per sample
         self._stretched = b""
         self._stretched_speed: Optional[float] = None
+        self._build_failed = False
         self._build_lock = threading.Lock()
 
         self._sound = None
@@ -229,7 +269,11 @@ class AudioPlayer:
 
     def build_stretch(self) -> None:
         """Build (and cache) the whole-song stretch for the current speed. Heavy
-        for slow speeds; call from a worker thread. Safe to call repeatedly."""
+        for slow speeds; call from a worker thread. Safe to call repeatedly.
+
+        If the stretch can't be built (e.g. the machine is out of memory), it
+        degrades to 1.0x rather than crashing or leaving playback in an
+        inconsistent state — see :meth:`build_failed`."""
         with self._build_lock:
             speed = self._speed
             if self._stretched_speed == speed:
@@ -239,24 +283,54 @@ class AudioPlayer:
                 # just play unstretched (mark ready to avoid retrying).
                 self._stretched = self._raw
                 self._stretched_speed = speed
+                self._build_failed = False
                 return
-            stretched = [_time_stretch(ch, speed) for ch in self._chans]
-            length = min(len(c) for c in stretched)
-            inter = _np.empty((length, self._channels), dtype=_np.float32)
-            for c, ch in enumerate(stretched):
-                inter[:, c] = ch[:length]
-            # Match the original's loudness (RMS), then hard-limit: the phase
-            # vocoder overshoots (esp. on transients), and peak-normalising would
-            # make the whole thing far too quiet, so scale by RMS and clip only
-            # the few remaining peaks.
-            in_ms = _np.mean([float((ch.astype(_np.float64) ** 2).mean())
-                              for ch in self._chans]) if self._chans else 0.0
-            out_ms = float((inter.astype(_np.float64) ** 2).mean()) if inter.size else 0.0
-            if out_ms > 1e-12 and in_ms > 0.0:
-                inter *= float(_np.sqrt(in_ms / out_ms))
-            inter = _np.clip(inter * 32768.0, -32768, 32767).astype(_np.int16)
-            self._stretched = inter.tobytes()
-            self._stretched_speed = speed
+            try:
+                self._stretched = self._render_stretch(speed)
+                self._stretched_speed = speed
+                self._build_failed = False
+            except (MemoryError, Exception):  # noqa: BLE001
+                # Fall back to unprocessed audio at normal speed so the clock,
+                # buffer and pitch all stay consistent (a silent, safe 1.0x
+                # instead of a crash). The UI resyncs its speed gauge to match.
+                self._speed = 1.0
+                self._stretched = self._raw
+                self._stretched_speed = 1.0
+                self._build_failed = True
+
+    def _render_stretch(self, speed: float) -> bytes:
+        """Time-stretch every channel and interleave to int16 PCM bytes.
+        Channels are folded into the output buffer one at a time so only a
+        single stretched channel is held besides the result."""
+        length = None
+        inter = None
+        in_ms = 0.0
+        for c, ch in enumerate(self._chans):
+            st = _time_stretch(ch, speed)
+            if inter is None:
+                length = len(st)
+                inter = _np.empty((length, self._channels), dtype=_np.float32)
+            m = min(len(st), inter.shape[0])
+            inter[:m, c] = st[:m]
+            length = min(length, len(st))       # trim to the shortest channel
+            in_ms += float((ch.astype(_np.float64) ** 2).mean())
+        if inter is None:
+            return self._raw
+        inter = inter[:length]
+        in_ms /= len(self._chans)
+        # Match the original's loudness (RMS), then hard-limit: the phase vocoder
+        # overshoots (esp. on transients), and peak-normalising would make the
+        # whole thing far too quiet, so scale by RMS and clip only the few
+        # remaining peaks.
+        out_ms = float((inter.astype(_np.float64) ** 2).mean()) if inter.size else 0.0
+        if out_ms > 1e-12 and in_ms > 0.0:
+            inter *= float(_np.sqrt(in_ms / out_ms))
+        inter = _np.clip(inter * 32768.0, -32768, 32767).astype(_np.int16)
+        return inter.tobytes()
+
+    def build_failed(self) -> bool:
+        """True if the last :meth:`build_stretch` fell back to 1.0x on error."""
+        return self._build_failed
 
     def _ensure_stretched(self) -> None:
         if self._stretched_speed != self._speed:
