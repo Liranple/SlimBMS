@@ -118,6 +118,30 @@ def test_measure_scale_reflow_offsets_and_cascades():
     assert n.measure == 4 and n.pos == Fraction(4, 32)  # 20 - 16 = cell 4
 
 
+def test_arrow_move_skips_collapsed_cells():
+    """Arrow-key vertical moves step through display space: from a shortened
+    measure's last visible cell the note jumps to the next measure's first cell,
+    not through the measure's hidden (collapsed) cells."""
+    _app()
+    p = Project(bpm=120, measures=8)
+    p.measure_scales[3] = Fraction(24, 32)             # measure 3 shrunk to 24 cells
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v.set_mode("edit")
+    v.refresh()
+
+    n = Note(3, Fraction(23, 32), 0)                   # last visible cell
+    p.charts[4].append(n)
+    v.selection = {(4, n)}
+    v._move_selection(0, 1)                            # up one cell
+    moved = next(iter(v.selection))[1]
+    assert moved.measure == 4 and moved.pos == Fraction(0)
+
+    v._move_selection(0, -1)                           # back down one cell
+    moved = next(iter(v.selection))[1]
+    assert moved.measure == 3 and moved.pos == Fraction(23, 32)
+
+
 def test_hit_flash_across_shortened_measure():
     """A note in the first cell right after a shortened measure must still flash
     when the playhead crosses it. The absolute position jumps at the boundary of

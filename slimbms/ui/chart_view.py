@@ -1471,18 +1471,52 @@ class ChartView(QWidget):
         self.changed.emit()
         self.update()
 
+    def _display_pos_frac(self, absolute: Fraction, cum) -> Fraction:
+        """Exact (Fraction) display position of an absolute chart position, with
+        collapsed measure tails removed — the Fraction twin of :meth:`_display_pos`.
+        ``cum`` is ``project.cumulative_lengths()`` (passed in to avoid rebuilding
+        it per note)."""
+        measures = self.project.measures
+        m = int(absolute)
+        if m < 0:
+            return absolute
+        if m >= measures:
+            return cum[measures] + (absolute - measures)
+        return cum[m] + min(absolute - m, self.project.measure_length(m))
+
+    def _absolute_from_display_frac(self, disp: Fraction, cum) -> Fraction:
+        """Inverse of :meth:`_display_pos_frac`: a display position back to an
+        absolute chart position."""
+        measures = self.project.measures
+        total = cum[measures]
+        if disp <= 0:
+            return Fraction(0)
+        if disp >= total:
+            return Fraction(measures) + (disp - total)
+        m = bisect.bisect_right(cum, disp) - 1
+        m = max(0, min(measures - 1, m))
+        return m + (disp - cum[m])
+
     def _move_selection(self, d_lane: int, d_cells: int) -> None:
         if not self.selection:
             return
         step = self.grid_main
         hi = Fraction(self.project.measures) - step
+        # Vertical moves step through *display* space (collapsed measure tails
+        # removed) so a shortened measure's last visible cell moves straight to
+        # the next measure's first cell — not through its hidden cells.
+        cum = self.project.cumulative_lengths()
         # Compute every note's target first; if ANY would cross a wall (the left
         # edge of 4K, the right edge of LOAD, or the top/bottom), abort the whole
         # move so the selection never gets squished against an edge. Key notes
         # move through 4K→6K→LOAD as one continuous lane space.
         proposed = []
         for mode, n in self.selection:
-            new_abs = n.absolute + d_cells * step
+            if d_cells:
+                disp = self._display_pos_frac(n.absolute, cum) + d_cells * step
+                new_abs = self._absolute_from_display_frac(disp, cum)
+            else:
+                new_abs = n.absolute
             if new_abs < 0 or new_abs > hi:
                 return
             if mode == "bgm":
