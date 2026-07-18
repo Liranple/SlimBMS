@@ -39,7 +39,7 @@ from ..model import IMPORT_MODE, KEY_MODES, Project
 from ..timing import TimeMap
 from .appicon import build_icon
 from .chart_view import ChartView, LaneHeader
-from .dialogs import KeybindingsDialog
+from .dialogs import HelpDialog, KeybindingsDialog
 from .palette import DANGER
 from .playback import PlaybackController
 from .toolbar_icons import make_icon
@@ -554,16 +554,6 @@ class MainWindow(QMainWindow):
         self._add(edit_menu, "전체 선택\tCtrl+A", self.view.select_all)
         self.flip_action = self._add(edit_menu, "좌우 반전", self.view.flip_selection)
         edit_menu.addSeparator()
-        # Reference-only listing of the edit-mode note-move keys (disabled items).
-        move_menu = edit_menu.addMenu("노트 이동 (편집 모드)")
-        for text in ("방향키 ↑↓ : 격자 한 칸 이동",
-                     "방향키 ←→ : 레인 이동 (4K↔6K↔LOAD)",
-                     "Ctrl+↑↓ : 보조격자로 스냅 이동",
-                     "Shift+↑↓ : 1px 미세 이동 (자유배치)",
-                     "Shift+드래그 : 자유배치 이동"):
-            act = move_menu.addAction(text)
-            act.setEnabled(False)
-        edit_menu.addSeparator()
         self._add(edit_menu, "설정…", self.open_keybindings)
 
         song_menu = m.addMenu("곡")
@@ -572,6 +562,8 @@ class MainWindow(QMainWindow):
         self._add(song_menu, "검증 / 통계", self.show_stats)
 
         help_menu = m.addMenu("도움말")
+        self._add(help_menu, "사용법", self.show_help, QKeySequence.HelpContents)
+        help_menu.addSeparator()
         self._add(help_menu, "업데이트 확인", lambda: self.check_for_updates(manual=True))
         self._add(help_menu, "정보", self.show_about)
 
@@ -1226,6 +1218,9 @@ class MainWindow(QMainWindow):
         return loaded
 
     # -- updates ------------------------------------------------------------ #
+
+    def show_help(self) -> None:
+        HelpDialog(__version__, self).exec()
 
     def show_about(self) -> None:
         QMessageBox.information(
