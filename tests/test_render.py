@@ -185,6 +185,47 @@ def test_move_long_note_keeps_visible_length_across_shortened_measure():
     assert tail_frac < p.measure_length(tm) or tail_frac == 0
 
 
+def test_copy_paste_carries_measure_scales():
+    """Copying notes from shortened measures and pasting reproduces the measure
+    lengths on the pasted block (24-cell measures stay 24-cell), and pasting past
+    the current end still places the notes."""
+    _app()
+    p = Project(bpm=120, measures=16)
+    for m in (3, 4, 5):
+        p.measure_scales[m] = Fraction(24, 32)         # shrink to 24 cells
+        p.charts[4].append(Note(m, Fraction(0), 0))
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v.refresh()
+    v.selection = {(4, n) for n in list(p.charts[4])}
+    v._copy_selection(cut=False)
+
+    v._paste_anchor = 6.0
+    v._paste()
+    pasted = sorted((n.measure, n.pos) for n in p.charts[4] if n.measure >= 6)
+    assert pasted == [(6, Fraction(0)), (7, Fraction(0)), (8, Fraction(0))]
+    # Pasted measures adopt the copied 24-cell length; the next measure stays full.
+    assert all(p.measure_length(m) == Fraction(24, 32) for m in (6, 7, 8))
+    assert p.measure_length(9) == Fraction(1)
+
+
+def test_paste_past_end_places_notes():
+    """Pasting when the timeline is too short still places the notes (the
+    timeline grows to fit) instead of silently failing."""
+    _app()
+    p = Project(bpm=120, measures=16)
+    p.charts[4] += [Note(14, Fraction(0), 0), Note(15, Fraction(0), 1)]
+    v = ChartView(p)
+    v.set_grid_main(16)
+    v.refresh()
+    v.selection = {(4, n) for n in list(p.charts[4])}
+    v._copy_selection(cut=False)
+    v._paste_anchor = 15.0        # not enough room before the end
+    v._paste()
+    assert len(v.selection) == 2  # notes were placed (into measures beyond 15)
+    assert max(n.measure for _m, n in v.selection) >= 16
+
+
 def test_edit_move_modifiers():
     """Edit-mode note movement: Ctrl+Up/Down snaps to the secondary grid,
     Shift+Up/Down nudges one pixel (free placement), plain Up/Down steps one

@@ -1692,9 +1692,15 @@ class ChartView(QWidget):
             return
         base = min(n.measure for _mode, n in self.selection)
         span = max(n.measure for _mode, n in self.selection) - base + 1
+        # Also capture each measure's length (scale) across the block, so pasting
+        # reproduces shortened measures (e.g. a copied 24-cell measure stays 24
+        # cells wherever it lands). Keyed by offset from the block start.
+        scales = {m - base: self.project.measure_scales[m]
+                  for m in range(base, base + span)
+                  if m in self.project.measure_scales}
         # Measure-aligned: keep each note's measure offset from the block start.
         self._clipboard = (span, [(mode, n.measure - base, n.pos, n.lane, n.length)
-                                  for mode, n in self.selection])
+                                  for mode, n in self.selection], scales)
         if cut:
             self._delete_selection()
 
@@ -1710,24 +1716,27 @@ class ChartView(QWidget):
     def _paste(self) -> None:
         if not self._clipboard:
             return
-        span, items = self._clipboard
+        span, items, scales = self._clipboard
         modes = {mode for mode, *_ in items}
-        max_start = self.project.measures - span
-        if max_start < 0:
-            return
         # Start at the paste anchor's measure, then walk forward to the first run
-        # of ``span`` empty measures (fills empty measures; drops it straight in
-        # when the target is already clear).
-        start = min(max_start, int(max(0.0, self._paste_anchor)))
-        while start < max_start and self._measures_occupied(start, span, modes):
+        # of ``span`` empty measures. Measures past the timeline's end are empty,
+        # so this always finds room; the timeline then grows to fit (autofit on
+        # the change signal) — pasting near the end no longer fails.
+        start = max(0, int(max(0.0, self._paste_anchor)))
+        while self._measures_occupied(start, span, modes):
             start += 1
-        if self._measures_occupied(start, span, modes):
-            return   # no empty room left
         new_sel = set()
         for mode, m_off, pos, lane, length in items:
             note = Note(start + m_off, pos, lane, length)
             self.project.add_object(mode, note)
             new_sel.add((mode, note))
+        # Reproduce the copied block's measure lengths onto the pasted measures.
+        for m_off in range(span):
+            target = start + m_off
+            if m_off in scales:
+                self.project.measure_scales[target] = scales[m_off]
+            else:
+                self.project.measure_scales.pop(target, None)
         if new_sel:
             self.selection = new_sel
             self.changed.emit()

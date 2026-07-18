@@ -1246,6 +1246,10 @@ class MainWindow(QMainWindow):
         self.sb_bgm_label.setText(self.project.bgm_file)
         peaks, bps = self.audio.waveform_peaks()
         self.view.set_waveform(peaks, bps)
+        if loaded:
+            # Grow the timeline up front to span the whole song, so there's room
+            # to place / paste notes across its full length from the start.
+            self._autofit_measures()
         if loaded and not self.audio.stretch_ready():
             worker = self._bgm_speed_worker = _Worker(self.audio.build_stretch)
             worker.start()
