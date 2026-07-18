@@ -38,7 +38,7 @@ from ..audio import AudioPlayer
 from ..model import IMPORT_MODE, KEY_MODES, Project
 from ..timing import TimeMap
 from .appicon import build_icon
-from .chart_view import ChartView, LaneHeader
+from .chart_view import RECORD_KEYS, ChartView, LaneHeader
 from .dialogs import HelpDialog, KeybindingsDialog
 from .palette import DANGER
 from .playback import PlaybackController
@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._register_shortcuts()
         self._load_shortcuts()
+        self._load_record_keys()
         self._load_layout_prefs()
         self._restore_geometry()   # reuse the last window size/position
         self._update_title()
@@ -554,7 +555,7 @@ class MainWindow(QMainWindow):
         self._add(edit_menu, "전체 선택\tCtrl+A", self.view.select_all)
         self.flip_action = self._add(edit_menu, "좌우 반전", self.view.flip_selection)
         edit_menu.addSeparator()
-        self._add(edit_menu, "설정…", self.open_keybindings)
+        self._add(edit_menu, "키 설정", self.open_keybindings)
 
         song_menu = m.addMenu("곡")
         self._add(song_menu, "음원 파일 등록", self.choose_bgm)
@@ -615,13 +616,46 @@ class MainWindow(QMainWindow):
             seq = s.value(f"shortcuts/{key}", default)
             self._apply_shortcut(key, seq)
 
+    # -- live-recording keys (configurable, per key mode) ------------------- #
+
+    def _record_key_defaults(self):
+        """{km: [qt_key per lane]} from the built-in RECORD_KEYS map."""
+        out = {}
+        for km, mapping in RECORD_KEYS.items():
+            by_lane = {lane: key for key, lane in mapping.items()}
+            out[km] = [int(by_lane[lane]) for lane in range(len(mapping))]
+        return out
+
+    def _load_record_keys(self) -> None:
+        s = _settings()
+        defaults = self._record_key_defaults()
+        self._record_cfg = {}
+        for km, dkeys in defaults.items():
+            lane_keys = []
+            for lane, dk in enumerate(dkeys):
+                raw = s.value(f"record/{km}/{lane}", None)
+                lane_keys.append(int(raw) if raw is not None else dk)
+            self._record_cfg[km] = lane_keys
+        self._apply_record_keys()
+
+    def _apply_record_keys(self) -> None:
+        mapping = {km: {key: lane for lane, key in enumerate(keys)}
+                   for km, keys in self._record_cfg.items()}
+        self.view.set_record_keys(mapping)
+
     def open_keybindings(self) -> None:
-        dlg = KeybindingsDialog(self._key_actions, self)
+        dlg = KeybindingsDialog(self._key_actions, self._record_cfg,
+                                self._record_key_defaults(), self)
         if dlg.exec():
             s = _settings()
             for key, seq in dlg.result_shortcuts().items():
                 self._apply_shortcut(key, seq)
                 s.setValue(f"shortcuts/{key}", seq)
+            self._record_cfg = dlg.result_record_keys()
+            for km, keys in self._record_cfg.items():
+                for lane, k in enumerate(keys):
+                    s.setValue(f"record/{km}/{lane}", int(k))
+            self._apply_record_keys()
 
     # -- state -------------------------------------------------------------- #
 

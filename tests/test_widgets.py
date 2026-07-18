@@ -67,17 +67,31 @@ def test_worker_delivers_result_and_error():
 
 
 def test_keybindings_dialog_roundtrip():
+    from PySide6.QtCore import Qt
+
     _app()
     act = QAction("Play")
     act.setShortcut(QKeySequence("Space"))
     key_actions = {"play": (act, "재생", "Space")}
-    dlg = KeybindingsDialog(key_actions)
+    # 4K and 6K recording keys are edited on separate tabs.
+    record_lists = {4: [int(Qt.Key_Q), int(Qt.Key_W)],
+                    6: [int(Qt.Key_A), int(Qt.Key_S), int(Qt.Key_D)]}
+    record_defaults = {k: list(v) for k, v in record_lists.items()}
+    dlg = KeybindingsDialog(key_actions, record_lists, record_defaults)
     assert dlg.result_shortcuts()["play"] == "Space"
-    # Editing then restoring defaults returns the default sequence.
+    assert dlg.result_record_keys()[4] == [int(Qt.Key_Q), int(Qt.Key_W)]
+
+    # Editing a shortcut and a 4K recording key, then reading them back.
     dlg._edits["play"].setKeySequence(QKeySequence("Ctrl+P"))
+    dlg._rec_edits[4][1].setKeySequence(QKeySequence(Qt.Key_K))
     assert dlg.result_shortcuts()["play"] == "Ctrl+P"
+    assert dlg.result_record_keys()[4] == [int(Qt.Key_Q), int(Qt.Key_K)]
+    assert dlg.result_record_keys()[6] == [int(Qt.Key_A), int(Qt.Key_S), int(Qt.Key_D)]
+
+    # Restoring defaults reverts both shortcuts and recording keys.
     dlg._restore_defaults()
     assert dlg.result_shortcuts()["play"] == "Space"
+    assert dlg.result_record_keys()[4] == [int(Qt.Key_Q), int(Qt.Key_W)]
 
 
 if __name__ == "__main__":

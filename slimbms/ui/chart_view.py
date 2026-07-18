@@ -70,9 +70,10 @@ HIT_MAX_STEP = 0.15    # ignore playhead jumps bigger than this (seeks, not play
 C_SELECT = QColor(palette.ACCENT)       # accent for the selected key mode
 C_SELECT_TINT = QColor(111, 208, 255, 20)  # faint fill over its lanes
 
-# Live-recording keys, per key mode: {Qt key -> lane index}. Left hand Q/W/E,
-# right hand numpad(or top-row) 7/8/9, mapped left-to-right across the lanes.
-# Top-row and numpad digits both arrive as Key_7/8/9 (NumLock on), so both work.
+# Default live-recording keys, per key mode: {Qt key -> lane index}. Left hand
+# Q/W/E, right hand numpad(or top-row) 7/8/9, mapped left-to-right across the
+# lanes. Top-row and numpad digits both arrive as Key_7/8/9 (NumLock on), so both
+# work. Users can reassign these (편집 → 키 설정); the live map lives on the view.
 RECORD_KEYS = {
     4: {Qt.Key_Q: 0, Qt.Key_W: 1, Qt.Key_8: 2, Qt.Key_9: 3},
     6: {Qt.Key_Q: 0, Qt.Key_W: 1, Qt.Key_E: 2, Qt.Key_7: 3, Qt.Key_8: 4, Qt.Key_9: 5},
@@ -110,6 +111,8 @@ class ChartView(QWidget):
         self.show_waveform = True
         self.live_playing = False     # True while the preview is actively playing
         self.selected_km = KEY_MODES[0]  # key mode being recorded / highlighted
+        # Live-recording key map ({km: {qt_key: lane}}); reassignable via settings.
+        self.record_keys = {km: dict(m) for km, m in RECORD_KEYS.items()}
         self._hover = None            # (Column, measure, Fraction pos) or None
         self.mode = "add"             # "add" (F3) or "edit" (F2)
         self.selection = set()        # {(mode, Note)} ; mode is int or "bgm"
@@ -242,6 +245,10 @@ class ChartView(QWidget):
         """The key mode notes are recorded into and that is highlighted."""
         self.selected_km = key_mode
         self.update()
+
+    def set_record_keys(self, mapping) -> None:
+        """Replace the live-recording key map ({km: {qt_key: lane}})."""
+        self.record_keys = {km: dict(m) for km, m in mapping.items()}
 
     def set_mode(self, mode: str) -> None:
         if mode not in ("add", "edit"):
@@ -1423,7 +1430,7 @@ class ChartView(QWidget):
         # playhead in the selected key mode's lane. Auto-repeat (holding) is
         # ignored, so a hold is still just a single tap.
         if self.live_playing:
-            lane = RECORD_KEYS.get(self.selected_km, {}).get(event.key())
+            lane = self.record_keys.get(self.selected_km, {}).get(event.key())
             if lane is not None:
                 if not event.isAutoRepeat():
                     self._record_press(event.key(), lane)
