@@ -1019,11 +1019,15 @@ class ChartView(QWidget):
     def _paint_reject(self, p: QPainter) -> None:
         if not self._reject_notes:
             return
-        t = time.monotonic() - self._reject_start
+        now = time.monotonic()
+        t = now - self._reject_start
         if t >= REJECT_SEC:
             return
+        # Intensity fades from the *last* trigger, but the tremble phase runs off
+        # the absolute clock so mashing a blocked key keeps it bright and shaking
+        # smoothly (a phase reset per press would otherwise freeze the wobble).
         decay = 1.0 - t / REJECT_SEC
-        dx = int(round(REJECT_AMP * decay * math.sin(t * REJECT_FREQ)))
+        dx = int(round(REJECT_AMP * decay * math.sin(now * REJECT_FREQ)))
         colx = self._col_x()
         bgmx = self.columns[0].x
         p.setBrush(Qt.NoBrush)
