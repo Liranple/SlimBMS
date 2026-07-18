@@ -1013,33 +1013,48 @@ class ChartView(QWidget):
     def _apply_move_drag(self, event: QMouseEvent) -> None:
         """Reposition the dragged selection by the grid-snapped delta from the
         press point. Always recomputed from the captured originals, so dragging
-        back and forth doesn't accumulate error."""
+        back and forth doesn't accumulate error.
+
+        Movement is in *display* space (collapsed measure tails removed) so a
+        note tracks the cursor 1:1 through shortened measures and both ends of a
+        long note shift together — its visible length never changes and its tail
+        can't slip into a hidden region (which would make it look resized)."""
         md = self._move_drag
         dx = event.position().x() - md["px"]
         step = self.grid_main
         d_lane = int(round(dx / self.lane_w))
-        # Track the cursor's actual chart position (via absolute_at, which honours
-        # per-measure display scales) so dragging stays 1:1 with the mouse even
-        # through collapsed measures; snap that delta to the grid.
-        d_abs_raw = self.absolute_at(event.position().y()) - self.absolute_at(md["py"])
-        d_cells = int(round(d_abs_raw / float(step)))
+        # Vertical delta in display units (pixels back to display position),
+        # snapped to the grid — the same space arrow-key moves use.
+        def disp_at(y):
+            return self._vtotal - (y - self.v_pad) / self.measure_px
+        d_cells = int(round((disp_at(event.position().y())
+                             - disp_at(md["py"])) / float(step)))
         if not md["moved"] and d_lane == 0 and d_cells == 0:
             return
-        d_abs = d_cells * step
-        limit = Fraction(self.project.measures) - step
+        d_disp = d_cells * step
+        cum = self.project.cumulative_lengths()
+        total = cum[self.project.measures]
         # Remove the currently-placed (possibly already-moved) notes first.
         for mode, n in self.selection:
             self.project.remove_object(mode, n)
         new_sel = set()
         for mode, orig in md["origs"]:
-            new_abs = max(Fraction(0), min(limit, orig.absolute + d_abs))
+            head_d = self._display_pos_frac(orig.absolute, cum)
+            len_d = self._display_pos_frac(orig.end_absolute, cum) - head_d
+            # Keep the whole (rigid) note within the timeline.
+            new_head_d = max(Fraction(0), min(total - step - len_d, head_d + d_disp))
+            new_abs = self._absolute_from_display_frac(new_head_d, cum)
             measure = int(new_abs)
             pos = new_abs - measure
             if mode == "bgm":
-                lane = 0
+                lane, length = 0, Fraction(0)
             else:
                 lane = min(max(orig.lane + d_lane, 0), lanes_for(mode) - 1)
-            moved = Note(measure, pos, lane, orig.length)
+                # Tail follows the head by the same display span, then back to an
+                # absolute length — both ends stay on visible cells.
+                tail_abs = self._absolute_from_display_frac(new_head_d + len_d, cum)
+                length = tail_abs - new_abs
+            moved = Note(measure, pos, lane, length)
             self.project.add_object(mode, moved)
             new_sel.add((mode, moved))
         self.selection = new_sel

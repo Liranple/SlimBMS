@@ -118,6 +118,46 @@ def test_measure_scale_reflow_offsets_and_cascades():
     assert n.measure == 4 and n.pos == Fraction(4, 32)  # 20 - 16 = cell 4
 
 
+def test_move_long_note_keeps_visible_length_across_shortened_measure():
+    """Dragging a long note in edit mode moves it rigidly in display space, so
+    its visible length is unchanged even when the move carries it across a
+    shortened measure — its tail can't slip into the hidden region and look
+    resized. Edit mode must never change a long note's length."""
+    from PySide6.QtCore import Qt, QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+
+    _app()
+    p = Project(bpm=120, measures=10)
+    p.measure_scales[3] = Fraction(16, 32)             # measure 3 halved
+    ln = Note(3, Fraction(5, 32), 0, Fraction(7, 32))  # head cell 5, tail cell 12
+    p.charts[4].append(ln)
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v.set_mode("edit")
+    v.refresh()
+    v.resize(1400, 4000)
+
+    def vis(n):
+        return round(v.y_for(n.absolute) - v.y_for(n.end_absolute), 2)
+
+    before = vis(ln)
+    x = v._col_x()[(4, 0)] + v.lane_w / 2
+    cell = v.measure_px * float(v.grid_main)
+    head_y = v.y_for(ln.absolute)
+    def ev(kind, y, btn, btns):
+        return QMouseEvent(kind, QPointF(x, y), btn, btns, Qt.NoModifier)
+    v.mousePressEvent(ev(QEvent.MouseButtonPress, head_y - 1, Qt.LeftButton, Qt.LeftButton))
+    v.mouseMoveEvent(ev(QEvent.MouseMove, head_y - 1 - 6 * cell, Qt.NoButton, Qt.LeftButton))
+    v.mouseReleaseEvent(ev(QEvent.MouseButtonRelease, head_y - 1 - 6 * cell, Qt.LeftButton, Qt.NoButton))
+
+    moved = next(iter(v.selection))[1]
+    assert vis(moved) == before                        # visible length unchanged
+    # Tail sits on a visible cell (frac below the measure's scale), never hidden.
+    tm = int(moved.end_absolute)
+    tail_frac = moved.end_absolute - tm
+    assert tail_frac < p.measure_length(tm) or tail_frac == 0
+
+
 def test_arrow_move_skips_collapsed_cells():
     """Arrow-key vertical moves step through display space: from a shortened
     measure's last visible cell the note jumps to the next measure's first cell,
