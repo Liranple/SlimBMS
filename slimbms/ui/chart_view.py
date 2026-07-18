@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import math
 import time
 from fractions import Fraction
 from typing import Optional
@@ -67,6 +68,13 @@ _GLOBAL_INDEX = {ml: i for i, ml in enumerate(_GLOBAL_LANES)}
 HIT_FLASH_SEC = 0.18   # how long a note's hit flash lasts
 HIT_MAX_STEP = 0.15    # ignore playhead jumps bigger than this (seeks, not playback)
 
+# Feedback when a move is rejected (hits a wall): the selection shakes with a
+# fading red outline.
+REJECT_SEC = 0.34      # animation length
+REJECT_AMP = 4.0       # horizontal shake amplitude (px)
+REJECT_FREQ = 58.0     # shake angular speed (rad/s) — a rapid tremble
+C_REJECT = QColor("#ff4d4d")
+
 C_SELECT = QColor(palette.ACCENT)       # accent for the selected key mode
 C_SELECT_TINT = QColor(111, 208, 255, 20)  # faint fill over its lanes
 
@@ -104,6 +112,12 @@ class ChartView(QWidget):
         self.v_pad = 24
         self.playhead: Optional[float] = None  # absolute chart pos, or None
         self._hits = {}               # (mode, Note) -> monotonic time it crossed the playhead
+        # Rejected-move feedback: the notes to shake and when the shake started.
+        self._reject_notes = []       # [(mode, Note)] flashing red while rejected
+        self._reject_start = 0.0
+        self._reject_timer = QTimer(self)
+        self._reject_timer.setInterval(16)
+        self._reject_timer.timeout.connect(self._on_reject_tick)
         self.record_offset_measures = 0.0  # recording latency comp, in measures
         self._wave = None             # normalised peak envelope (numpy array)
         self._wave_bps = 200          # buckets per second in _wave
@@ -499,6 +513,7 @@ class ChartView(QWidget):
         self._paint_notes(p)
         self._paint_hits(p)
         self._paint_selection(p)
+        self._paint_reject(p)
         self._paint_hover(p)
         self._paint_drag(p)
         self._paint_bpm_changes(p)
@@ -984,6 +999,43 @@ class ChartView(QWidget):
                 continue
             w = self.bgm_w if mode == "bgm" else self.lane_w
             p.drawRect(self._sel_rect(x, n, w))
+
+    def _reject_feedback(self) -> None:
+        """Kick off the 'move rejected' shake: the selection trembles with a
+        fading red outline for a moment (nothing actually moves)."""
+        if not self.selection:
+            return
+        self._reject_notes = list(self.selection)
+        self._reject_start = time.monotonic()
+        self._reject_timer.start()
+        self.update()
+
+    def _on_reject_tick(self) -> None:
+        if time.monotonic() - self._reject_start >= REJECT_SEC:
+            self._reject_timer.stop()
+            self._reject_notes = []
+        self.update()
+
+    def _paint_reject(self, p: QPainter) -> None:
+        if not self._reject_notes:
+            return
+        t = time.monotonic() - self._reject_start
+        if t >= REJECT_SEC:
+            return
+        decay = 1.0 - t / REJECT_SEC
+        dx = int(round(REJECT_AMP * decay * math.sin(t * REJECT_FREQ)))
+        colx = self._col_x()
+        bgmx = self.columns[0].x
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(C_REJECT.red(), C_REJECT.green(), C_REJECT.blue(),
+                             int(230 * decay)), 2))
+        for mode, n in self._reject_notes:
+            x = bgmx if mode == "bgm" else colx.get((mode, n.lane))
+            if x is None:
+                continue
+            w = self.bgm_w if mode == "bgm" else self.lane_w
+            rect = self._sel_rect(x, n, w)
+            p.drawRect(rect.adjusted(dx - 1, -1, dx + 1, 1))
 
     def _paint_drag(self, p: QPainter) -> None:
         if self._drag_start is None or self._drag_cur is None:
@@ -1632,7 +1684,7 @@ class ChartView(QWidget):
                 disp = self._vertical_target(
                     self._display_pos_frac(n.absolute, cum), vdir, vmode)
                 if disp < 0 or disp >= total:
-                    return
+                    return self._reject_feedback()
                 new_abs = self._absolute_from_display_frac(disp, cum)
             else:
                 new_abs = n.absolute
@@ -1641,15 +1693,15 @@ class ChartView(QWidget):
             elif mode_jump:
                 mi = DISPLAY_MODES.index(mode) + mode_jump
                 if mi < 0 or mi >= len(DISPLAY_MODES):
-                    return
+                    return self._reject_feedback()
                 newmode = DISPLAY_MODES[mi]
                 if n.lane >= lanes_for(newmode):
-                    return
+                    return self._reject_feedback()
                 newlane = n.lane
             else:
                 g = _GLOBAL_INDEX[(mode, n.lane)] + d_lane
                 if g < 0 or g >= len(_GLOBAL_LANES):
-                    return
+                    return self._reject_feedback()
                 newmode, newlane = _GLOBAL_LANES[g]
             proposed.append((mode, n, newmode, newlane, new_abs))
         # Lift the selected notes out first; the remaining ("stationary") notes
@@ -1672,6 +1724,9 @@ class ChartView(QWidget):
             self.project.add_object(newmode, moved)
             new_sel.add((newmode, moved))
         self.selection = new_sel
+        if self._reject_notes:                 # a prior shake is now moot
+            self._reject_timer.stop()
+            self._reject_notes = []
         self._flag_overlap(overlap)
         self.changed.emit()
         self.update()

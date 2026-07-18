@@ -301,6 +301,31 @@ def test_ctrl_mode_jump():
     assert state(v) == [(4, 0)]
 
 
+def test_rejected_move_triggers_shake_feedback():
+    """A blocked move (here a Ctrl mode-jump with no target lane) arms the
+    red-shake feedback; a valid move does not."""
+    from slimbms.model import IMPORT_MODE
+
+    _app()
+    p = Project(bpm=120, measures=8)
+    n = Note(2, Fraction(0), 5)                     # 6K lane 5 (no 4K equivalent)
+    p.charts[6].append(n)
+    v = ChartView(p)
+    v.set_mode("edit")
+    v.refresh()
+    v.selection = {(6, n)}
+
+    v._move_selection(0, 0, mode_jump=-1)           # rejected
+    assert len(v._reject_notes) == 1
+    assert v._reject_timer.isActive()
+
+    # A valid move (6K lane 5 -> LOAD lane 5) clears any pending shake.
+    v._move_selection(0, 0, mode_jump=1)
+    assert next(iter(v.selection))[0] == IMPORT_MODE
+    assert v._reject_notes == []
+    assert not v._reject_timer.isActive()
+
+
 def test_edit_move_modifiers():
     """Edit-mode note movement: Ctrl+Up/Down snaps to the secondary grid,
     Shift+Up/Down nudges one pixel (free placement), plain Up/Down steps one
