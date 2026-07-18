@@ -301,6 +301,35 @@ def test_ctrl_mode_jump():
     assert state(v) == [(4, 0)]
 
 
+def test_ctrl_sub_move_preserves_spacing_no_overlap():
+    """Ctrl+Up/Down (secondary-grid move) shifts the whole selection by one
+    uniform delta, so notes never collapse onto each other — even when several
+    fall in the same secondary-grid interval (previously they'd overlap)."""
+    _app()
+    p = Project(bpm=120, measures=210)
+    cells = [1, 3, 5, 9, 11, 13]                      # grid 32, sub 12
+    for c in cells:
+        p.charts[6].append(Note(202, Fraction(c, 32), 0))
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v.set_grid_sub(12)
+    v.set_mode("edit")
+    v.refresh()
+    v.selection = {(6, n) for n in list(p.charts[6])}
+
+    def positions():
+        return sorted(n.pos for n in p.charts[6])
+    before = positions()
+    gaps_before = [before[i + 1] - before[i] for i in range(len(before) - 1)]
+
+    v._move_selection(0, 1, "sub")                    # Ctrl+Up
+    after = positions()
+    assert len(set(after)) == len(cells)              # all distinct — no overlap
+    gaps_after = [after[i + 1] - after[i] for i in range(len(after) - 1)]
+    assert gaps_after == gaps_before                  # spacing preserved
+    assert all(a > b for a, b in zip(after, before))  # everything moved up
+
+
 def test_rejected_move_triggers_shake_feedback():
     """A blocked move (here a Ctrl mode-jump with no target lane) arms the
     red-shake feedback; a valid move does not."""

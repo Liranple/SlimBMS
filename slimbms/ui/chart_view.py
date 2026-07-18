@@ -1653,19 +1653,27 @@ class ChartView(QWidget):
         m = max(0, min(measures - 1, m))
         return m + (disp - cum[m])
 
-    def _vertical_target(self, disp: Fraction, vdir: int, vmode: str) -> Fraction:
-        """New display position for a vertical key move from ``disp``.
-        ``vmode``: 'main' steps one primary grid cell (offset preserved),
-        'sub' snaps to the next secondary-grid line, 'px' nudges one pixel
-        (free placement). ``vdir`` is +1 (up) or -1 (down)."""
-        if vmode == "sub":
-            sub = self.grid_sub
-            if vdir > 0:
-                return (disp // sub + 1) * sub          # next sub line above
-            return (-((-disp) // sub) - 1) * sub         # (ceil(disp/sub) - 1) * sub
+    def _sub_snap(self, disp: Fraction, vdir: int) -> Fraction:
+        """Nearest secondary-grid line strictly above (vdir>0) / below (vdir<0)."""
+        sub = self.grid_sub
+        if vdir > 0:
+            return (disp // sub + 1) * sub              # next sub line above
+        return (-((-disp) // sub) - 1) * sub            # (ceil(disp/sub) - 1) * sub
+
+    def _vertical_delta(self, vdir: int, vmode: str, cum) -> Fraction:
+        """A single display-space delta applied to the WHOLE selection, so the
+        relative spacing is preserved and notes can never collapse onto each
+        other. 'main' steps one primary cell, 'px' one pixel; 'sub' is the
+        smallest move that lands a selected note on a secondary-grid line (so
+        Ctrl+↑/↓ steps to the sub grid without distorting the pattern)."""
         if vmode == "px":
-            return disp + vdir * Fraction(1, self.measure_px)
-        return disp + vdir * self.grid_main              # 'main'
+            return vdir * Fraction(1, self.measure_px)
+        if vmode == "main":
+            return vdir * self.grid_main
+        deltas = [self._sub_snap(d, vdir) - d
+                  for d in (self._display_pos_frac(n.absolute, cum)
+                            for _m, n in self.selection)]
+        return min(deltas) if vdir > 0 else max(deltas)
 
     def _move_selection(self, d_lane: int, vdir: int, vmode: str = "main",
                         mode_jump: int = 0) -> None:
@@ -1682,11 +1690,11 @@ class ChartView(QWidget):
         # moves walk 4K→6K→LOAD as one continuous space; a mode_jump hops to the
         # adjacent key mode keeping the same lane index (aborting if the index
         # doesn't exist there, or there's no mode on that side).
+        vdelta = self._vertical_delta(vdir, vmode, cum) if vdir else Fraction(0)
         proposed = []
         for mode, n in self.selection:
             if vdir:
-                disp = self._vertical_target(
-                    self._display_pos_frac(n.absolute, cum), vdir, vmode)
+                disp = self._display_pos_frac(n.absolute, cum) + vdelta
                 if disp < 0 or disp >= total:
                     return self._reject_feedback()
                 new_abs = self._absolute_from_display_frac(disp, cum)
