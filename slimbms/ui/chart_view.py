@@ -349,6 +349,31 @@ class ChartView(QWidget):
             moved = True
         return measure, pos, moved
 
+    def _reflow_abs(self, absolute: Fraction):
+        """Reflow a whole absolute position (a note *start*) out of collapsed
+        tails — right-continuous. Returns ``(new_absolute, moved)``."""
+        m = int(absolute)
+        m2, p2, moved = self._reflow_one(m, absolute - m)
+        return m2 + p2, moved
+
+    def _reflow_end(self, absolute: Fraction):
+        """Reflow a note *end* position — left-continuous, so a tail landing
+        exactly on a measure boundary counts as the end of the preceding
+        measure's content (and a note wholly inside a collapsed tail keeps its
+        length instead of shrinking to a point). Returns ``(new_absolute, moved)``."""
+        if absolute <= 0:
+            return absolute, False
+        m = int(absolute)
+        pos = absolute - m
+        if pos == 0:                       # on a boundary → end of measure m-1
+            m -= 1
+            pos = Fraction(1)
+        while pos > self.project.measure_length(m):   # strict: boundary stays put
+            pos -= self.project.measure_length(m)
+            m += 1
+        result = m + pos
+        return result, result != absolute
+
     def _capture_reflow_origin(self):
         """A snapshot of note/BGM/BPM positions to reflow *from*, so a live
         measure-resize can recompute placements from pristine originals every
@@ -373,10 +398,18 @@ class ChartView(QWidget):
         for km in self.project.charts:
             out = []
             for n in orig_charts.get(km, ()):
-                m2, p2, moved = self._reflow_one(n.measure, n.pos)
-                if moved:
+                head, hmoved = self._reflow_abs(n.absolute)
+                if n.length > 0:
+                    # Reflow the tail too, so a long note whose end lands in a
+                    # collapsed tail carries its end into the next measure instead
+                    # of stopping at the boundary; recompute the length.
+                    tail, tmoved = self._reflow_end(n.end_absolute)
+                    if hmoved or tmoved:
+                        changed = True
+                        n = Note(int(head), head - int(head), n.lane, tail - head)
+                elif hmoved:
                     changed = True
-                    n = Note(m2, p2, n.lane, n.length)
+                    n = Note(int(head), head - int(head), n.lane, n.length)
                 out.append(n)
                 highest = max(highest, int(n.end_absolute))
             self.project.charts[km][:] = out
@@ -1457,9 +1490,13 @@ class ChartView(QWidget):
         elif ctrl and key == Qt.Key_V:
             self._paste()
         elif key == Qt.Key_Left:
-            self._move_selection(-1, 0)
+            # Ctrl hops to the adjacent key mode (same lane index); otherwise one
+            # lane left through the continuous 4K→6K→LOAD space.
+            self._move_selection(0, 0, mode_jump=-1) if ctrl \
+                else self._move_selection(-1, 0)
         elif key == Qt.Key_Right:
-            self._move_selection(1, 0)
+            self._move_selection(0, 0, mode_jump=1) if ctrl \
+                else self._move_selection(1, 0)
         elif key == Qt.Key_Up:
             self._move_selection(0, 1, vmode)
         elif key == Qt.Key_Down:
@@ -1574,7 +1611,8 @@ class ChartView(QWidget):
             return disp + vdir * Fraction(1, self.measure_px)
         return disp + vdir * self.grid_main              # 'main'
 
-    def _move_selection(self, d_lane: int, vdir: int, vmode: str = "main") -> None:
+    def _move_selection(self, d_lane: int, vdir: int, vmode: str = "main",
+                        mode_jump: int = 0) -> None:
         if not self.selection:
             return
         # Vertical moves are computed in *display* space (collapsed measure tails
@@ -1584,8 +1622,10 @@ class ChartView(QWidget):
         total = cum[self.project.measures]
         # Compute every note's target first; if ANY would cross a wall (the left
         # edge of 4K, the right edge of LOAD, or the top/bottom), abort the whole
-        # move so the selection never gets squished against an edge. Key notes
-        # move through 4K→6K→LOAD as one continuous lane space.
+        # move so the selection never gets squished against an edge. Plain lane
+        # moves walk 4K→6K→LOAD as one continuous space; a mode_jump hops to the
+        # adjacent key mode keeping the same lane index (aborting if the index
+        # doesn't exist there, or there's no mode on that side).
         proposed = []
         for mode, n in self.selection:
             if vdir:
@@ -1597,7 +1637,15 @@ class ChartView(QWidget):
             else:
                 new_abs = n.absolute
             if mode == "bgm":
-                newmode, newlane = "bgm", 0
+                newmode, newlane = "bgm", 0   # BGM has no lane space to move in
+            elif mode_jump:
+                mi = DISPLAY_MODES.index(mode) + mode_jump
+                if mi < 0 or mi >= len(DISPLAY_MODES):
+                    return
+                newmode = DISPLAY_MODES[mi]
+                if n.lane >= lanes_for(newmode):
+                    return
+                newlane = n.lane
             else:
                 g = _GLOBAL_INDEX[(mode, n.lane)] + d_lane
                 if g < 0 or g >= len(_GLOBAL_LANES):

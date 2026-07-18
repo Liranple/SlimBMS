@@ -226,6 +226,81 @@ def test_paste_past_end_places_notes():
     assert max(n.measure for _m, n in v.selection) >= 16
 
 
+def test_reflow_moves_long_note_tail():
+    """Shrinking a measure carries a long note's tail into the next measure too
+    (not just the head): a tail in the collapsed region relocates, and a note
+    wholly inside the collapsed region keeps its length."""
+    _app()
+    # head visible, tail in the collapsed region -> tail moves, length grows to
+    # span the (removed) gap.
+    p = Project(bpm=120, measures=8)
+    p.charts[4].append(Note(3, Fraction(10, 32), 0, Fraction(18, 32)))
+    v = ChartView(p)
+    v.set_grid_main(32)
+    origin = v._capture_reflow_origin()
+    p.measure_scales[3] = Fraction(24, 32)
+    v.refresh()
+    v._reflow_from(origin)
+    n = p.charts[4][0]
+    assert (n.measure, n.pos) == (3, Fraction(10, 32))
+    assert n.end_absolute == 4 + Fraction(4, 32)          # tail now in measure 4
+
+    # whole note inside the collapsed region, tail on the boundary -> both ends
+    # relocate and the length is preserved (no shrink to a point).
+    p2 = Project(bpm=120, measures=8)
+    p2.charts[4].append(Note(3, Fraction(20, 32), 0, Fraction(12, 32)))
+    v2 = ChartView(p2)
+    v2.set_grid_main(32)
+    origin2 = v2._capture_reflow_origin()
+    p2.measure_scales[3] = Fraction(20, 32)
+    v2.refresh()
+    v2._reflow_from(origin2)
+    m = p2.charts[4][0]
+    assert (m.measure, m.pos, m.length) == (4, Fraction(0), Fraction(12, 32))
+
+
+def test_ctrl_mode_jump():
+    """Ctrl+Left/Right hops to the adjacent key mode keeping the lane index,
+    aborting the whole move if any note's lane doesn't exist there."""
+    from slimbms.model import IMPORT_MODE
+
+    _app()
+    def setup(mode, lanes):
+        p = Project(bpm=120, measures=8)
+        notes = [Note(2, Fraction(0), L) for L in lanes]
+        p.charts[mode] += notes
+        v = ChartView(p)
+        v.set_mode("edit")
+        v.refresh()
+        v.selection = {(mode, n) for n in notes}
+        return v
+    def state(v):
+        return sorted((mode, n.lane) for mode, n in v.selection)
+
+    # 6K lane 0 -> Ctrl+Right -> LOAD lane 0 (index preserved).
+    v = setup(6, [0, 1])
+    v._move_selection(0, 0, mode_jump=1)
+    assert state(v) == [(IMPORT_MODE, 0), (IMPORT_MODE, 1)]
+
+    # 6K lanes 0,4 -> Ctrl+Left: lane 4 has no 4K equivalent -> whole move aborts.
+    v = setup(6, [0, 4])
+    v._move_selection(0, 0, mode_jump=-1)
+    assert state(v) == [(6, 0), (6, 4)]
+
+    # LOAD lanes 0,2,3,5 -> Ctrl+Left twice: first lands in 6K, second aborts
+    # (lane 5 has no 4K equivalent) so it stays in 6K.
+    v = setup(IMPORT_MODE, [0, 2, 3, 5])
+    v._move_selection(0, 0, mode_jump=-1)
+    assert state(v) == [(6, 0), (6, 2), (6, 3), (6, 5)]
+    v._move_selection(0, 0, mode_jump=-1)
+    assert state(v) == [(6, 0), (6, 2), (6, 3), (6, 5)]
+
+    # 4K lane 0 -> Ctrl+Left: no mode to the left -> blocked.
+    v = setup(4, [0])
+    v._move_selection(0, 0, mode_jump=-1)
+    assert state(v) == [(4, 0)]
+
+
 def test_edit_move_modifiers():
     """Edit-mode note movement: Ctrl+Up/Down snaps to the secondary grid,
     Shift+Up/Down nudges one pixel (free placement), plain Up/Down steps one
