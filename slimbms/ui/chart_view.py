@@ -1042,19 +1042,24 @@ class ChartView(QWidget):
         dx = event.position().x() - md["px"]
         step = self.grid_main
         d_lane = int(round(dx / self.lane_w))
-        # Vertical delta in display units (pixels back to display position),
-        # snapped to the grid — the same space arrow-key moves use.
+        # Vertical delta in display units (pixels back to display position). A
+        # normal drag snaps to the primary grid; a Shift drag is free placement,
+        # quantised only to whole pixels.
         def disp_at(y):
             return self._vtotal - (y - self.v_pad) / self.measure_px
-        d_cells = int(round((disp_at(event.position().y())
-                             - disp_at(md["py"])) / float(step)))
-        if not md["moved"] and d_lane == 0 and d_cells == 0:
+        raw = disp_at(event.position().y()) - disp_at(md["py"])
+        if md.get("free"):
+            d_disp = Fraction(int(round(raw * self.measure_px)), self.measure_px)
+        else:
+            d_disp = int(round(raw / float(step))) * step
+        if not md["moved"] and d_lane == 0 and d_disp == 0:
             return
-        d_disp = d_cells * step
         cum = self.project.cumulative_lengths()
         total = cum[self.project.measures]
-        # Remove the currently-placed (possibly already-moved) notes first.
-        for mode, n in self.selection:
+        # Remove the notes placed by the previous drag step (the originals on the
+        # first step) — tracked independently of the selection so a Shift-drag of
+        # an unselected note can't leave a duplicate behind.
+        for mode, n in md["placed"]:
             self.project.remove_object(mode, n)
         new_sel = set()
         for mode, orig in md["origs"]:
@@ -1077,6 +1082,7 @@ class ChartView(QWidget):
             self.project.add_object(mode, moved)
             new_sel.add((mode, moved))
         self.selection = new_sel
+        md["placed"] = list(new_sel)
         md["moved"] = True
         self.changed.emit()
         self.update()
@@ -1269,18 +1275,23 @@ class ChartView(QWidget):
         self._drag_shift = bool(event.modifiers() & Qt.ShiftModifier)
         hit = self._note_at_point(col, y) if col is not None else None
 
-        if hit is not None and not self._drag_shift:
-            mode, note = hit
-            # Press on a note (no Shift) → drag to move it. Grab the whole
-            # selection if the note is part of it, otherwise just this note.
-            if hit not in self.selection:
+        if hit is not None:
+            # Press on a note → drag to move it. Without Shift the move snaps to
+            # the grid; WITH Shift it's free placement (1px). A Shift press that
+            # never drags falls back to the classic select-toggle (on release):
+            # adding an unselected note now, removing a selected one on release.
+            toggle = None
+            if self._drag_shift:
+                if hit not in self.selection:
+                    self.selection = self.selection | {hit}   # shift-click adds
+                else:
+                    toggle = hit                              # remove if no drag
+            elif hit not in self.selection:
                 self.selection = {hit}
             self._move_drag = {"origs": list(self.selection),
-                               "px": x, "py": y, "moved": False}
-            self.update()
-            return
-        if hit is not None:   # Shift+click a note → toggle it in the selection
-            self.selection ^= {hit}
+                               "placed": list(self.selection),
+                               "px": x, "py": y, "moved": False,
+                               "free": self._drag_shift, "toggle": toggle}
             self.update()
             return
         # Empty area → rubber-band selection.
@@ -1308,8 +1319,13 @@ class ChartView(QWidget):
             self.update()
             return
         if self._move_drag is not None:     # finished dragging notes to move them
+            md = self._move_drag
             self._move_drag = None
-            self._flag_overlap(self._selection_overlaps())
+            if not md["moved"] and md.get("toggle") is not None:
+                # A Shift press that never dragged → classic select-toggle.
+                self.selection = self.selection ^ {md["toggle"]}
+            else:
+                self._flag_overlap(self._selection_overlaps())
             self.update()
             return
         if self.mode != "edit" or self._drag_start is None:
@@ -1418,6 +1434,11 @@ class ChartView(QWidget):
             return
         key, mod = event.key(), event.modifiers()
         ctrl = bool(mod & Qt.ControlModifier)
+        shift = bool(mod & Qt.ShiftModifier)
+        # Vertical step for Up/Down: Ctrl snaps to the secondary grid, Shift
+        # nudges one pixel (free placement), plain steps one primary cell.
+        # Left/Right always walk the 4K→6K→LOAD lanes regardless of modifier.
+        vmode = "sub" if ctrl else "px" if shift else "main"
         if ctrl and key == Qt.Key_A:
             self.select_all()
         elif key == Qt.Key_Delete:
@@ -1433,9 +1454,9 @@ class ChartView(QWidget):
         elif key == Qt.Key_Right:
             self._move_selection(1, 0)
         elif key == Qt.Key_Up:
-            self._move_selection(0, 1)
+            self._move_selection(0, 1, vmode)
         elif key == Qt.Key_Down:
-            self._move_selection(0, -1)
+            self._move_selection(0, -1, vmode)
         else:
             super().keyPressEvent(event)  # ` (flip) is a configurable window action
             return
@@ -1532,28 +1553,42 @@ class ChartView(QWidget):
         m = max(0, min(measures - 1, m))
         return m + (disp - cum[m])
 
-    def _move_selection(self, d_lane: int, d_cells: int) -> None:
+    def _vertical_target(self, disp: Fraction, vdir: int, vmode: str) -> Fraction:
+        """New display position for a vertical key move from ``disp``.
+        ``vmode``: 'main' steps one primary grid cell (offset preserved),
+        'sub' snaps to the next secondary-grid line, 'px' nudges one pixel
+        (free placement). ``vdir`` is +1 (up) or -1 (down)."""
+        if vmode == "sub":
+            sub = self.grid_sub
+            if vdir > 0:
+                return (disp // sub + 1) * sub          # next sub line above
+            return (-((-disp) // sub) - 1) * sub         # (ceil(disp/sub) - 1) * sub
+        if vmode == "px":
+            return disp + vdir * Fraction(1, self.measure_px)
+        return disp + vdir * self.grid_main              # 'main'
+
+    def _move_selection(self, d_lane: int, vdir: int, vmode: str = "main") -> None:
         if not self.selection:
             return
-        step = self.grid_main
-        hi = Fraction(self.project.measures) - step
-        # Vertical moves step through *display* space (collapsed measure tails
+        # Vertical moves are computed in *display* space (collapsed measure tails
         # removed) so a shortened measure's last visible cell moves straight to
         # the next measure's first cell — not through its hidden cells.
         cum = self.project.cumulative_lengths()
+        total = cum[self.project.measures]
         # Compute every note's target first; if ANY would cross a wall (the left
         # edge of 4K, the right edge of LOAD, or the top/bottom), abort the whole
         # move so the selection never gets squished against an edge. Key notes
         # move through 4K→6K→LOAD as one continuous lane space.
         proposed = []
         for mode, n in self.selection:
-            if d_cells:
-                disp = self._display_pos_frac(n.absolute, cum) + d_cells * step
+            if vdir:
+                disp = self._vertical_target(
+                    self._display_pos_frac(n.absolute, cum), vdir, vmode)
+                if disp < 0 or disp >= total:
+                    return
                 new_abs = self._absolute_from_display_frac(disp, cum)
             else:
                 new_abs = n.absolute
-            if new_abs < 0 or new_abs > hi:
-                return
             if mode == "bgm":
                 newmode, newlane = "bgm", 0
             else:

@@ -185,6 +185,116 @@ def test_move_long_note_keeps_visible_length_across_shortened_measure():
     assert tail_frac < p.measure_length(tm) or tail_frac == 0
 
 
+def test_edit_move_modifiers():
+    """Edit-mode note movement: Ctrl+Up/Down snaps to the secondary grid,
+    Shift+Up/Down nudges one pixel (free placement), plain Up/Down steps one
+    primary cell, and Left/Right walk the lanes with 4K-left / LOAD-right walls."""
+    from slimbms.model import IMPORT_MODE
+
+    def fresh():
+        p = Project(bpm=120, measures=8)
+        v = ChartView(p)
+        v.set_grid_main(16)
+        v.set_grid_sub(12)
+        v.set_mode("edit")
+        v.refresh()
+        v.measure_px = 160
+        return p, v
+
+    def sole(v):
+        return next(iter(v.selection))[1]
+
+    _app()
+    # Ctrl snaps to the 1/12 secondary grid (1/16 -> 1/12 -> 2/12, and back).
+    p, v = fresh()
+    n = Note(2, Fraction(1, 16), 0)
+    p.charts[4].append(n)
+    v.selection = {(4, n)}
+    v._move_selection(0, 1, "sub")
+    assert sole(v).pos == Fraction(1, 12)
+    v._move_selection(0, 1, "sub")
+    assert sole(v).pos == Fraction(2, 12)
+    v._move_selection(0, -1, "sub")
+    assert sole(v).pos == Fraction(1, 12)
+
+    # Shift nudges one pixel (free placement); plain steps one primary cell.
+    p, v = fresh()
+    n = Note(2, Fraction(0), 0)
+    p.charts[4].append(n)
+    v.selection = {(4, n)}
+    v._move_selection(0, 1, "px")
+    assert sole(v).pos == Fraction(1, 160)          # 1 px at measure_px 160
+    p, v = fresh()
+    n = Note(2, Fraction(0), 0)
+    p.charts[4].append(n)
+    v.selection = {(4, n)}
+    v._move_selection(0, 1, "main")
+    assert sole(v).pos == Fraction(1, 16)
+
+    # Lane walls: 4K lane 0 can't go left; a right move crosses 4K -> 6K.
+    p, v = fresh()
+    n = Note(2, Fraction(0), 0)
+    p.charts[4].append(n)
+    v.selection = {(4, n)}
+    v._move_selection(-1, 0)
+    assert next(iter(v.selection))[0] == 4 and sole(v).lane == 0   # blocked, unchanged
+    n2 = Note(2, Fraction(0), 3)                                   # rightmost 4K lane
+    p.charts[4] = [n2]
+    v.selection = {(4, n2)}
+    v._move_selection(1, 0)
+    assert next(iter(v.selection))[0] == 6 and sole(v).lane == 0   # 4K -> 6K
+    # LOAD rightmost lane can't go further right.
+    n3 = Note(2, Fraction(0), 7)
+    p.charts[IMPORT_MODE] = [n3]
+    v.selection = {(IMPORT_MODE, n3)}
+    v._move_selection(1, 0)
+    assert next(iter(v.selection))[0] == IMPORT_MODE               # blocked, still LOAD
+
+
+def test_edit_shift_drag_is_free_placement():
+    """A Shift mouse-drag moves a note with 1px (free) placement, a plain drag
+    snaps to the grid, and neither leaves a duplicate behind."""
+    from PySide6.QtCore import Qt, QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+
+    _app()
+    def setup():
+        p = Project(bpm=120, measures=8)
+        v = ChartView(p)
+        v.set_grid_main(16)
+        v.set_mode("edit")
+        v.refresh()
+        v.resize(1400, 3000)
+        v.measure_px = 160
+        return p, v
+
+    def drag(v, x, y, dy, mods):
+        v.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, QPointF(x, y),
+                                      Qt.LeftButton, Qt.LeftButton, mods))
+        v.mouseMoveEvent(QMouseEvent(QEvent.MouseMove, QPointF(x, y + dy),
+                                     Qt.NoButton, Qt.LeftButton, Qt.NoModifier))
+        v.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, QPointF(x, y + dy),
+                                        Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+
+    # Shift-drag an unselected note up 16px -> free placement, no duplicate.
+    p, v = setup()
+    n = Note(2, Fraction(0), 0)
+    p.charts[4].append(n)
+    x = v._col_x()[(4, 0)] + v.lane_w / 2
+    drag(v, x, v.y_for(n.absolute), -16, Qt.ShiftModifier)
+    assert len(p.charts[4]) == 1
+    assert p.charts[4][0].pos == Fraction(16, 160)   # 16 px, off the 1/16 grid
+
+    # A plain drag of 7px snaps to the nearest grid cell.
+    p, v = setup()
+    n = Note(2, Fraction(0), 0)
+    p.charts[4].append(n)
+    x = v._col_x()[(4, 0)] + v.lane_w / 2
+    drag(v, x, v.y_for(n.absolute), -7, Qt.NoModifier)
+    assert len(p.charts[4]) == 1
+    assert p.charts[4][0].pos == Fraction(1, 16)
+
+
 def test_arrow_move_skips_collapsed_cells():
     """Arrow-key vertical moves step through display space: from a shortened
     measure's last visible cell the note jumps to the next measure's first cell,
