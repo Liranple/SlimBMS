@@ -69,41 +69,67 @@ def _ico(name: str) -> str:
 
 
 def _section(title: str, body: str) -> str:
-    """An accent header bar followed by a short description block."""
+    """An accent header bar followed by its description block."""
     return (
         f'<table width="100%" cellspacing="0" cellpadding="7" '
         f'style="margin-top:16px;"><tr>'
         f'<td bgcolor="{PANEL}" style="color:{ACCENT};"><b>{title}</b></td>'
-        f'</tr></table>'
-        f'<table width="100%" cellspacing="0" cellpadding="11"><tr>'
-        f'<td style="color:{TEXT};">{body}</td></tr></table>'
+        f'</tr></table>' + body
     )
 
 
-def _help_html(version: str) -> str:
-    def name(text):   # a highlighted UI-element name (no box)
-        return f'<b style="color:{ACCENT};">{text}</b>'
+def _rows(items) -> str:
+    """A borderless label : description table (no boxes around the labels)."""
+    out = ['<table width="100%" cellspacing="0" cellpadding="7" '
+           'style="margin-top:2px;">']
+    for label, desc in items:
+        out.append(
+            f'<tr><td width="33%" valign="top" style="color:{ACCENT};">'
+            f'<b>{label}</b></td>'
+            f'<td valign="top" style="color:{TEXT};">{desc}</td></tr>')
+    out.append('</table>')
+    return "".join(out)
 
-    dim = f'color:{TEXT_DIM};'
+
+def _para(text: str) -> str:
+    return (f'<table width="100%" cellspacing="0" cellpadding="7" '
+            f'style="margin-top:2px;"><tr>'
+            f'<td style="color:{TEXT};">{text}</td></tr></table>')
+
+
+def _help_html(version: str) -> str:
     sections = [
-        ("상단 패널 · 파일",
-         f'{_ico("open")} {name("열기")} &nbsp; {_ico("save")} {name("저장")} &nbsp; '
-         f'{_ico("import")} {name("가져오기")} &nbsp; {_ico("export")} {name("내보내기")}'
-         f'<div style="{dim} margin-top:6px;">'
-         f'편집 세션(.slbms)을 열고 저장하며, 기존 .bms를 가져오거나 '
-         f'<b>선택한 키 모드를 .bms로 내보냅니다.</b></div>'),
-        ("재생 패널",
-         f'{_ico("first")} {_ico("back")} {_ico("play")} {_ico("forward")} {_ico("stop")}'
-         f'<div style="{dim} margin-top:6px;">'
-         f'곡 미리보기 조작 — 처음으로 · 1초 뒤/앞 · 재생/일시정지(Space) · 정지.</div>'),
-        ("편집 / 추가",
-         f'{name("추가")}(F3) 모드에서 클릭으로 노트를 찍고 위·아래로 드래그해 롱노트를 만듭니다. '
-         f'{name("편집")}(F2) 모드에서 노트를 선택해 방향키·드래그로 옮깁니다.'),
-        ("4K / 6K",
-         f'.bms로 <b>내보낼 키 모드</b>를 선택합니다. 두 채보는 같은 곡을 공유합니다.'),
-        ("사이드바",
-         f'곡 정보 · 격자 · 확대/축소 · BPM 변화 · 음원 · 녹음 설정이 '
-         f'접이식 섹션으로 모여 있습니다.'),
+        ("파일 관리", _rows([
+            (f'{_ico("open")} 열기', "slbms 파일을 불러옵니다."),
+            (f'{_ico("save")} 저장', "slbms 파일로 저장합니다."),
+            (f'{_ico("import")} 가져오기', "bms 파일을 가져옵니다."),
+            (f'{_ico("export")} 내보내기', "선택한 키로 bms 파일을 내보냅니다."),
+        ])),
+        ("재생 패널", _rows([
+            (f'{_ico("first")} 처음으로', "재생 위치를 곡의 맨 앞으로 옮깁니다."),
+            (f'{_ico("back")} 1초 뒤로', "재생 위치를 1초 뒤로 옮깁니다."),
+            (f'{_ico("play")} 재생 / 일시정지', "미리보기를 재생하거나 멈춥니다. (Space)"),
+            (f'{_ico("forward")} 1초 앞으로', "재생 위치를 1초 앞으로 옮깁니다."),
+            (f'{_ico("stop")} 정지', "재생을 멈춥니다."),
+        ])),
+        ("편집 / 추가", _rows([
+            ("편집", "노트의 위치를 방향키·마우스로 수정할 수 있습니다."),
+            ("추가", "마우스 좌클릭(드래그)으로 노트(롱노트)를 추가·변경하고, "
+                    "우클릭으로 노트를 삭제할 수 있습니다."),
+        ])),
+        ("4K / 6K", _para(
+            "bms로 내보낼 키 모드를 선택합니다. <b>선택한 키의 레인이 강조됩니다.</b> "
+            "두 채보는 같은 곡을 공유합니다.")),
+        ("사이드 패널", _rows([
+            ("곡 정보", "제목·아티스트·장르·BPM·난이도 등 곡 정보를 입력합니다."),
+            ("이미지", "대표(STAGEFILE)·배너·배경 이미지를 지정합니다."),
+            ("격자", "노트가 놓이는 스냅 격자와 참고용 보조 격자를 설정합니다."),
+            ("확대/축소", "채보의 세로·가로 배율을 조절합니다."),
+            ("BPM 변화", "곡 중간의 BPM 변화(변속)를 추가·삭제합니다."),
+            ("음원", "곡 음원을 등록하고 재생 속도·음량·파형 표시를 조절합니다."),
+            ("실시간 채보", "재생 중 키 입력으로 노트를 녹음합니다. "
+                          "카운트인·메트로놈·입력 보정을 지원합니다."),
+        ])),
     ]
     body = "".join(_section(t, b) for t, b in sections)
     return f"""
