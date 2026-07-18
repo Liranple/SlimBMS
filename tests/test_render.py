@@ -375,17 +375,24 @@ def test_edit_move_modifiers():
         return next(iter(v.selection))[1]
 
     _app()
-    # Ctrl snaps to the 1/12 secondary grid (1/16 -> 1/12 -> 2/12, and back).
+    # Ctrl steps floor(main / secondary) primary cells (32-grid, /8 secondary ->
+    # 4 cells): 0 -> 4/32 -> 8/32, and back.
     p, v = fresh()
-    n = Note(2, Fraction(1, 16), 0)
+    v.set_grid_main(32)
+    v.set_grid_sub(8)
+    n = Note(2, Fraction(0), 0)
     p.charts[4].append(n)
     v.selection = {(4, n)}
     v._move_selection(0, 1, "sub")
-    assert sole(v).pos == Fraction(1, 12)
+    assert sole(v).pos == Fraction(4, 32)
     v._move_selection(0, 1, "sub")
-    assert sole(v).pos == Fraction(2, 12)
+    assert sole(v).pos == Fraction(8, 32)
     v._move_selection(0, -1, "sub")
-    assert sole(v).pos == Fraction(1, 12)
+    assert sole(v).pos == Fraction(4, 32)
+    # A non-dividing ratio floors: 21-cell grid, /4 secondary -> 21 // 4 = 5 cells.
+    v.set_grid_main(21)
+    v.set_grid_sub(4)
+    assert v._sub_step_cells() == 5
 
     # Shift nudges one pixel (free placement); plain steps one primary cell.
     p, v = fresh()
