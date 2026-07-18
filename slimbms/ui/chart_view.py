@@ -309,6 +309,10 @@ class ChartView(QWidget):
         cells = max(d["min_cells"], min(self._base_cells(), cells))
         if cells != self._current_cells(d["measure"]):
             self._set_measure_cells(d["measure"], cells)
+            # Reflow live from the pristine originals so the trailing notes visibly
+            # spread into the next measure as you drag (and slide back if you grow
+            # it again), instead of piling on the boundary until release.
+            self._reflow_from(d["origin"])
         self.cursor_info.emit(f"마디 {d['measure']} · {cells}칸")
 
     def _set_measure_cells(self, m: int, cells: int) -> None:
@@ -338,56 +342,71 @@ class ChartView(QWidget):
             moved = True
         return measure, pos, moved
 
-    def _reflow_collapsed(self) -> bool:
-        """Relocate every note / BGM / BPM object now stranded in a collapsed
-        measure tail into the following measure(s). Called once a measure-resize
-        drag settles, so shrinking a measure carries its trailing notes forward
-        (e.g. shrinking measure 53 to half moves the note at its 16th cell to the
-        first cell of measure 54). Returns True if anything moved."""
+    def _capture_reflow_origin(self):
+        """A snapshot of note/BGM/BPM positions to reflow *from*, so a live
+        measure-resize can recompute placements from pristine originals every
+        drag step (dragging back out un-collapses them instead of losing them)."""
+        return (
+            {km: list(c) for km, c in self.project.charts.items()},
+            set(self.project.bgm),
+            dict(self.project.bpm_changes),
+        )
+
+    def _reflow_from(self, origin) -> bool:
+        """Rebuild every note / BGM / BPM object from ``origin`` (a snapshot),
+        pushing anything now stranded in a collapsed measure tail forward into
+        the following measure(s) — carrying its offset, so shrinking a measure
+        spreads its trailing notes across the next measure (cells 22,24,26… →
+        0,2,4…), not piling them all on the first cell. Returns True if anything
+        moved."""
+        orig_charts, orig_bgm, orig_bpm = origin
         changed = False
         highest = self.project.measures - 1
 
-        for chart in self.project.charts.values():
+        for km in self.project.charts:
             out = []
-            for n in chart:
+            for n in orig_charts.get(km, ()):
                 m2, p2, moved = self._reflow_one(n.measure, n.pos)
                 if moved:
                     changed = True
                     n = Note(m2, p2, n.lane, n.length)
                 out.append(n)
                 highest = max(highest, int(n.end_absolute))
-            chart[:] = out
+            self.project.charts[km][:] = out
 
-        if self.project.bgm:
-            out_bgm = set()
-            for n in self.project.bgm:
-                m2, p2, moved = self._reflow_one(n.measure, n.pos)
-                if moved:
-                    changed = True
-                    n = Note(m2, p2, n.lane, n.length)
-                out_bgm.add(n)
-                highest = max(highest, n.measure)
-            self.project.bgm = out_bgm
+        out_bgm = set()
+        for n in orig_bgm:
+            m2, p2, moved = self._reflow_one(n.measure, n.pos)
+            if moved:
+                changed = True
+                n = Note(m2, p2, n.lane, n.length)
+            out_bgm.add(n)
+            highest = max(highest, n.measure)
+        self.project.bgm = out_bgm
 
-        if self.project.bpm_changes:
-            out_bpm = {}
-            for abspos, val in self.project.bpm_changes.items():
-                m = int(abspos)
-                m2, p2, moved = self._reflow_one(m, abspos - m)
-                if moved:
-                    changed = True
-                out_bpm[m2 + p2] = val
-                highest = max(highest, m2)
-            self.project.bpm_changes = out_bpm
+        out_bpm = {}
+        for abspos, val in orig_bpm.items():
+            m = int(abspos)
+            m2, p2, moved = self._reflow_one(m, abspos - m)
+            if moved:
+                changed = True
+            out_bpm[m2 + p2] = val
+            highest = max(highest, m2)
+        self.project.bpm_changes = out_bpm
 
-        if changed:
-            if highest + 1 > self.project.measures:
-                self.project.measures = highest + 1
-            self._rebuild_caches()
-            self._apply_size()
-            self.changed.emit()
-            self.update()
+        if highest + 1 > self.project.measures:
+            self.project.measures = highest + 1
+        self._rebuild_caches()
+        self._apply_size()
+        self.changed.emit()
+        self.update()
         return changed
+
+    def _reflow_collapsed(self) -> bool:
+        """Reflow the current notes in place (relocate any stranded in a collapsed
+        measure tail into the following measures). Convenience wrapper over
+        :meth:`_reflow_from` using the current state as the origin."""
+        return self._reflow_from(self._capture_reflow_origin())
 
     def pos_at(self, y: float, snap: bool):
         """Return (measure, Fraction pos) for a pixel y. When ``snap`` the
@@ -1195,7 +1214,8 @@ class ChartView(QWidget):
             if 0 <= m < self.project.measures:
                 self._scale_drag = {"measure": m, "y0": y, "active": False,
                                     "start_cells": self._current_cells(m),
-                                    "min_cells": 1}
+                                    "min_cells": 1,
+                                    "origin": self._capture_reflow_origin()}
             else:
                 self.seek_requested.emit(self.absolute_at(y))
             return
@@ -1274,9 +1294,9 @@ class ChartView(QWidget):
             if not d["active"]:            # no drag -> it was a plain seek click
                 self.seek_requested.emit(self.absolute_at(d["y0"]))
             else:
-                # Carry any notes now stranded in the collapsed tail into the
-                # following measure(s), committed once the drag settles.
-                self._reflow_collapsed()
+                # Final commit from the pristine originals at the settled scale
+                # (notes already reflowed live during the drag).
+                self._reflow_from(d["origin"])
             self.update()
             return
         if self._add_drag is not None:      # finished dragging out a long note

@@ -118,6 +118,33 @@ def test_measure_scale_reflow_offsets_and_cascades():
     assert n.measure == 4 and n.pos == Fraction(4, 32)  # 20 - 16 = cell 4
 
 
+def test_measure_shrink_spreads_notes_and_restores_on_grow():
+    """Shrinking a measure spreads every trailing note across the next measure
+    keeping their spacing (not piling them on cell 0), and reflowing from the
+    pristine originals means growing it again slides them back."""
+    _app()
+    p = Project(bpm=120, measures=8)
+    for c in (22, 24, 26, 28, 30):
+        p.charts[4].append(Note(3, Fraction(c, 32), 0))
+    p.charts[4].append(Note(3, Fraction(20, 32), 0, Fraction(12, 32)))  # long note
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v.refresh()
+    origin = v._capture_reflow_origin()
+
+    # Shrink measure 3 to 20 cells: cells 20..31 collapse.
+    v._set_measure_cells(3, 20)
+    v._reflow_from(origin)
+    cells = sorted((n.measure, int(n.pos * 32), int(n.length * 32)) for n in p.charts[4])
+    assert cells == [(4, 0, 12), (4, 2, 0), (4, 4, 0), (4, 6, 0), (4, 8, 0), (4, 10, 0)]
+
+    # Grow back to full: every note returns to its original spot (long note too).
+    v._set_measure_cells(3, 32)
+    v._reflow_from(origin)
+    back = sorted((n.measure, int(n.pos * 32), int(n.length * 32)) for n in p.charts[4])
+    assert back == [(3, 20, 12), (3, 22, 0), (3, 24, 0), (3, 26, 0), (3, 28, 0), (3, 30, 0)]
+
+
 def test_move_long_note_keeps_visible_length_across_shortened_measure():
     """Dragging a long note in edit mode moves it rigidly in display space, so
     its visible length is unchanged even when the move carries it across a
