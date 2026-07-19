@@ -1976,6 +1976,11 @@ class ChartView(QWidget):
                 self.project.measure_scales.pop(target, None)
         if new_sel:
             self.selection = new_sel
+            # Changing measure_scales resizes the geometry: rebuild the per-measure
+            # display prefix (and note caches) so the pasted measures render at
+            # their new lengths instead of glitching at the stale ones.
+            self._rebuild_caches()
+            self._apply_size()
             self.changed.emit()
             self.update()
 
