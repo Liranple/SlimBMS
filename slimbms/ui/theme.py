@@ -110,6 +110,13 @@ QPushButton:checked {{
     border-color: {ACCENT};
     color: {ACCENT};
 }}
+/* Coloured action buttons for the marker lists (add / edit workflow). */
+QPushButton#Confirm {{ background: {ACCENT}; color: {ACCENT_INK}; border-color: {ACCENT}; }}
+QPushButton#Confirm:hover {{ background: #8fdcff; border-color: #8fdcff; }}
+QPushButton#Cancel {{ background: {BORDER_STRONG}; color: {TEXT}; border-color: {BORDER_STRONG}; }}
+QPushButton#Cancel:hover {{ border-color: {ACCENT}; }}
+QPushButton#Danger {{ background: {DANGER}; color: #2a0d12; border-color: {DANGER}; }}
+QPushButton#Danger:hover {{ background: #ff8494; border-color: #ff8494; }}
 
 /* Inputs ----------------------------------------------------------------- */
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{

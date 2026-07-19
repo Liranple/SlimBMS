@@ -71,6 +71,60 @@ def _settings() -> QSettings:
     return QSettings(_SETTINGS_ORG, _SETTINGS_APP)
 
 
+class _MarkerEdit:
+    """Add / edit workflow shared by the BPM, 정지 and 노트 속도 marker lists.
+
+    Normal mode: [추가] adds from the inputs (overwriting a marker at the same
+    position). [수정] enters edit mode for the selected list row — the buttons
+    become [완료]/[취소] (colour-coded) — and [완료] replaces that row (delete +
+    add) with the current inputs, so changing a marker's position moves it
+    instead of leaving a duplicate."""
+
+    def __init__(self, win, add_btn, edit_btn, del_btn, list_w,
+                 add_fn, load_fn, commit_fn):
+        self.win = win
+        self.add_btn, self.edit_btn, self.del_btn = add_btn, edit_btn, del_btn
+        self.list = list_w
+        self.add_fn, self.load_fn, self.commit_fn = add_fn, load_fn, commit_fn
+        self.target = None
+        add_btn.clicked.connect(self._primary)
+        edit_btn.clicked.connect(self._secondary)
+        list_w.itemDoubleClicked.connect(
+            lambda it: self.load_fn(it.data(Qt.UserRole)))
+
+    @staticmethod
+    def _restyle(btn, name):
+        btn.setObjectName(name)
+        btn.style().unpolish(btn)
+        btn.style().polish(btn)
+
+    def _primary(self) -> None:        # 추가 / 완료
+        if self.target is None:
+            self.add_fn()
+        elif self.commit_fn(self.target):
+            self._exit()
+
+    def _secondary(self) -> None:      # 수정 / 취소
+        if self.target is not None:    # 취소
+            self._exit()
+            return
+        item = self.list.currentItem()
+        if item is None:
+            self.win.statusBar().showMessage("먼저 리스트에서 항목을 선택하세요.", 2500)
+            return
+        self.target = item.data(Qt.UserRole)
+        self.load_fn(self.target)
+        self.add_btn.setText("완료");  self._restyle(self.add_btn, "Confirm")
+        self.edit_btn.setText("취소"); self._restyle(self.edit_btn, "Cancel")
+        self.del_btn.setEnabled(False)
+
+    def _exit(self) -> None:
+        self.target = None
+        self.add_btn.setText("추가");  self._restyle(self.add_btn, "")
+        self.edit_btn.setText("수정"); self._restyle(self.edit_btn, "")
+        self.del_btn.setEnabled(True)
+
+
 
 
 class MainWindow(QMainWindow):
@@ -265,17 +319,12 @@ class MainWindow(QMainWindow):
         brow.addWidget(self._labeled("칸", self.bpm_cell))
         brow.addWidget(self._labeled("BPM", self.bpm_value))
         tempo.add_layout(brow)
-        add_bpm = QPushButton("추가 / 변경")
-        add_bpm.clicked.connect(self._add_bpm_change)
-        tempo.add_widget(add_bpm)
         self.bpm_list = QListWidget()
         self.bpm_list.setItemDelegate(MarkerListDelegate(self.bpm_list))
         self.bpm_list.setMaximumHeight(84)
-        self.bpm_list.itemDoubleClicked.connect(self._edit_bpm_change)
-        tempo.add_widget(self.bpm_list)
-        del_bpm = QPushButton("선택 삭제")
-        del_bpm.clicked.connect(self._remove_bpm_change)
-        tempo.add_widget(del_bpm)
+        self._bpm_edit = self._marker_controls(
+            tempo, self.bpm_list, self._add_bpm_change, self._load_bpm,
+            self._commit_bpm, self._remove_bpm_change)
         outer.addWidget(tempo)
 
         # -- STOP (freeze) gimmick ------------------------------------------ #
@@ -297,17 +346,12 @@ class MainWindow(QMainWindow):
         srow.addWidget(self._labeled("칸", self.stop_cell))
         srow.addWidget(self._labeled("박자", self.stop_beats))
         stopsec.add_layout(srow)
-        add_stop = QPushButton("추가 / 변경")
-        add_stop.clicked.connect(self._add_stop)
-        stopsec.add_widget(add_stop)
         self.stop_list = QListWidget()
         self.stop_list.setItemDelegate(MarkerListDelegate(self.stop_list))
         self.stop_list.setMaximumHeight(84)
-        self.stop_list.itemDoubleClicked.connect(self._edit_stop)
-        stopsec.add_widget(self.stop_list)
-        del_stop = QPushButton("선택 삭제")
-        del_stop.clicked.connect(self._remove_stop)
-        stopsec.add_widget(del_stop)
+        self._stop_edit = self._marker_controls(
+            stopsec, self.stop_list, self._add_stop, self._load_stop,
+            self._commit_stop, self._remove_stop)
         outer.addWidget(stopsec)
 
         # -- 노트 속도 (scroll velocity) ------------------------------------ #
@@ -353,18 +397,12 @@ class MainWindow(QMainWindow):
         for col, stretch in ((0, 0), (1, 1), (2, 1), (3, 1)):
             sgrid.setColumnStretch(col, stretch)
         scrollsec.add_layout(sgrid)
-
-        add_scroll = QPushButton("추가 / 변경")
-        add_scroll.clicked.connect(self._add_scroll)
-        scrollsec.add_widget(add_scroll)
         self.scroll_list = QListWidget()
         self.scroll_list.setItemDelegate(MarkerListDelegate(self.scroll_list))
         self.scroll_list.setMaximumHeight(96)
-        self.scroll_list.itemDoubleClicked.connect(self._edit_scroll)
-        scrollsec.add_widget(self.scroll_list)
-        del_scroll = QPushButton("선택 삭제")
-        del_scroll.clicked.connect(self._remove_scroll)
-        scrollsec.add_widget(del_scroll)
+        self._scroll_edit = self._marker_controls(
+            scrollsec, self.scroll_list, self._add_scroll, self._load_scroll,
+            self._commit_scroll, self._remove_scroll)
         outer.addWidget(scrollsec)
 
         # -- Audio ---------------------------------------------------------- #
@@ -461,6 +499,26 @@ class MainWindow(QMainWindow):
         col.addWidget(cap)
         col.addWidget(widget)
         return box
+
+    def _marker_controls(self, section, list_w, add_fn, load_fn, commit_fn,
+                         remove_fn):
+        """Build the shared [추가][수정] button row, the list, and a red
+        [선택 삭제] button for a marker section, and wire an :class:`_MarkerEdit`
+        controller (returned — keep a reference)."""
+        add_btn = QPushButton("추가")
+        edit_btn = QPushButton("수정")
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(add_btn)
+        row.addWidget(edit_btn)
+        section.add_layout(row)
+        section.add_widget(list_w)
+        del_btn = QPushButton("선택 삭제")
+        del_btn.setObjectName("Danger")
+        del_btn.clicked.connect(remove_fn)
+        section.add_widget(del_btn)
+        return _MarkerEdit(self, add_btn, edit_btn, del_btn, list_w,
+                           add_fn, load_fn, commit_fn)
 
     def _image_row(self, field: str, caption: str) -> QWidget:
         """One horizontal row for a BMS image header (STAGEFILE / BANNER /
@@ -985,22 +1043,28 @@ class MainWindow(QMainWindow):
         for pos, bpm in sorted(self.project.bpm_changes.items()):
             self._add_marker_row(self.bpm_list, self._loc(pos), f"♩ {bpm:g}", pos)
 
-    def _edit_bpm_change(self, item) -> None:
-        """Double-click a list entry: load its (마디/칸/BPM) into the inputs and
-        scroll the canvas so that change sits at the vertical centre."""
-        pos = item.data(Qt.UserRole)
+    def _load_bpm(self, pos) -> None:
+        """Load a BPM marker's (마디/칸/BPM) into the inputs and centre the
+        canvas on it (used by double-click and by entering edit mode)."""
         if pos not in self.project.bpm_changes:
             return
-        grid = max(1, self.sb_g1.value())
-        measure = int(pos)
-        cell = int(round(float(pos - measure) * grid))
-        self.bpm_measure.setValue(measure)
-        self.bpm_cell.setValue(cell)
+        self._set_pos_inputs(self.bpm_measure, self.bpm_cell, pos)
         self.bpm_value.setValue(self.project.bpm_changes[pos])
-        # Centre the canvas on the change's position.
-        vbar = self.scroll.verticalScrollBar()
-        vp_h = self.scroll.viewport().height()
-        vbar.setValue(int(self.view.y_for(float(pos)) - vp_h / 2))
+        self._center_canvas(pos)
+
+    def _commit_bpm(self, target) -> bool:
+        """Replace the edited BPM marker: remove the old one, add the new one
+        from the inputs (so changing its position moves it)."""
+        from fractions import Fraction
+        grid = max(1, self.sb_g1.value())
+        cell = min(self.bpm_cell.value(), grid)
+        pos = Fraction(self.bpm_measure.value()) + Fraction(cell, grid)
+        self.project.bpm_changes.pop(target, None)
+        self.project.bpm_changes[pos] = float(self.bpm_value.value())
+        self.view.changed.emit()
+        self.view.update()
+        self._refresh_bpm_list()
+        return True
 
     def _add_stop(self) -> None:
         from fractions import Fraction
@@ -1032,27 +1096,44 @@ class MainWindow(QMainWindow):
             self._add_marker_row(self.stop_list, self._loc(pos),
                                  f"■ {float(beats):g}박", pos)
 
-    def _edit_stop(self, item) -> None:
-        pos = item.data(Qt.UserRole)
+    def _load_stop(self, pos) -> None:
         if pos not in self.project.stops:
             return
-        grid = max(1, self.sb_g1.value())
-        measure = int(pos)
-        cell = int(round(float(pos - measure) * grid))
-        self.stop_measure.setValue(measure)
-        self.stop_cell.setValue(cell)
+        self._set_pos_inputs(self.stop_measure, self.stop_cell, pos)
         self.stop_beats.setValue(float(self.project.stops[pos]))
-        vbar = self.scroll.verticalScrollBar()
-        vp_h = self.scroll.viewport().height()
-        vbar.setValue(int(self.view.y_for(float(pos)) - vp_h / 2))
+        self._center_canvas(pos)
+
+    def _commit_stop(self, target) -> bool:
+        from fractions import Fraction
+        pos = self._marker_pos(self.stop_measure, self.stop_cell)
+        beats = Fraction(self.stop_beats.value()).limit_denominator(192)
+        if beats <= 0:
+            return False
+        self.project.stops.pop(target, None)
+        self.project.stops[pos] = beats
+        self.view.changed.emit()
+        self.view.update()
+        self._refresh_stop_list()
+        return True
 
     # -- 노트 속도 (시작 → 끝 구간 변속) ---------------------------------- #
 
-    def _scroll_pos(self, measure_box, cell_box):
+    def _marker_pos(self, measure_box, cell_box):
         from fractions import Fraction
         grid = max(1, self.sb_g1.value())
         cell = min(cell_box.value(), grid)
         return Fraction(measure_box.value()) + Fraction(cell, grid)
+
+    def _set_pos_inputs(self, measure_box, cell_box, pos) -> None:
+        grid = max(1, self.sb_g1.value())
+        m = int(pos)
+        measure_box.setValue(m)
+        cell_box.setValue(int(round(float(pos - m) * grid)))
+
+    def _center_canvas(self, pos) -> None:
+        vbar = self.scroll.verticalScrollBar()
+        vp_h = self.scroll.viewport().height()
+        vbar.setValue(int(self.view.y_for(float(pos)) - vp_h / 2))
 
     def _loc(self, pos) -> str:
         """A position label shared by every marker list: '마디 18 · 칸 12'
@@ -1070,30 +1151,55 @@ class MainWindow(QMainWindow):
         item.setData(MARKER_RIGHT_ROLE, right)
         item.setData(Qt.UserRole, userdata)
 
-    def _add_scroll(self) -> None:
+    def _scroll_from_inputs(self):
+        """(start_pos, end_pos, start_val, end_val) from the inputs, or None if
+        the range is invalid (end not after start)."""
         from fractions import Fraction
-        # A start → end range = two markers (start value, end value).
-        sp = self._scroll_pos(self.scroll_measure, self.scroll_cell)
-        ep = self._scroll_pos(self.scroll_measure2, self.scroll_cell2)
+        sp = self._marker_pos(self.scroll_measure, self.scroll_cell)
+        ep = self._marker_pos(self.scroll_measure2, self.scroll_cell2)
         if ep <= sp:
             self.statusBar().showMessage("끝 위치가 시작보다 뒤여야 합니다.", 3000)
+            return None
+        return (sp, ep,
+                Fraction(self.scroll_value.value()).limit_denominator(1000),
+                Fraction(self.scroll_value2.value()).limit_denominator(1000))
+
+    def _add_scroll(self) -> None:
+        r = self._scroll_from_inputs()
+        if r is None:
             return
-        self.project.speeds[sp] = Fraction(self.scroll_value.value()).limit_denominator(1000)
-        self.project.speeds[ep] = Fraction(self.scroll_value2.value()).limit_denominator(1000)
+        sp, ep, sv, ev = r
+        self.project.speeds[sp] = sv
+        self.project.speeds[ep] = ev
         self.view.changed.emit()
         self.view.update()
         self._refresh_scroll_list()
+
+    def _remove_scroll_data(self, data) -> None:
+        if data[0] == "speed":                  # ("speed", start_pos, end_pos)
+            for pos in data[1:]:
+                self.project.speeds.pop(pos, None)
+        else:                                    # ("scroll", pos)
+            self.project.scrolls.pop(data[1], None)
+
+    def _commit_scroll(self, target) -> bool:
+        r = self._scroll_from_inputs()
+        if r is None:
+            return False
+        sp, ep, sv, ev = r
+        self._remove_scroll_data(target)         # drop the edited entry first
+        self.project.speeds[sp] = sv
+        self.project.speeds[ep] = ev
+        self.view.changed.emit()
+        self.view.update()
+        self._refresh_scroll_list()
+        return True
 
     def _remove_scroll(self) -> None:
         item = self.scroll_list.currentItem()
         if item is None:
             return
-        data = item.data(Qt.UserRole)
-        if data[0] == "speed":                 # ("speed", start_pos, end_pos)
-            for pos in data[1:]:
-                self.project.speeds.pop(pos, None)
-        else:                                  # ("scroll", pos)
-            self.project.scrolls.pop(data[1], None)
+        self._remove_scroll_data(item.data(Qt.UserRole))
         self.view.changed.emit()
         self.view.update()
         self._refresh_scroll_list()
@@ -1110,16 +1216,11 @@ class MainWindow(QMainWindow):
         for _key, left, right, data in sorted(rows, key=lambda r: r[0]):
             self._add_marker_row(self.scroll_list, left, right, data)
 
-    def _edit_scroll(self, item) -> None:
-        grid = max(1, self.sb_g1.value())
-
+    def _load_scroll(self, data) -> None:
         def set_point(measure_box, cell_box, value_box, pos, val):
-            m = int(pos)
-            measure_box.setValue(m)
-            cell_box.setValue(int(round(float(pos - m) * grid)))
+            self._set_pos_inputs(measure_box, cell_box, pos)
             value_box.setValue(float(val))
 
-        data = item.data(Qt.UserRole)
         if data[0] == "speed":
             _, sp, ep = data
             if sp not in self.project.speeds:
@@ -1135,10 +1236,11 @@ class MainWindow(QMainWindow):
                 return
             set_point(self.scroll_measure, self.scroll_cell, self.scroll_value,
                       pos, self.project.scrolls[pos])
+            # mirror the value into the end row so committing keeps it sane
+            self._set_pos_inputs(self.scroll_measure2, self.scroll_cell2, pos)
+            self.scroll_value2.setValue(float(self.project.scrolls[pos]))
             focus = pos
-        vbar = self.scroll.verticalScrollBar()
-        vp_h = self.scroll.viewport().height()
-        vbar.setValue(int(self.view.y_for(float(focus)) - vp_h / 2))
+        self._center_canvas(focus)
 
     def _set_mode(self, mode: str) -> None:
         self.view.set_mode(mode)
