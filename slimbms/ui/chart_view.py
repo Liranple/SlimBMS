@@ -104,6 +104,7 @@ class ChartView(QWidget):
     seek_requested = Signal(float)  # set playback to this absolute chart position
     overlap_warning = Signal()      # a move left the selection overlapping another note
     markers_changed = Signal()      # BPM/정지/변속 marker data changed behind the sidebar
+    focus_requested = Signal(float, float)  # scroll this absolute range into view
                                     # lists' backs (undo/redo, measure reflow) — refresh them
 
     def __init__(self, project: Project, parent=None):
@@ -1990,6 +1991,12 @@ class ChartView(QWidget):
             self._apply_size()
             self.changed.emit()
             self.update()
+            # Pasting can change the geometry underneath the viewport (the block
+            # may land past the end, and copied measure lengths resize measures),
+            # which otherwise leaves the scroll position pointing somewhere else
+            # entirely. Follow the pasted block instead.
+            self.focus_requested.emit(
+                float(start), float(start + span - 1) + float(self.project.measure_length(start + span - 1)))
 
 
 class LaneHeader(QWidget):

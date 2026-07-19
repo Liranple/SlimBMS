@@ -194,6 +194,7 @@ class MainWindow(QMainWindow):
         self.view.seek_requested.connect(self._seek_to_chart)
         self.view.overlap_warning.connect(self._warn_overlap)
         self.view.markers_changed.connect(self._refresh_marker_lists)
+        self.view.focus_requested.connect(self._focus_chart_range)
         self.scroll.setWidget(self.view)
         self.scroll.horizontalScrollBar().valueChanged.connect(self.header.set_x_offset)
         self.header.bgm_width_changed.connect(self._set_bgm_width)
@@ -693,31 +694,36 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tb.addWidget(spacer)
-        self.expand_all_action = QAction("모두 펴기", self)
+        self.expand_all_action = QAction(make_icon("expand_all"), "모두 펴기", self)
         self.expand_all_action.triggered.connect(lambda: self._set_all_sections(True))
         tb.addAction(self.expand_all_action)
-        self.collapse_all_action = QAction("모두 접기", self)
+        self.collapse_all_action = QAction(make_icon("collapse_all"), "모두 접기", self)
         self.collapse_all_action.triggered.connect(lambda: self._set_all_sections(False))
         tb.addAction(self.collapse_all_action)
 
-        # Mode / key-mode / section buttons keep their text labels (no icon).
+        # Mode / key-mode buttons keep their text labels (no icon).
         for act in (self.add_mode_action, self.edit_mode_action,
-                    *self._km_actions.values(),
-                    self.expand_all_action, self.collapse_all_action):
+                    *self._km_actions.values()):
             btn = tb.widgetForAction(act)
             if btn is not None:
                 btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        # Give the collapse/expand-all pair a clean pill look (styled in theme).
+        # The collapse / expand-all pair reads as part of the icon toolbar:
+        # same monochrome glyphs and hover treatment as the transport buttons.
+        # Their meaning comes from a real tooltip (below).
         for act in (self.expand_all_action, self.collapse_all_action):
             btn = tb.widgetForAction(act)
             if btn is not None:
                 btn.setObjectName("SectionToggle")
+                btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
 
         # No hover tooltips on any toolbar button: an empty tip just falls back
-        # to the button text, so swallow the ToolTip event on each button.
+        # to the button text, so swallow the ToolTip event on each button. The
+        # two icon-only section buttons are the exception — they need the tip to
+        # be readable at all.
+        keep_tips = {self.expand_all_action, self.collapse_all_action}
         for act in tb.actions():
             btn = tb.widgetForAction(act)
-            if btn is not None:
+            if btn is not None and act not in keep_tips:
                 btn.installEventFilter(self)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
@@ -984,6 +990,32 @@ class MainWindow(QMainWindow):
             vbar.setValue(vbar.maximum())          # empty chart -> song start
         else:
             vbar.setValue(int(self.view.y_for(last) - vp_h / 2))
+
+    def _focus_chart_range(self, lo: float, hi: float) -> None:
+        """Scroll the absolute range ``[lo, hi]`` into view (used after a paste).
+        A range that's already comfortably visible is left alone, so pasting
+        inside the current view doesn't jerk the chart around."""
+        # Run after the pending relayout: the paste resizes the canvas, and the
+        # scroll bar's range only catches up once the scroll area has resized.
+        QTimer.singleShot(0, lambda: self._do_focus_chart_range(lo, hi))
+
+    def _do_focus_chart_range(self, lo: float, hi: float) -> None:
+        vbar = self.scroll.verticalScrollBar()
+        vp_h = self.scroll.viewport().height()
+        # The chart runs bottom-up, so the later position is the higher one.
+        y_top = self.view.y_for(hi)
+        y_bot = self.view.y_for(lo)
+        margin = min(80, vp_h // 6)
+        top, bottom = vbar.value(), vbar.value() + vp_h
+        if (y_bot - y_top) + 2 * margin >= vp_h:
+            target = (y_top + y_bot) / 2 - vp_h / 2      # taller than the view: centre it
+        elif y_top - margin < top:
+            target = y_top - margin
+        elif y_bot + margin > bottom:
+            target = y_bot + margin - vp_h
+        else:
+            return                                        # already visible
+        vbar.setValue(int(round(target)))
 
     def _resize_measures(self, need: int) -> None:
         # Preserve the chart position at the viewport centre across the resize.

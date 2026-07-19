@@ -66,6 +66,18 @@ def _draw(name: str, p: QPainter, s: float) -> None:
         p.setBrush(QColor("#212129"))
         p.drawRect(QRectF(0.34 * s, 0.18 * s, 0.22 * s, 0.16 * s))   # shutter
         p.drawRect(QRectF(0.30 * s, 0.52 * s, 0.40 * s, 0.24 * s))   # label
+    elif name in ("expand_all", "collapse_all"):
+        # Two chevrons around a centre rule: pointing apart = expand every
+        # sidebar section, pointing inward = collapse them.
+        p.setPen(QPen(_INK, s * 0.07, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(0.24 * s, 0.50 * s), QPointF(0.76 * s, 0.50 * s))
+        p.setPen(Qt.NoPen)
+        if name == "expand_all":
+            p.drawPolygon(_tri([(0.34, 0.34), (0.66, 0.34), (0.50, 0.14)], s))
+            p.drawPolygon(_tri([(0.34, 0.66), (0.66, 0.66), (0.50, 0.86)], s))
+        else:
+            p.drawPolygon(_tri([(0.34, 0.16), (0.66, 0.16), (0.50, 0.36)], s))
+            p.drawPolygon(_tri([(0.34, 0.84), (0.66, 0.84), (0.50, 0.64)], s))
     elif name in ("import", "export"):
         # A tray with an arrow: down into it (import) or up out of it (export).
         p.setPen(QPen(_INK, s * 0.08, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))

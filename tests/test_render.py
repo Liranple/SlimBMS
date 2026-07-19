@@ -226,6 +226,31 @@ def test_paste_past_end_places_notes():
     assert max(n.measure for _m, n in v.selection) >= 16
 
 
+def test_paste_requests_focus_on_pasted_block():
+    """Pasting asks the window to scroll to the pasted block, so shortened
+    measures resizing the canvas can't leave the view somewhere else."""
+    _app()
+    p = Project(bpm=120, measures=16)
+    for m in (3, 4):
+        p.measure_scales[m] = Fraction(24, 32)
+        p.charts[4].append(Note(m, Fraction(0), 0))
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v.refresh()
+    v.selection = {(4, n) for n in list(p.charts[4])}
+    v._copy_selection(cut=False)
+
+    seen = []
+    v.focus_requested.connect(lambda lo, hi: seen.append((lo, hi)))
+    v._paste_anchor = 8.0
+    v._paste()
+    assert len(seen) == 1
+    lo, hi = seen[0]
+    # Covers the whole pasted block, ending at the (shortened) last measure's end.
+    assert lo == 8.0
+    assert abs(hi - (9 + 24 / 32)) < 1e-9
+
+
 def test_reflow_moves_long_note_tail():
     """Shrinking a measure carries a long note's tail into the next measure too
     (not just the head): a tail in the collapsed region relocates, and a note
