@@ -363,7 +363,9 @@ class MainWindow(QMainWindow):
         # "시작"/"끝" tags and the whole end row only appear for 선형 변속, so a
         # 순간 변속 shows just captions + one value row (no wasted vertical space).
         def _cap(text):
-            lab = self._hint(text); lab.setAlignment(Qt.AlignCenter); return lab
+            # Left-aligned like every other section's captions (the spin boxes
+            # below are left-aligned too, so a centred caption looked out of place).
+            lab = self._hint(text); lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter); return lab
         sgrid = QGridLayout()
         sgrid.setContentsMargins(0, 0, 0, 0)
         sgrid.setHorizontalSpacing(8); sgrid.setVerticalSpacing(4)
