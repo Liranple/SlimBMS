@@ -65,7 +65,13 @@ class NoWheelComboBox(QComboBox):
 class CollapsibleSection(QWidget):
     """A titled section whose body expands/collapses with a smooth animation
     when its header is clicked. Add content with :meth:`add_widget` /
-    :meth:`add_layout`."""
+    :meth:`add_layout`.
+
+    The body lives inside a fixed-height *host* that is top-aligned within an
+    animated *clip*. Collapsing shrinks the clip's ``maximumHeight`` while the
+    host keeps its full natural height and is simply clipped from the bottom — a
+    curtain, not a squeeze. That's what stops the frame-by-frame trembling: the
+    body's widgets never get re-laid-out mid-animation."""
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
@@ -86,19 +92,25 @@ class CollapsibleSection(QWidget):
         self.header.clicked.connect(self._toggle)
         outer.addWidget(self.header)
 
+        # `content` is the animated clip; `_host` holds the real body at its
+        # full natural height and is top-aligned so the clip reveals/hides it
+        # like a curtain instead of squashing it.
         self.content = QWidget()
         self.content.setObjectName("SectionContent")
-        # Let the body shrink all the way to 0 during the collapse animation so
-        # it slides shut smoothly instead of snapping when a child's minimum
-        # height would otherwise resist the last few pixels.
         self.content.setMinimumHeight(0)
-        self.body = QVBoxLayout(self.content)
+        clip = QVBoxLayout(self.content)
+        clip.setContentsMargins(0, 0, 0, 0)
+        clip.setSpacing(0)
+        self._host = QWidget()
+        self._host.setObjectName("SectionContent")
+        self.body = QVBoxLayout(self._host)
         self.body.setContentsMargins(12, 8, 8, 12)
         self.body.setSpacing(8)
+        clip.addWidget(self._host, 0, Qt.AlignTop)
         outer.addWidget(self.content)
 
         self._anim = QPropertyAnimation(self.content, b"maximumHeight", self)
-        self._anim.setDuration(210)
+        self._anim.setDuration(200)
         self._anim.setEasingCurve(QEasingCurve.OutCubic)
         self._anim.finished.connect(self._on_anim_done)
 
@@ -112,30 +124,55 @@ class CollapsibleSection(QWidget):
 
     # -- expand / collapse -------------------------------------------------- #
 
-    def _toggle(self) -> None:
-        # Collapse/expand INSTANTLY (a single layout pass), not via a per-frame
-        # maximumHeight animation. The animation made the whole sidebar re-flow
-        # every frame — the section (and its neighbours) visibly juddered. An
-        # instant toggle is one clean reflow with no trembling.
-        self.set_expanded(self.header.isChecked())
+    def _body_height(self) -> int:
+        return self._host.sizeHint().height()
 
-    def _on_anim_done(self) -> None:  # retained for the (now unused) animation
+    def _toggle(self) -> None:
+        expanded = self.header.isChecked()
+        if expanded == self._expanded:
+            return
+        self._expanded = expanded
+        self.header.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self._anim.stop()
+        # Pin the host to its natural height so the clip animation can't squash
+        # it; start from the current height so mid-animation reversals are smooth.
+        full = self._body_height()
+        self._host.setFixedHeight(full)
+        start = self.content.maximumHeight()
+        if start >= _UNLIMITED:
+            start = full
+        self.content.setMaximumHeight(start)
+        self._anim.setStartValue(start)
+        self._anim.setEndValue(full if expanded else 0)
+        self._anim.start()
+
+    def _on_anim_done(self) -> None:
         if self._expanded:
+            # Uncap so the section can still grow if its body content changes;
+            # release the fixed height so it tracks the body again.
+            self._host.setMinimumHeight(0)
+            self._host.setMaximumHeight(_UNLIMITED)
             self.content.setMaximumHeight(_UNLIMITED)
 
     def is_expanded(self) -> bool:
         return self._expanded
 
     def set_expanded(self, expanded: bool) -> None:
-        """Set the open/closed state instantly (no animation) — used when
-        restoring a saved layout."""
+        """Set the open/closed state instantly (no animation) — used for restore
+        and the 'collapse/expand all' controls."""
         if bool(expanded) == self._expanded:
             return
         self._expanded = bool(expanded)
         self.header.setChecked(self._expanded)
         self.header.setArrowType(Qt.DownArrow if self._expanded else Qt.RightArrow)
         self._anim.stop()
-        self.content.setMaximumHeight(_UNLIMITED if self._expanded else 0)
+        if self._expanded:
+            self._host.setMinimumHeight(0)
+            self._host.setMaximumHeight(_UNLIMITED)
+            self.content.setMaximumHeight(_UNLIMITED)
+        else:
+            self._host.setFixedHeight(self._body_height())
+            self.content.setMaximumHeight(0)
 
 
 class DragValue(QWidget):
