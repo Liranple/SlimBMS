@@ -148,6 +148,11 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self._sync_sidebar()
         self._apply_grids()   # sync the view's grids to the sidebar defaults
+        # Apply the sidebar's default zoom / volume to the view & audio (the
+        # widgets don't emit on construction, so push their defaults through).
+        self._apply_zoom_v(self.zoom_v.value())
+        self._apply_zoom_h(self.zoom_h.value())
+        self.audio.set_volume(self.volume.value())
         # Start scrolled to the bottom (song start).
         self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
 
@@ -159,6 +164,18 @@ class MainWindow(QMainWindow):
         self._sidebar_panel = panel
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+
+        # -- Collapse / expand every section at once ----------------------- #
+        toggles = QHBoxLayout()
+        toggles.setContentsMargins(8, 6, 8, 6)
+        toggles.setSpacing(8)
+        expand_all = QPushButton("모두 펴기")
+        expand_all.clicked.connect(lambda: self._set_all_sections(True))
+        collapse_all = QPushButton("모두 접기")
+        collapse_all.clicked.connect(lambda: self._set_all_sections(False))
+        toggles.addWidget(expand_all)
+        toggles.addWidget(collapse_all)
+        outer.addLayout(toggles)
 
         # -- Song info ------------------------------------------------------ #
         info = CollapsibleSection("곡 정보")
@@ -211,8 +228,8 @@ class MainWindow(QMainWindow):
         # Two plain number boxes: the LEFT is the snap basis (cells per measure
         # that notes land on); the RIGHT is a lighter reference grid.
         grid = CollapsibleSection("격자")
-        self.sb_g1 = self._grid_box(16, self._apply_grids)   # snap basis
-        self.sb_g2 = self._grid_box(4, self._apply_grids)    # reference
+        self.sb_g1 = self._grid_box(32, self._apply_grids)   # snap basis
+        self.sb_g2 = self._grid_box(8, self._apply_grids)    # reference
         grow = QHBoxLayout()
         grow.setSpacing(12)
         grow.addWidget(self._labeled("스냅 격자", self.sb_g1))
@@ -229,10 +246,10 @@ class MainWindow(QMainWindow):
 
         # -- Zoom ----------------------------------------------------------- #
         zoom = CollapsibleSection("확대/축소")
-        self.zoom_v = DragValue("↕", 0.25, 4.0, 0.25, 1.0)
+        self.zoom_v = DragValue("↕", 0.25, 4.0, 0.25, 2.0)
         self.zoom_v.changed.connect(self._apply_zoom_v)
         zoom.add_widget(self.zoom_v)
-        self.zoom_h = DragValue("↔", 0.5, 2.75, 0.25, 1.0)
+        self.zoom_h = DragValue("↔", 0.5, 2.75, 0.25, 1.25)
         self.zoom_h.changed.connect(self._apply_zoom_h)
         zoom.add_widget(self.zoom_h)
         zoom.add_widget(self._hint("Ctrl+Wheel : ↕    Alt+Wheel : ↔"))
@@ -339,12 +356,12 @@ class MainWindow(QMainWindow):
         audio = CollapsibleSection("음원")
         audio.add_widget(self._hint("재생 속도"))
         # 0.1 steps so every reachable speed lands on the pre-built cache grid
-        # (see PRECOMPUTE_SPEEDS); the common practice range is 0.5–1.0.
-        self.speed = DragValue("×", 0.5, 1.5, 0.1, 1.0)
+        # (see PRECOMPUTE_SPEEDS); speeds above 1.0 aren't used, so cap at 1.0.
+        self.speed = DragValue("×", 0.5, 1.0, 0.1, 1.0)
         self.speed.changed.connect(self._set_speed)
         audio.add_widget(self.speed)
         audio.add_widget(self._hint("음량"))
-        self.volume = DragValue("♪", 0.0, 1.0, 0.05, 1.0)
+        self.volume = DragValue("♪", 0.0, 1.0, 0.05, 0.3)
         self.volume.changed.connect(self.audio.set_volume)
         audio.add_widget(self.volume)
         self.sb_bgm_btn = QPushButton("음원 파일 등록")
@@ -385,7 +402,7 @@ class MainWindow(QMainWindow):
         # Keyed by title so the collapsed/expanded state can be saved & restored.
         self._sections = {
             s.header.text(): s
-            for s in (info, images, grid, zoom, tempo, audio, rec)
+            for s in (info, images, grid, zoom, tempo, stopsec, scrollsec, audio, rec)
         }
 
         outer.addStretch(1)
@@ -753,6 +770,11 @@ class MainWindow(QMainWindow):
         self._update_title()
 
     # -- sidebar ------------------------------------------------------------ #
+
+    def _set_all_sections(self, expanded: bool) -> None:
+        """Collapse or expand every sidebar section at once."""
+        for sec in self._sections.values():
+            sec.set_expanded(expanded)
 
     def _sync_sidebar(self) -> None:
         """Populate the sidebar from the current project without re-triggering
@@ -1282,15 +1304,15 @@ class MainWindow(QMainWindow):
         self._bgm_path = None
         self.view.set_waveform(None, 200)
         for w, val in (
-            (self.sb_g1, 16), (self.sb_g2, 4),
+            (self.sb_g1, 32), (self.sb_g2, 8),
         ):
             w.setValue(val)
         self.sb_snap.setChecked(True)
         self.sb_wave.setChecked(True)
-        self.zoom_v.set_value(1.0)
-        self.zoom_h.set_value(1.0)
+        self.zoom_v.set_value(2.0)
+        self.zoom_h.set_value(1.25)
         self.speed.set_value(1.0)
-        self.volume.set_value(1.0)
+        self.volume.set_value(0.3)
         self._set_keymode(KEY_MODES[0])
         for sec in self._sections.values():
             sec.set_expanded(True)
