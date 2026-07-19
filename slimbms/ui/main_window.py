@@ -1111,11 +1111,16 @@ class MainWindow(QMainWindow):
             "SlimBMS 프로젝트 (*.slbms);;모든 파일 (*)")
         if not path:
             return
+        self.load_project_path(path)
+
+    def load_project_path(self, path: str) -> bool:
+        """Open a .slbms file by path (used by the menu and by double-click /
+        file-association launches). Returns True on success."""
         try:
             self.project = bms_io.load_project(path)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "열기 실패", str(exc))
-            return
+            return False
         self._remember_dir("open", path)
         self.project_path = path
         self._dirty = False
@@ -1125,6 +1130,7 @@ class MainWindow(QMainWindow):
         # Defer centring until the layout settles so the scrollbar range is
         # final (zoom/grid changes above resize the view).
         QTimer.singleShot(0, self._center_on_last_note)
+        return True
 
     def save_project(self) -> None:
         if not self.project_path:
