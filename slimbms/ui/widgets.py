@@ -10,18 +10,55 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtGui import QColor, QFont, QPainter, QPalette
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDoubleSpinBox,
     QSizePolicy,
     QSpinBox,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from .palette import ACCENT
+from .palette import ACCENT, TEXT_DIM
+
+# Second column text for a marker-list row, drawn right-aligned by
+# :class:`MarkerListDelegate`. The row's display text is the left column.
+MARKER_RIGHT_ROLE = Qt.UserRole + 1
+
+
+class MarkerListDelegate(QStyledItemDelegate):
+    """Draws a marker-list row as two aligned columns — the position on the left
+    (dim) and the value on the right (bright) — so every row's value lines up in
+    a tidy column regardless of how wide the position text is."""
+
+    def paint(self, painter, option, index):  # noqa: N802
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        left = opt.text
+        opt.text = ""                       # paint the background only; text below
+        widget = opt.widget
+        style = widget.style() if widget else QApplication.style()
+        style.drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
+
+        right = index.data(MARKER_RIGHT_ROLE) or ""
+        selected = bool(opt.state & QStyle.State_Selected)
+        r = opt.rect.adjusted(11, 0, -11, 0)
+        painter.save()
+        if selected:
+            painter.setPen(opt.palette.color(QPalette.HighlightedText))
+            painter.drawText(r, Qt.AlignLeft | Qt.AlignVCenter, left)
+        else:
+            painter.setPen(QColor(TEXT_DIM))
+            painter.drawText(r, Qt.AlignLeft | Qt.AlignVCenter, left)
+            painter.setPen(opt.palette.color(QPalette.Text))
+        painter.drawText(r, Qt.AlignRight | Qt.AlignVCenter, right)
+        painter.restore()
 
 _UNLIMITED = 16_777_215
 

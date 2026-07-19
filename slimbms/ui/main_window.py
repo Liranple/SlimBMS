@@ -46,8 +46,10 @@ from .palette import DANGER
 from .playback import PlaybackController
 from .toolbar_icons import make_icon
 from .widgets import (
+    MARKER_RIGHT_ROLE,
     CollapsibleSection,
     DragValue,
+    MarkerListDelegate,
     NoWheelDoubleSpinBox,
     NoWheelSpinBox,
 )
@@ -267,6 +269,7 @@ class MainWindow(QMainWindow):
         add_bpm.clicked.connect(self._add_bpm_change)
         tempo.add_widget(add_bpm)
         self.bpm_list = QListWidget()
+        self.bpm_list.setItemDelegate(MarkerListDelegate(self.bpm_list))
         self.bpm_list.setMaximumHeight(84)
         self.bpm_list.itemDoubleClicked.connect(self._edit_bpm_change)
         tempo.add_widget(self.bpm_list)
@@ -298,6 +301,7 @@ class MainWindow(QMainWindow):
         add_stop.clicked.connect(self._add_stop)
         stopsec.add_widget(add_stop)
         self.stop_list = QListWidget()
+        self.stop_list.setItemDelegate(MarkerListDelegate(self.stop_list))
         self.stop_list.setMaximumHeight(84)
         self.stop_list.itemDoubleClicked.connect(self._edit_stop)
         stopsec.add_widget(self.stop_list)
@@ -354,6 +358,7 @@ class MainWindow(QMainWindow):
         add_scroll.clicked.connect(self._add_scroll)
         scrollsec.add_widget(add_scroll)
         self.scroll_list = QListWidget()
+        self.scroll_list.setItemDelegate(MarkerListDelegate(self.scroll_list))
         self.scroll_list.setMaximumHeight(96)
         self.scroll_list.itemDoubleClicked.connect(self._edit_scroll)
         scrollsec.add_widget(self.scroll_list)
@@ -978,9 +983,7 @@ class MainWindow(QMainWindow):
     def _refresh_bpm_list(self) -> None:
         self.bpm_list.clear()
         for pos, bpm in sorted(self.project.bpm_changes.items()):
-            text = f"{self._loc(pos)}   ♩ {bpm:g}"
-            self.bpm_list.addItem(text)
-            self.bpm_list.item(self.bpm_list.count() - 1).setData(Qt.UserRole, pos)
+            self._add_marker_row(self.bpm_list, self._loc(pos), f"♩ {bpm:g}", pos)
 
     def _edit_bpm_change(self, item) -> None:
         """Double-click a list entry: load its (마디/칸/BPM) into the inputs and
@@ -1026,9 +1029,8 @@ class MainWindow(QMainWindow):
     def _refresh_stop_list(self) -> None:
         self.stop_list.clear()
         for pos, beats in sorted(self.project.stops.items()):
-            text = f"{self._loc(pos)}   ■ {float(beats):g}박"
-            self.stop_list.addItem(text)
-            self.stop_list.item(self.stop_list.count() - 1).setData(Qt.UserRole, pos)
+            self._add_marker_row(self.stop_list, self._loc(pos),
+                                 f"■ {float(beats):g}박", pos)
 
     def _edit_stop(self, item) -> None:
         pos = item.data(Qt.UserRole)
@@ -1060,6 +1062,14 @@ class MainWindow(QMainWindow):
         cell = int(round(float(pos - m) * grid))
         return f"마디 {m}" if cell == 0 else f"마디 {m} · 칸 {cell}"
 
+    def _add_marker_row(self, listw, left: str, right: str, userdata) -> None:
+        """Add a two-column row (position | value) rendered by MarkerListDelegate
+        so the right column lines up neatly down the list."""
+        listw.addItem(left)
+        item = listw.item(listw.count() - 1)
+        item.setData(MARKER_RIGHT_ROLE, right)
+        item.setData(Qt.UserRole, userdata)
+
     def _add_scroll(self) -> None:
         from fractions import Fraction
         # A start → end range = two markers (start value, end value).
@@ -1090,17 +1100,15 @@ class MainWindow(QMainWindow):
 
     def _refresh_scroll_list(self) -> None:
         self.scroll_list.clear()
-        rows = []   # (sort_key, text, userdata)
+        rows = []   # (sort_key, left, right, userdata)
         for pos, val in self.project.scrolls.items():
-            rows.append((float(pos), f"{self._loc(pos)}   ×{float(val):g}",
+            rows.append((float(pos), self._loc(pos), f"×{float(val):g}",
                          ("scroll", pos)))
         for sp, ep, sv, ev in self.view._speed_ramps():
-            rows.append((float(sp),
-                         f"{self._loc(sp)} ~ {self._loc(ep)}   ×{float(sv):g} → ×{float(ev):g}",
-                         ("speed", sp, ep)))
-        for _key, text, data in sorted(rows, key=lambda r: r[0]):
-            self.scroll_list.addItem(text)
-            self.scroll_list.item(self.scroll_list.count() - 1).setData(Qt.UserRole, data)
+            rows.append((float(sp), f"{self._loc(sp)} ~ {self._loc(ep)}",
+                         f"×{float(sv):g} → ×{float(ev):g}", ("speed", sp, ep)))
+        for _key, left, right, data in sorted(rows, key=lambda r: r[0]):
+            self._add_marker_row(self.scroll_list, left, right, data)
 
     def _edit_scroll(self, item) -> None:
         grid = max(1, self.sb_g1.value())
