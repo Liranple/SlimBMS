@@ -115,8 +115,8 @@ QPushButton#Confirm {{ background: {ACCENT}; color: {ACCENT_INK}; border-color: 
 QPushButton#Confirm:hover {{ background: #8fdcff; border-color: #8fdcff; }}
 QPushButton#Cancel {{ background: {BORDER_STRONG}; color: {TEXT}; border-color: {BORDER_STRONG}; }}
 QPushButton#Cancel:hover {{ border-color: {ACCENT}; }}
-QPushButton#Danger {{ background: {DANGER}; color: #2a0d12; border-color: {DANGER}; }}
-QPushButton#Danger:hover {{ background: #ff8494; border-color: #ff8494; }}
+QPushButton#Danger {{ background: rgba(255, 107, 129, 0.14); color: #ff9aac; border: 1px solid rgba(255, 107, 129, 0.45); }}
+QPushButton#Danger:hover {{ background: rgba(255, 107, 129, 0.26); border-color: {DANGER}; }}
 
 /* Inputs ----------------------------------------------------------------- */
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
