@@ -747,13 +747,13 @@ class MainWindow(QMainWindow):
 
         file_menu = m.addMenu("파일")
         self._add(file_menu, "새로 만들기", self.new_project, QKeySequence.New)
-        self._add(file_menu, "프로젝트 열기", self.open_project, QKeySequence.Open)
-        self._add(file_menu, "프로젝트 저장", self.save_project, QKeySequence.Save)
-        self._add(file_menu, "프로젝트 다른 이름으로 저장", self.save_project_as,
+        self._add(file_menu, "열기", self.open_project, QKeySequence.Open)
+        self._add(file_menu, "저장", self.save_project, QKeySequence.Save)
+        self._add(file_menu, "다른 이름으로 저장", self.save_project_as,
                   QKeySequence("Ctrl+Shift+S"))
         file_menu.addSeparator()
-        self._add(file_menu, "BMS 가져오기", self.import_bms)
-        self._add(file_menu, "선택한 키로 .bms 내보내기", self.export_bms,
+        self._add(file_menu, "bms 가져오기", self.import_bms)
+        self._add(file_menu, "bms 내보내기", self.export_bms,
                   QKeySequence("Ctrl+E"))
         file_menu.addSeparator()
         self._add(file_menu, "종료", self.close)
@@ -1614,8 +1614,8 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "BMS 가져오기", self._dir_for("import"),
-            "BMS 채보 (*.bms *.bme *.bml);;모든 파일 (*)")
+            self, "bms 가져오기", self._dir_for("import"),
+            "bms 채보 (*.bms *.bme *.bml);;모든 파일 (*)")
         if not path:
             return
         try:
@@ -1642,7 +1642,7 @@ class MainWindow(QMainWindow):
                 "BGM 출력 시작 타이밍이 없습니다. BGM 레인에 시작 지점을 먼저 찍어주세요.")
         default = self._dialog_path("export", self._suggest_name(f"_{km}k.bms"))
         path, _ = QFileDialog.getSaveFileName(
-            self, f"{km}K .bms 내보내기", default, "BMS 채보 (*.bms)")
+            self, f"{km}K bms 내보내기", default, "bms 채보 (*.bms)")
         if not path:
             return
         if not path.lower().endswith(".bms"):
