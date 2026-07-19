@@ -1286,8 +1286,19 @@ class MainWindow(QMainWindow):
                                         f"이미 최신 버전입니다 (v{__version__}).")
             return
 
-        # A newer version exists: apply it right away, no confirmation prompt or
-        # changelog — just download and restart.
+        # A newer version exists: ask the user before applying it.
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("업데이트")
+        box.setText("새로운 업데이트가 있습니다.\n지금 업데이트할까요?")
+        box.setInformativeText(
+            f"현재 버전 : v{__version__}\n새 버전 : {info.tag}")
+        ok = box.addButton("확인", QMessageBox.AcceptRole)
+        box.addButton("취소", QMessageBox.RejectRole)
+        box.setDefaultButton(ok)
+        box.exec()
+        if box.clickedButton() is not ok:
+            return
         self._begin_update(info)
 
     def _begin_update(self, info) -> None:
