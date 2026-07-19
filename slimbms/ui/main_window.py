@@ -193,6 +193,7 @@ class MainWindow(QMainWindow):
         self.view.scroll_h.connect(self._scroll_horizontal)
         self.view.seek_requested.connect(self._seek_to_chart)
         self.view.overlap_warning.connect(self._warn_overlap)
+        self.view.markers_changed.connect(self._refresh_marker_lists)
         self.scroll.setWidget(self.view)
         self.scroll.horizontalScrollBar().valueChanged.connect(self.header.set_x_offset)
         self.header.bgm_width_changed.connect(self._set_bgm_width)
@@ -502,21 +503,22 @@ class MainWindow(QMainWindow):
 
     def _marker_controls(self, section, list_w, add_fn, load_fn, commit_fn,
                          remove_fn):
-        """Build the shared [추가][수정] button row, the list, and a red
-        [선택 삭제] button for a marker section, and wire an :class:`_MarkerEdit`
+        """Build a marker section's [추가][수정][삭제] button row (delete on the
+        right, red) above a roomy list, and wire an :class:`_MarkerEdit`
         controller (returned — keep a reference)."""
         add_btn = QPushButton("추가")
         edit_btn = QPushButton("수정")
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        row.addWidget(add_btn)
-        row.addWidget(edit_btn)
-        section.add_layout(row)
-        section.add_widget(list_w)
-        del_btn = QPushButton("선택 삭제")
+        del_btn = QPushButton("삭제")
         del_btn.setObjectName("Danger")
         del_btn.clicked.connect(remove_fn)
-        section.add_widget(del_btn)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(add_btn)
+        row.addWidget(edit_btn)
+        row.addWidget(del_btn)
+        section.add_layout(row)
+        list_w.setMaximumHeight(200)                # roomier — many markers fit
+        section.add_widget(list_w)
         return _MarkerEdit(self, add_btn, edit_btn, del_btn, list_w,
                            add_fn, load_fn, commit_fn)
 
@@ -862,6 +864,19 @@ class MainWindow(QMainWindow):
         self._update_title()
 
     # -- sidebar ------------------------------------------------------------ #
+
+    def _refresh_marker_lists(self) -> None:
+        """Re-sync the BPM / 정지 / 노트 속도 lists after the data changed behind
+        their backs (undo / redo, measure reflow). Any in-progress edit is
+        dropped since its target row may no longer exist."""
+        if not hasattr(self, "_bpm_edit"):
+            return
+        for ctl in (self._bpm_edit, self._stop_edit, self._scroll_edit):
+            if ctl.target is not None:
+                ctl._exit()
+        self._refresh_bpm_list()
+        self._refresh_stop_list()
+        self._refresh_scroll_list()
 
     def _set_all_sections(self, expanded: bool) -> None:
         """Collapse or expand every sidebar section at once."""

@@ -103,6 +103,8 @@ class ChartView(QWidget):
     scroll_h = Signal(int)      # Shift+wheel: horizontal scroll by this angle delta
     seek_requested = Signal(float)  # set playback to this absolute chart position
     overlap_warning = Signal()      # a move left the selection overlapping another note
+    markers_changed = Signal()      # BPM/정지/변속 marker data changed behind the sidebar
+                                    # lists' backs (undo/redo, measure reflow) — refresh them
 
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
@@ -481,6 +483,8 @@ class ChartView(QWidget):
         self._rebuild_caches()
         self._apply_size()
         self.changed.emit()
+        if changed:
+            self.markers_changed.emit()   # reflow may have moved BPM/정지/변속 markers
         self.update()
         return changed
 
@@ -1726,7 +1730,10 @@ class ChartView(QWidget):
         self.project.restore(snap)
         self._committed = self.project.snapshot()
         self.selection = set()
+        self._rebuild_caches()
+        self._apply_size()
         self.changed.emit()
+        self.markers_changed.emit()   # sidebar marker lists must re-sync
         self.update()
         self._restoring = False
 
