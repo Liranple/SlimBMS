@@ -1140,12 +1140,14 @@ class MainWindow(QMainWindow):
         grid = max(1, self.sb_g1.value())
 
         def loc(pos):
+            # Compact position: "18" at a measure start, else "18·12/32".
             m = int(pos)
-            return f"마디 {m} · 칸 {int(round(float(pos - m) * grid))}/{grid}"
+            cell = int(round(float(pos - m) * grid))
+            return f"{m}" if cell == 0 else f"{m}·{cell}/{grid}"
 
         rows = []   # (sort_key, text, userdata)
         for pos, val in self.project.scrolls.items():
-            rows.append((float(pos), f"[순간] {loc(pos)} → ×{float(val):g}",
+            rows.append((float(pos), f"[순간] {loc(pos)} ×{float(val):g}",
                          ("scroll", pos)))
         for sp, ep, sv, ev in self.view._speed_ramps():
             rows.append((float(sp),
