@@ -1069,6 +1069,21 @@ class ChartView(QWidget):
             return None
         return col, measure, pos
 
+    def _global_lane_at(self, x: float) -> int:
+        """Global lane index (0-based across the 4K→6K→LOAD continuum) of the key
+        column nearest to ``x``, ignoring BGM and the gaps between groups. Used to
+        translate a horizontal drag into a lane delta that can cross modes."""
+        best_i, best_d = 0, None
+        for col in self.columns:
+            if col.kind != "key":
+                continue
+            center = col.x + col.w / 2
+            d = abs(x - center)
+            if best_d is None or d < best_d:
+                best_i = _GLOBAL_INDEX[(col.key_mode, col.lane)]
+                best_d = d
+        return best_i
+
     def _note_at_point(self, col, y: float):
         """Closest note in the column's lane whose cell contains y, or None."""
         if col.kind == "bgm":
@@ -1135,9 +1150,23 @@ class ChartView(QWidget):
         long note shift together — its visible length never changes and its tail
         can't slip into a hidden region (which would make it look resized)."""
         md = self._move_drag
-        dx = event.position().x() - md["px"]
         step = self.grid_main
-        d_lane = int(round(dx / self.lane_w))
+        # Horizontal movement walks the whole 4K→6K→LOAD lane space as one
+        # continuum (like the arrow keys), so a note can cross mode boundaries.
+        # The delta is taken from the actual columns under the press/cursor (not
+        # dx/lane_w) so the group gaps between modes don't throw off the count.
+        d_lane = self._global_lane_at(event.position().x()) - \
+            self._global_lane_at(md["px"])
+        # Clamp the delta *collectively* (not per note): shift only as far as the
+        # whole selection can go while staying in bounds. Clamping each note
+        # independently is what used to squish them all against a mode's edge.
+        gs = [_GLOBAL_INDEX[(mode, orig.lane)]
+              for mode, orig in md["origs"] if mode != "bgm"]
+        if gs:
+            d_lane = max(-min(gs),
+                         min((len(_GLOBAL_LANES) - 1) - max(gs), d_lane))
+        else:
+            d_lane = 0
         # Vertical delta in display units (pixels back to display position). A
         # normal drag snaps to the primary grid; a Shift drag is free placement,
         # quantised only to whole pixels.
@@ -1167,16 +1196,19 @@ class ChartView(QWidget):
             measure = int(new_abs)
             pos = new_abs - measure
             if mode == "bgm":
-                lane, length = 0, Fraction(0)
+                newmode, lane, length = "bgm", 0, Fraction(0)
             else:
-                lane = min(max(orig.lane + d_lane, 0), lanes_for(mode) - 1)
+                # Walk the global lane space so the note can move into an
+                # adjacent key mode (4K↔6K↔LOAD); the delta is pre-clamped so
+                # this index is always valid.
+                newmode, lane = _GLOBAL_LANES[_GLOBAL_INDEX[(mode, orig.lane)] + d_lane]
                 # Tail follows the head by the same display span, then back to an
                 # absolute length — both ends stay on visible cells.
                 tail_abs = self._absolute_from_display_frac(new_head_d + len_d, cum)
                 length = tail_abs - new_abs
             moved = Note(measure, pos, lane, length)
-            self.project.add_object(mode, moved)
-            new_sel.add((mode, moved))
+            self.project.add_object(newmode, moved)
+            new_sel.add((newmode, moved))
         self.selection = new_sel
         md["placed"] = list(new_sel)
         md["moved"] = True

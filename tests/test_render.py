@@ -472,6 +472,72 @@ def test_edit_shift_drag_is_free_placement():
     assert p.charts[4][0].pos == Fraction(1, 16)
 
 
+def test_mouse_drag_crosses_key_modes():
+    """A mouse drag must walk the 4K→6K→LOAD lane continuum so a note can move
+    between modes (regression: it used to clamp inside the note's own mode, so
+    dragging 6K→4K/LOAD stuck at the mode edge and piled notes to one side)."""
+    from PySide6.QtCore import Qt, QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+    from slimbms.model import IMPORT_MODE
+
+    _app()
+
+    def setup():
+        p = Project(bpm=120, measures=8)
+        v = ChartView(p)
+        v.set_grid_main(16)
+        v.set_mode("edit")
+        v.refresh()
+        v.resize(1600, 3000)
+        v.measure_px = 160
+        return p, v
+
+    def drag(v, x0, x1, y):
+        v.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, QPointF(x0, y),
+                                      Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+        v.mouseMoveEvent(QMouseEvent(QEvent.MouseMove, QPointF(x1, y),
+                                     Qt.NoButton, Qt.LeftButton, Qt.NoModifier))
+        v.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, QPointF(x1, y),
+                                        Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+
+    def center(v, mode, lane):
+        return v._col_x()[(mode, lane)] + v.lane_w / 2
+
+    # 6K lane 0 -> drag to the 4K group (lane 1).
+    p, v = setup()
+    n = Note(2, Fraction(0), 0)
+    p.charts[6].append(n)
+    drag(v, center(v, 6, 0), center(v, 4, 1), v.y_for(n.absolute))
+    assert len(p.charts[6]) == 0 and len(p.charts[4]) == 1
+    assert p.charts[4][0].lane == 1
+
+    # 4K lane 2 -> drag all the way into LOAD.
+    p, v = setup()
+    n = Note(2, Fraction(0), 2)
+    p.charts[4].append(n)
+    drag(v, center(v, 4, 2), center(v, IMPORT_MODE, 5), v.y_for(n.absolute))
+    assert len(p.charts[4]) == 0 and len(p.charts[IMPORT_MODE]) == 1
+    assert p.charts[IMPORT_MODE][0].lane == 5
+
+    # Two notes dragged past the LOAD right edge shift together (collective
+    # clamp) instead of both squishing onto the last lane.
+    p, v = setup()
+    a = Note(2, Fraction(0), 0)                # LOAD lane 0
+    b = Note(2, Fraction(0), 1)                # LOAD lane 1
+    p.charts[IMPORT_MODE].extend([a, b])
+    v.selection = {(IMPORT_MODE, a), (IMPORT_MODE, b)}
+    v._move_drag = {"origs": [(IMPORT_MODE, a), (IMPORT_MODE, b)],
+                    "placed": [(IMPORT_MODE, a), (IMPORT_MODE, b)],
+                    "px": center(v, IMPORT_MODE, 0), "py": v.y_for(a.absolute),
+                    "moved": False, "free": False, "toggle": None}
+    # Aim far right (well past the last LOAD lane).
+    far_right = center(v, IMPORT_MODE, 7) + 500
+    v.mouseMoveEvent(QMouseEvent(QEvent.MouseMove, QPointF(far_right, v.y_for(a.absolute)),
+                                 Qt.NoButton, Qt.LeftButton, Qt.NoModifier))
+    lanes = sorted(nn.lane for nn in p.charts[IMPORT_MODE])
+    assert lanes == [6, 7]   # kept one lane apart, pinned to the right edge
+
+
 def test_arrow_move_skips_collapsed_cells():
     """Arrow-key vertical moves step through display space: from a shortened
     measure's last visible cell the note jumps to the next measure's first cell,
