@@ -15,6 +15,9 @@ LEFT_MARGIN = 48   # room for measure numbers
 LANE_W = 30
 GROUP_GAP = 24
 RIGHT_PAD = 12
+# Empty strip reserved to the right of the last lane group (LOAD) where the
+# gimmick labels (BPM / 정지 / 노트 속도) are drawn, clear of the note lanes.
+LABEL_ZONE = 150
 
 
 @dataclass(frozen=True)
@@ -55,7 +58,7 @@ def build_layout(lane_w: int = LANE_W, bgm_w: Optional[int] = None
         groups.append(Group(DISPLAY_LABELS[km], start, x))
         x += GROUP_GAP
 
-    total_width = x - GROUP_GAP + RIGHT_PAD
+    total_width = x - GROUP_GAP + RIGHT_PAD + LABEL_ZONE
     return columns, groups, total_width
 
 

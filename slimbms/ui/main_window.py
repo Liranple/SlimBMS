@@ -15,7 +15,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QComboBox,
+    QButtonGroup,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -165,13 +166,20 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # -- Collapse / expand every section at once ----------------------- #
+        # -- Collapse / expand every section at once (icon buttons) -------- #
         toggles = QHBoxLayout()
         toggles.setContentsMargins(8, 6, 8, 6)
-        toggles.setSpacing(8)
-        expand_all = QPushButton("모두 펴기")
+        toggles.setSpacing(6)
+        toggles.addStretch(1)
+        expand_all = QToolButton()
+        expand_all.setArrowType(Qt.DownArrow)      # ⌄ open sections downward
+        expand_all.setToolTip("모두 펴기")
+        expand_all.setAutoRaise(True)
         expand_all.clicked.connect(lambda: self._set_all_sections(True))
-        collapse_all = QPushButton("모두 접기")
+        collapse_all = QToolButton()
+        collapse_all.setArrowType(Qt.RightArrow)   # › fold sections shut
+        collapse_all.setToolTip("모두 접기")
+        collapse_all.setAutoRaise(True)
         collapse_all.clicked.connect(lambda: self._set_all_sections(False))
         toggles.addWidget(expand_all)
         toggles.addWidget(collapse_all)
@@ -287,7 +295,7 @@ class MainWindow(QMainWindow):
         outer.addWidget(tempo)
 
         # -- STOP (freeze) gimmick ------------------------------------------ #
-        stopsec = CollapsibleSection("정지 (STOP)")
+        stopsec = CollapsibleSection("정지")
         self.stop_measure = NoWheelSpinBox()
         self.stop_measure.setRange(0, 9999)
         self.stop_cell = NoWheelSpinBox()
@@ -318,28 +326,55 @@ class MainWindow(QMainWindow):
         outer.addWidget(stopsec)
 
         # -- SCROLL / SPEED (scroll-velocity) gimmick ----------------------- #
-        scrollsec = CollapsibleSection("스크롤 / 속도")
-        self.scroll_type = QComboBox()
-        self.scroll_type.addItem("SCROLL (단계)", "scroll")
-        self.scroll_type.addItem("SPEED (보간)", "speed")
-        scrollsec.add_widget(self.scroll_type)
-        self.scroll_measure = NoWheelSpinBox()
-        self.scroll_measure.setRange(0, 9999)
-        self.scroll_cell = NoWheelSpinBox()
-        self.scroll_cell.setRange(0, self.sb_g1.value())
-        # Scroll-velocity multiplier (visual only; the game renders it). Negative
-        # values reverse the scroll direction.
-        self.scroll_value = NoWheelDoubleSpinBox()
-        self.scroll_value.setRange(-64.0, 64.0)
-        self.scroll_value.setDecimals(2)
-        self.scroll_value.setSingleStep(0.25)
-        self.scroll_value.setValue(2.0)
-        scr = QHBoxLayout()
-        scr.setSpacing(8)
-        scr.addWidget(self._labeled("마디", self.scroll_measure))
+        scrollsec = CollapsibleSection("노트 속도")
+        # 순간 변속 = SCROLL (a one-point step); 선형 변속 = SPEED (a two-point
+        # ramp that eases from a start value to an end value over a range). Two
+        # mutually-exclusive buttons (no combo → no wheel changes, clear state).
+        self._scroll_kind_group = QButtonGroup(self)
+        self._scroll_kind_group.setExclusive(True)
+        btn_scroll = QPushButton("순간 변속"); btn_scroll.setCheckable(True); btn_scroll.setChecked(True)
+        btn_speed = QPushButton("선형 변속"); btn_speed.setCheckable(True)
+        self._scroll_kind_buttons = {"scroll": btn_scroll, "speed": btn_speed}
+        self._scroll_kind_group.addButton(btn_scroll)
+        self._scroll_kind_group.addButton(btn_speed)
+        self._scroll_kind_group.buttonClicked.connect(
+            lambda _b: self._on_scroll_type_changed())
+        krow = QHBoxLayout(); krow.setSpacing(6)
+        krow.addWidget(btn_scroll); krow.addWidget(btn_speed)
+        scrollsec.add_layout(krow)
+
+        def _mk_value(default):
+            v = NoWheelDoubleSpinBox()
+            v.setRange(-64.0, 64.0)
+            v.setDecimals(2)
+            v.setSingleStep(0.25)
+            v.setValue(default)
+            return v
+
+        # Start point (also the sole point for 순간 변속).
+        self.scroll_measure = NoWheelSpinBox(); self.scroll_measure.setRange(0, 9999)
+        self.scroll_cell = NoWheelSpinBox(); self.scroll_cell.setRange(0, self.sb_g1.value())
+        self.scroll_value = _mk_value(2.0)
+        scr = QHBoxLayout(); scr.setSpacing(8)
+        self._scroll_start_label = self._labeled("마디", self.scroll_measure)
+        scr.addWidget(self._scroll_start_label)
         scr.addWidget(self._labeled("칸", self.scroll_cell))
         scr.addWidget(self._labeled("배수", self.scroll_value))
         scrollsec.add_layout(scr)
+
+        # End point — only shown for 선형 변속 (a ramp needs two points).
+        self.scroll_measure2 = NoWheelSpinBox(); self.scroll_measure2.setRange(0, 9999)
+        self.scroll_cell2 = NoWheelSpinBox(); self.scroll_cell2.setRange(0, self.sb_g1.value())
+        self.scroll_value2 = _mk_value(1.0)
+        self._scroll_end_row = QWidget()
+        scr2 = QHBoxLayout(self._scroll_end_row)
+        scr2.setContentsMargins(0, 0, 0, 0); scr2.setSpacing(8)
+        scr2.addWidget(self._labeled("끝마디", self.scroll_measure2))
+        scr2.addWidget(self._labeled("끝칸", self.scroll_cell2))
+        scr2.addWidget(self._labeled("끝배수", self.scroll_value2))
+        scrollsec.add_widget(self._scroll_end_row)
+        self._scroll_end_row.setVisible(False)      # 순간 변속 is the default
+
         add_scroll = QPushButton("추가 / 변경")
         add_scroll.clicked.connect(self._add_scroll)
         scrollsec.add_widget(add_scroll)
@@ -414,6 +449,10 @@ class MainWindow(QMainWindow):
         scroll.setFixedWidth(316)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Keep the vertical scrollbar's gutter reserved at all times. Otherwise
+        # a collapse animation crosses the "fits / doesn't fit" threshold and the
+        # scrollbar flickers in and out, jittering the panel width every frame.
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         return scroll
 
     def _section(self, text: str) -> QLabel:
@@ -891,6 +930,7 @@ class MainWindow(QMainWindow):
             self.stop_cell.setMaximum(self.sb_g1.value())
         if hasattr(self, "scroll_cell"):
             self.scroll_cell.setMaximum(self.sb_g1.value())
+            self.scroll_cell2.setMaximum(self.sb_g1.value())
 
     def _toggle_snap(self, on: bool) -> None:
         self.view.set_snap_on(on)
@@ -1021,22 +1061,47 @@ class MainWindow(QMainWindow):
         vp_h = self.scroll.viewport().height()
         vbar.setValue(int(self.view.y_for(float(pos)) - vp_h / 2))
 
-    # -- SCROLL / SPEED gimmick --------------------------------------------- #
+    # -- 노트 속도 (순간 변속 / 선형 변속) --------------------------------- #
 
-    def _scroll_map(self, kind: str):
-        """The project dict backing a scroll-gimmick kind ('scroll' | 'speed')."""
-        return self.project.speeds if kind == "speed" else self.project.scrolls
+    def _scroll_kind(self) -> str:
+        """Which 노트 속도 kind is selected ('scroll' = 순간, 'speed' = 선형)."""
+        return "speed" if self._scroll_kind_buttons["speed"].isChecked() else "scroll"
+
+    def _set_scroll_kind(self, kind: str) -> None:
+        self._scroll_kind_buttons.get(kind, self._scroll_kind_buttons["scroll"]).setChecked(True)
+        self._on_scroll_type_changed()
+
+    def _on_scroll_type_changed(self) -> None:
+        # 선형 변속 (SPEED) is a ramp: reveal the end-point row. 순간 변속
+        # (SCROLL) is a single step.
+        is_ramp = self._scroll_kind() == "speed"
+        self._scroll_end_row.setVisible(is_ramp)
+        self._scroll_start_label.layout().itemAt(0).widget().setText(
+            "시작마디" if is_ramp else "마디")
+
+    def _scroll_pos(self, measure_box, cell_box):
+        from fractions import Fraction
+        grid = max(1, self.sb_g1.value())
+        cell = min(cell_box.value(), grid)
+        return Fraction(measure_box.value()) + Fraction(cell, grid)
 
     def _add_scroll(self) -> None:
         from fractions import Fraction
-        kind = self.scroll_type.currentData()
-        grid = max(1, self.sb_g1.value())
-        cell = min(self.scroll_cell.value(), grid)
-        pos = Fraction(self.scroll_measure.value()) + Fraction(cell, grid)
-        value = Fraction(self.scroll_value.value()).limit_denominator(1000)
-        if value == 0:
-            return                       # a 0x scroll would freeze the field flat
-        self._scroll_map(kind)[pos] = value
+        if self._scroll_kind() == "speed":
+            # A 선형 변속 ramp = two SPEED markers (start value, end value).
+            sp = self._scroll_pos(self.scroll_measure, self.scroll_cell)
+            ep = self._scroll_pos(self.scroll_measure2, self.scroll_cell2)
+            if ep <= sp:
+                self.statusBar().showMessage("선형 변속: 끝 위치가 시작보다 뒤여야 합니다.", 3000)
+                return
+            self.project.speeds[sp] = Fraction(self.scroll_value.value()).limit_denominator(1000)
+            self.project.speeds[ep] = Fraction(self.scroll_value2.value()).limit_denominator(1000)
+        else:
+            pos = self._scroll_pos(self.scroll_measure, self.scroll_cell)
+            value = Fraction(self.scroll_value.value()).limit_denominator(1000)
+            if value == 0:
+                return                   # a 0x step would freeze the field flat
+            self.project.scrolls[pos] = value
         self.view.changed.emit()
         self.view.update()
         self._refresh_scroll_list()
@@ -1045,43 +1110,67 @@ class MainWindow(QMainWindow):
         item = self.scroll_list.currentItem()
         if item is None:
             return
-        kind, pos = item.data(Qt.UserRole)
-        m = self._scroll_map(kind)
-        if pos in m:
-            del m[pos]
-            self.view.changed.emit()
-            self.view.update()
-            self._refresh_scroll_list()
+        data = item.data(Qt.UserRole)
+        if data[0] == "speed":                 # ("speed", start_pos, end_pos)
+            for pos in data[1:]:
+                self.project.speeds.pop(pos, None)
+        else:                                  # ("scroll", pos)
+            self.project.scrolls.pop(data[1], None)
+        self.view.changed.emit()
+        self.view.update()
+        self._refresh_scroll_list()
 
     def _refresh_scroll_list(self) -> None:
         self.scroll_list.clear()
         grid = max(1, self.sb_g1.value())
-        rows = ([("scroll", pos, val) for pos, val in self.project.scrolls.items()]
-                + [("speed", pos, val) for pos, val in self.project.speeds.items()])
-        for kind, pos, val in sorted(rows, key=lambda r: (float(r[1]), r[0])):
-            measure = int(pos)
-            cell = int(round(float(pos - measure) * grid))
-            tag = "SCROLL" if kind == "scroll" else "SPEED"
-            text = f"[{tag}] 마디 {measure} · 칸 {cell}/{grid} → ×{float(val):g}"
+
+        def loc(pos):
+            m = int(pos)
+            return f"마디 {m} · 칸 {int(round(float(pos - m) * grid))}/{grid}"
+
+        rows = []   # (sort_key, text, userdata)
+        for pos, val in self.project.scrolls.items():
+            rows.append((float(pos), f"[순간] {loc(pos)} → ×{float(val):g}",
+                         ("scroll", pos)))
+        for sp, ep, sv, ev in self.view._speed_ramps():
+            rows.append((float(sp),
+                         f"[선형] {loc(sp)} ×{float(sv):g} → {loc(ep)} ×{float(ev):g}",
+                         ("speed", sp, ep)))
+        for _key, text, data in sorted(rows, key=lambda r: r[0]):
             self.scroll_list.addItem(text)
-            self.scroll_list.item(self.scroll_list.count() - 1).setData(
-                Qt.UserRole, (kind, pos))
+            self.scroll_list.item(self.scroll_list.count() - 1).setData(Qt.UserRole, data)
 
     def _edit_scroll(self, item) -> None:
-        kind, pos = item.data(Qt.UserRole)
-        m = self._scroll_map(kind)
-        if pos not in m:
-            return
         grid = max(1, self.sb_g1.value())
-        measure = int(pos)
-        cell = int(round(float(pos - measure) * grid))
-        self.scroll_type.setCurrentIndex(0 if kind == "scroll" else 1)
-        self.scroll_measure.setValue(measure)
-        self.scroll_cell.setValue(cell)
-        self.scroll_value.setValue(float(m[pos]))
+
+        def set_point(measure_box, cell_box, value_box, pos, val):
+            m = int(pos)
+            measure_box.setValue(m)
+            cell_box.setValue(int(round(float(pos - m) * grid)))
+            value_box.setValue(float(val))
+
+        data = item.data(Qt.UserRole)
+        if data[0] == "speed":
+            _, sp, ep = data
+            if sp not in self.project.speeds:
+                return
+            self._set_scroll_kind("speed")           # 선형 변속 (shows end row)
+            set_point(self.scroll_measure, self.scroll_cell, self.scroll_value,
+                      sp, self.project.speeds[sp])
+            set_point(self.scroll_measure2, self.scroll_cell2, self.scroll_value2,
+                      ep, self.project.speeds.get(ep, self.project.speeds[sp]))
+            focus = sp
+        else:
+            _, pos = data
+            if pos not in self.project.scrolls:
+                return
+            self._set_scroll_kind("scroll")          # 순간 변속
+            set_point(self.scroll_measure, self.scroll_cell, self.scroll_value,
+                      pos, self.project.scrolls[pos])
+            focus = pos
         vbar = self.scroll.verticalScrollBar()
         vp_h = self.scroll.viewport().height()
-        vbar.setValue(int(self.view.y_for(float(pos)) - vp_h / 2))
+        vbar.setValue(int(self.view.y_for(float(focus)) - vp_h / 2))
 
     def _set_mode(self, mode: str) -> None:
         self.view.set_mode(mode)
@@ -1266,7 +1355,7 @@ class MainWindow(QMainWindow):
             f"마디 수 : {p.measures}",
             f"기본 BPM : {p.bpm:g}    BPM 변화 : {len(p.bpm_changes)}개",
             f"정지(STOP) : {len(p.stops)}개",
-            f"스크롤/속도 : {len(p.scrolls) + len(p.speeds)}개",
+            f"노트 속도(순간/선형) : {len(p.scrolls)} / {len(p.speeds) // 2}개",
             f"BGM 마커 : {len(p.bgm)}개",
             "",
         ]

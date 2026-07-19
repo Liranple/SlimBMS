@@ -12,6 +12,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
+    QComboBox,
     QDoubleSpinBox,
     QSizePolicy,
     QSpinBox,
@@ -48,6 +49,19 @@ class NoWheelDoubleSpinBox(QDoubleSpinBox):
         event.ignore()
 
 
+class NoWheelComboBox(QComboBox):
+    """A combo box that ignores the mouse wheel when closed, so scrolling the
+    sidebar never changes the selection (the wheel scrolls the panel instead).
+    The dropdown popup still scrolls normally once opened."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, event):  # noqa: N802
+        event.ignore()
+
+
 class CollapsibleSection(QWidget):
     """A titled section whose body expands/collapses with a smooth animation
     when its header is clicked. Add content with :meth:`add_widget` /
@@ -74,6 +88,10 @@ class CollapsibleSection(QWidget):
 
         self.content = QWidget()
         self.content.setObjectName("SectionContent")
+        # Let the body shrink all the way to 0 during the collapse animation so
+        # it slides shut smoothly instead of snapping when a child's minimum
+        # height would otherwise resist the last few pixels.
+        self.content.setMinimumHeight(0)
         self.body = QVBoxLayout(self.content)
         self.body.setContentsMargins(12, 8, 8, 12)
         self.body.setSpacing(8)

@@ -47,8 +47,9 @@ C_BPM = QColor("#c792ea")        # mid-song tempo-change markers
 C_BPM_FAST = QColor(255, 70, 70, 26)   # faint tint where a segment is faster than base
 C_BPM_SLOW = QColor(70, 130, 255, 26)  # faint tint where a segment is slower than base
 C_STOP = QColor("#ffb454")       # STOP (freeze) markers — a warm amber, distinct from BPM
-C_SCROLL = QColor("#4ec9b0")     # SCROLL (step scroll-speed) markers — teal
-C_SPEED = QColor("#dcdcaa")      # SPEED (interpolated scroll-speed) markers — khaki
+C_SCROLL = QColor("#4ec9b0")     # 순간 변속 (SCROLL) markers — teal
+C_SPEED = QColor("#dcdcaa")      # 선형 변속 (SPEED) markers — khaki
+C_SPEED_REGION = QColor(220, 220, 170, 30)  # faint tint over a 선형 변속 ramp span
 C_WAVE = QColor(120, 180, 255, 70)  # BGM waveform in the BGM lane
 
 # Note colour by lane code.
@@ -533,6 +534,7 @@ class ChartView(QWidget):
         p.fillRect(clip, C_BG)
         self._paint_lane_backgrounds(p)
         self._paint_bpm_regions(p)
+        self._paint_speed_regions(p)
         self._paint_waveform(p)
         self._paint_horizontal_lines(p)
         self._paint_separators(p)
@@ -644,95 +646,104 @@ class ChartView(QWidget):
                 continue                          # outside the exposed strip
             p.fillRect(QRect(x0, y_top, x1 - x0, y_bot - y_top), col)
 
+    def _label_x(self) -> int:
+        """Left edge of the empty label strip to the right of the last lane
+        group, where all gimmick labels sit clear of the notes."""
+        return self.groups[-1].x1 + L.RIGHT_PAD
+
+    def _marker_label(self, p: QPainter, y: int, text: str, col) -> None:
+        """Draw a gimmick pill in the right-hand label strip, vertically centred
+        on the marker's line so it never covers a note lane."""
+        font = QFont()
+        font.setPointSize(9)
+        font.setBold(True)
+        p.setFont(font)
+        tw = p.fontMetrics().horizontalAdvance(text) + 12
+        tag = QRect(self._label_x(), y - 8, tw, 16)
+        p.setPen(Qt.NoPen)
+        p.setBrush(col)
+        p.drawRoundedRect(tag, 4, 4)
+        p.setPen(QPen(C_GROUP_BG_B, 1))     # dark ink on the accent pill
+        p.drawText(tag, Qt.AlignCenter, text)
+
+    def _speed_ramps(self):
+        """Pair the SPEED markers into ramps for display/editing. They're added
+        as (start, end) pairs, so sorting and pairing (0,1),(2,3)… reconstructs
+        each 선형 변속 range as (start_pos, end_pos, start_val, end_val)."""
+        items = sorted(self.project.speeds.items())
+        ramps = []
+        for i in range(0, len(items) - 1, 2):
+            (sp, sv), (ep, ev) = items[i], items[i + 1]
+            ramps.append((sp, ep, sv, ev))
+        if len(items) % 2:                       # dangling marker → a point ramp
+            p_, v_ = items[-1]
+            ramps.append((p_, p_, v_, v_))
+        return ramps
+
+    def _paint_speed_regions(self, p: QPainter) -> None:
+        """Faintly shade each 선형 변속 (SPEED) ramp span across the note lanes so
+        it's clear where the gradual change runs from and to."""
+        if not self.project.speeds:
+            return
+        x0 = self.groups[0].x0
+        x1 = self.groups[-1].x1
+        for sp, ep, _sv, _ev in self._speed_ramps():
+            if ep <= sp:
+                continue
+            y_top = int(self.y_for(float(ep)))   # later position = smaller y
+            y_bot = int(self.y_for(float(sp)))
+            if y_bot < self._vis_lo or y_top > self._vis_hi:
+                continue
+            p.fillRect(QRect(x0, y_top, x1 - x0, y_bot - y_top), C_SPEED_REGION)
+
     def _paint_bpm_changes(self, p: QPainter) -> None:
         if not self.project.bpm_changes:
             return
         x0 = L.LEFT_MARGIN
         x1 = self.groups[-1].x1
-        font = QFont()
-        font.setPointSize(9)
-        font.setBold(True)
         for pos, bpm in self.project.bpm_changes.items():
             y = int(self.y_for(float(pos)))
-            if y < self._vis_lo - 20 or y > self._vis_hi + 20:
+            if y < self._vis_lo - 12 or y > self._vis_hi + 12:
                 continue
-            # A solid line across the lanes marks exactly where the tempo changes.
+            # A solid line across the lanes marks exactly where the tempo changes;
+            # the pill naming it sits out in the right-hand label strip.
             p.setPen(QPen(C_BPM, 2))
             p.drawLine(x0, y, x1, y)
-            # A clear pill just above the line naming the new tempo.
-            label = f"♩ {bpm:g} BPM"
-            p.setFont(font)
-            fm = p.fontMetrics()
-            tw = fm.horizontalAdvance(label) + 12
-            tag = QRect(x0 + 2, y - 19, tw, 17)
-            p.setPen(Qt.NoPen)
-            p.setBrush(C_BPM)
-            p.drawRoundedRect(tag, 4, 4)
-            p.setPen(QPen(C_GROUP_BG_B, 1))     # dark ink on the accent pill
-            p.drawText(tag, Qt.AlignCenter, label)
+            self._marker_label(p, y, f"♩ {bpm:g} BPM", C_BPM)
 
     def _paint_stops(self, p: QPainter) -> None:
-        """Mark STOP (freeze) positions with an amber dashed line + a pill naming
-        the freeze length in beats. Only the exposed strip is drawn."""
+        """Mark STOP (freeze) positions with an amber dashed line + a label in the
+        right-hand strip. Only the exposed strip is drawn."""
         if not self.project.stops:
             return
         x0 = L.LEFT_MARGIN
         x1 = self.groups[-1].x1
-        font = QFont()
-        font.setPointSize(9)
-        font.setBold(True)
         for pos, beats in self.project.stops.items():
             y = int(self.y_for(float(pos)))
-            if y < self._vis_lo - 20 or y > self._vis_hi + 20:
+            if y < self._vis_lo - 12 or y > self._vis_hi + 12:
                 continue
-            # A dashed line (distinct from the solid BPM line) across the lanes.
-            pen = QPen(C_STOP, 2, Qt.DashLine)
-            p.setPen(pen)
+            p.setPen(QPen(C_STOP, 2, Qt.DashLine))
             p.drawLine(x0, y, x1, y)
-            label = f"■ {float(beats):g}박 정지"
-            p.setFont(font)
-            fm = p.fontMetrics()
-            tw = fm.horizontalAdvance(label) + 12
-            # Sit the pill on the RIGHT so it doesn't collide with a BPM pill that
-            # may share the same line.
-            tag = QRect(x1 - tw - 2, y - 19, tw, 17)
-            p.setPen(Qt.NoPen)
-            p.setBrush(C_STOP)
-            p.drawRoundedRect(tag, 4, 4)
-            p.setPen(QPen(C_GROUP_BG_B, 1))     # dark ink on the accent pill
-            p.drawText(tag, Qt.AlignCenter, label)
+            self._marker_label(p, y, f"■ {float(beats):g}박 정지", C_STOP)
 
     def _paint_scrolls(self, p: QPainter) -> None:
-        """Mark SCROLL (step) and SPEED (interpolated) scroll-velocity changes
-        with a dotted line + a centred pill naming the multiplier. Editing only
-        marks WHERE they are — the game (Qwilight) renders the actual scroll
-        distortion. Only the exposed strip is drawn."""
+        """Mark 순간 변속 (SCROLL, step) and 선형 변속 (SPEED, interpolated)
+        note-speed changes with a dotted line + a label in the right-hand strip.
+        Editing only marks WHERE they are — the game (Qwilight) renders the
+        actual scroll effect. Only the exposed strip is drawn."""
         if not self.project.scrolls and not self.project.speeds:
             return
         x0 = L.LEFT_MARGIN
         x1 = self.groups[-1].x1
-        font = QFont()
-        font.setPointSize(9)
-        font.setBold(True)
-        cx = (x0 + x1) // 2                       # centre pills to dodge BPM/STOP
-        for source, col, tag_txt in ((self.project.scrolls, C_SCROLL, "SCROLL"),
-                                     (self.project.speeds, C_SPEED, "SPEED")):
+        for source, col, tag_txt in ((self.project.scrolls, C_SCROLL, "순간"),
+                                     (self.project.speeds, C_SPEED, "선형")):
             for pos, mult in source.items():
                 y = int(self.y_for(float(pos)))
-                if y < self._vis_lo - 20 or y > self._vis_hi + 20:
+                if y < self._vis_lo - 12 or y > self._vis_hi + 12:
                     continue
                 p.setPen(QPen(col, 2, Qt.DotLine))
                 p.drawLine(x0, y, x1, y)
-                label = f"{tag_txt} ×{float(mult):g}"
-                p.setFont(font)
-                fm = p.fontMetrics()
-                tw = fm.horizontalAdvance(label) + 12
-                tag = QRect(int(cx - tw / 2), y - 19, tw, 17)
-                p.setPen(Qt.NoPen)
-                p.setBrush(col)
-                p.drawRoundedRect(tag, 4, 4)
-                p.setPen(QPen(C_GROUP_BG_B, 1))
-                p.drawText(tag, Qt.AlignCenter, label)
+                self._marker_label(p, y, f"{tag_txt} ×{float(mult):g}", col)
 
     def set_playhead(self, absolute: Optional[float]) -> None:
         prev = self.playhead
