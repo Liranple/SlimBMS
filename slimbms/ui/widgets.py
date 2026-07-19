@@ -113,23 +113,13 @@ class CollapsibleSection(QWidget):
     # -- expand / collapse -------------------------------------------------- #
 
     def _toggle(self) -> None:
-        self._expanded = not self._expanded
-        self.header.setArrowType(Qt.DownArrow if self._expanded else Qt.RightArrow)
-        self._anim.stop()
-        # Animate over the *actual* content height in both directions (when open
-        # the max height is uncapped, so read sizeHint, not maximumHeight).
-        full = self.content.sizeHint().height()
-        if self._expanded:
-            start, end = 0, full
-        else:
-            start, end = full, 0
-        self.content.setMaximumHeight(start)
-        self._anim.setStartValue(start)
-        self._anim.setEndValue(end)
-        self._anim.start()
+        # Collapse/expand INSTANTLY (a single layout pass), not via a per-frame
+        # maximumHeight animation. The animation made the whole sidebar re-flow
+        # every frame — the section (and its neighbours) visibly juddered. An
+        # instant toggle is one clean reflow with no trembling.
+        self.set_expanded(self.header.isChecked())
 
-    def _on_anim_done(self) -> None:
-        # Uncap while open so the section can still grow with its content.
+    def _on_anim_done(self) -> None:  # retained for the (now unused) animation
         if self._expanded:
             self.content.setMaximumHeight(_UNLIMITED)
 

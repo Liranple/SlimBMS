@@ -15,7 +15,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QButtonGroup,
+    QCheckBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -167,25 +167,6 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # -- Collapse / expand every section at once (icon buttons) -------- #
-        toggles = QHBoxLayout()
-        toggles.setContentsMargins(8, 6, 8, 6)
-        toggles.setSpacing(6)
-        toggles.addStretch(1)
-        expand_all = QToolButton()
-        expand_all.setArrowType(Qt.DownArrow)      # ⌄ open sections downward
-        expand_all.setToolTip("모두 펴기")
-        expand_all.setAutoRaise(True)
-        expand_all.clicked.connect(lambda: self._set_all_sections(True))
-        collapse_all = QToolButton()
-        collapse_all.setArrowType(Qt.RightArrow)   # › fold sections shut
-        collapse_all.setToolTip("모두 접기")
-        collapse_all.setAutoRaise(True)
-        collapse_all.clicked.connect(lambda: self._set_all_sections(False))
-        toggles.addWidget(expand_all)
-        toggles.addWidget(collapse_all)
-        outer.addLayout(toggles)
-
         # -- Song info ------------------------------------------------------ #
         info = CollapsibleSection("곡 정보")
         form = QFormLayout()
@@ -239,17 +220,17 @@ class MainWindow(QMainWindow):
         grid = CollapsibleSection("격자")
         self.sb_g1 = self._grid_box(32, self._apply_grids)   # snap basis
         self.sb_g2 = self._grid_box(8, self._apply_grids)    # reference
-        grow = QHBoxLayout()
-        grow.setSpacing(12)
-        grow.addWidget(self._labeled("스냅 격자", self.sb_g1))
-        grow.addWidget(self._labeled("보조 격자", self.sb_g2))
-        grow.addStretch(1)
-        grid.add_layout(grow)
         self.sb_snap = QPushButton("격자 스냅 : 켜짐")
         self.sb_snap.setCheckable(True)
         self.sb_snap.setChecked(True)
         self.sb_snap.toggled.connect(self._toggle_snap)
-        grid.add_widget(self.sb_snap)
+        grow = QHBoxLayout()
+        grow.setSpacing(12)
+        grow.addWidget(self._labeled("스냅 격자", self.sb_g1))
+        grow.addWidget(self._labeled("보조 격자", self.sb_g2))
+        # The snap toggle sits in the empty space to the right of the two boxes.
+        grow.addWidget(self._labeled(" ", self.sb_snap), 1)
+        grid.add_layout(grow)
         grid.add_widget(self._hint("Shift : 자유배치"))
         outer.addWidget(grid)
 
@@ -312,7 +293,7 @@ class MainWindow(QMainWindow):
         srow.setSpacing(8)
         srow.addWidget(self._labeled("마디", self.stop_measure))
         srow.addWidget(self._labeled("칸", self.stop_cell))
-        srow.addWidget(self._labeled("정지(박)", self.stop_beats))
+        srow.addWidget(self._labeled("박자", self.stop_beats))
         stopsec.add_layout(srow)
         add_stop = QPushButton("추가 / 변경")
         add_stop.clicked.connect(self._add_stop)
@@ -326,23 +307,11 @@ class MainWindow(QMainWindow):
         stopsec.add_widget(del_stop)
         outer.addWidget(stopsec)
 
-        # -- SCROLL / SPEED (scroll-velocity) gimmick ----------------------- #
+        # -- 노트 속도 (scroll velocity) ------------------------------------ #
+        # One tool: a start point steps the speed (순간). Tick "끝점 지정" to add
+        # an end point and it becomes a smooth ramp (선형). Both compile to the
+        # same #SCROLL steps on export — the checkbox is just "one point vs two".
         scrollsec = CollapsibleSection("노트 속도")
-        # 순간 변속 = SCROLL (a one-point step); 선형 변속 = SPEED (a two-point
-        # ramp that eases from a start value to an end value over a range). Two
-        # mutually-exclusive buttons (no combo → no wheel changes, clear state).
-        self._scroll_kind_group = QButtonGroup(self)
-        self._scroll_kind_group.setExclusive(True)
-        btn_scroll = QPushButton("순간 변속"); btn_scroll.setCheckable(True); btn_scroll.setChecked(True)
-        btn_speed = QPushButton("선형 변속"); btn_speed.setCheckable(True)
-        self._scroll_kind_buttons = {"scroll": btn_scroll, "speed": btn_speed}
-        self._scroll_kind_group.addButton(btn_scroll)
-        self._scroll_kind_group.addButton(btn_speed)
-        self._scroll_kind_group.buttonClicked.connect(
-            lambda _b: self._on_scroll_type_changed())
-        krow = QHBoxLayout(); krow.setSpacing(6)
-        krow.addWidget(btn_scroll); krow.addWidget(btn_speed)
-        scrollsec.add_layout(krow)
 
         def _mk_value(default):
             v = NoWheelDoubleSpinBox()
@@ -359,19 +328,14 @@ class MainWindow(QMainWindow):
         self.scroll_cell2 = NoWheelSpinBox(); self.scroll_cell2.setRange(0, self.sb_g1.value())
         self.scroll_value2 = _mk_value(1.0)
 
-        # A compact table: one caption row, then a value row per point. The left
-        # "시작"/"끝" tags and the whole end row only appear for 선형 변속, so a
-        # 순간 변속 shows just captions + one value row (no wasted vertical space).
         def _cap(text):
-            # Left-aligned like every other section's captions (the spin boxes
-            # below are left-aligned too, so a centred caption looked out of place).
             lab = self._hint(text); lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter); return lab
         sgrid = QGridLayout()
         sgrid.setContentsMargins(0, 0, 0, 0)
         sgrid.setHorizontalSpacing(8); sgrid.setVerticalSpacing(4)
         sgrid.addWidget(_cap("마디"), 0, 1)
         sgrid.addWidget(_cap("칸"), 0, 2)
-        sgrid.addWidget(_cap("배수"), 0, 3)
+        sgrid.addWidget(_cap("배속"), 0, 3)
         self._scroll_start_tag = self._hint("")
         self._scroll_start_tag.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         sgrid.addWidget(self._scroll_start_tag, 1, 0)
@@ -386,11 +350,15 @@ class MainWindow(QMainWindow):
         sgrid.addWidget(self.scroll_value2, 2, 3)
         for col, stretch in ((0, 0), (1, 1), (2, 1), (3, 1)):
             sgrid.setColumnStretch(col, stretch)
+
+        self.scroll_ramp_chk = QCheckBox("끝점 지정 (구간)")
+        self.scroll_ramp_chk.toggled.connect(self._on_scroll_ramp_toggled)
+        scrollsec.add_widget(self.scroll_ramp_chk)
         scrollsec.add_layout(sgrid)
         self._scroll_end_widgets = [self._scroll_end_tag, self.scroll_measure2,
                                     self.scroll_cell2, self.scroll_value2]
         for w in self._scroll_end_widgets:
-            w.setVisible(False)                     # 순간 변속 is the default
+            w.setVisible(False)                     # a single point by default
 
         add_scroll = QPushButton("추가 / 변경")
         add_scroll.clicked.connect(self._add_scroll)
@@ -661,8 +629,23 @@ class MainWindow(QMainWindow):
             tb.addAction(act)
             self._km_actions[km] = act
 
-        # Mode / key-mode buttons keep their text labels (no icon).
-        for act in (self.add_mode_action, self.edit_mode_action, *self._km_actions.values()):
+        # Push the "collapse / expand every sidebar section" controls to the far
+        # right of the toolbar so they sit above the sidebar and never scroll
+        # away with it.
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tb.addWidget(spacer)
+        self.expand_all_action = QAction("▾ 모두 펴기", self)
+        self.expand_all_action.triggered.connect(lambda: self._set_all_sections(True))
+        tb.addAction(self.expand_all_action)
+        self.collapse_all_action = QAction("▸ 모두 접기", self)
+        self.collapse_all_action.triggered.connect(lambda: self._set_all_sections(False))
+        tb.addAction(self.collapse_all_action)
+
+        # Mode / key-mode / section buttons keep their text labels (no icon).
+        for act in (self.add_mode_action, self.edit_mode_action,
+                    *self._km_actions.values(),
+                    self.expand_all_action, self.collapse_all_action):
             btn = tb.widgetForAction(act)
             if btn is not None:
                 btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
@@ -1004,12 +987,8 @@ class MainWindow(QMainWindow):
 
     def _refresh_bpm_list(self) -> None:
         self.bpm_list.clear()
-        grid = max(1, self.sb_g1.value())
         for pos, bpm in sorted(self.project.bpm_changes.items()):
-            measure = int(pos)
-            frac = pos - measure
-            cell = int(round(float(frac) * grid))
-            text = f"마디 {measure} · 칸 {cell}/{grid} → {bpm:g} BPM"
+            text = f"{self._loc(pos)} → {bpm:g} BPM"
             self.bpm_list.addItem(text)
             self.bpm_list.item(self.bpm_list.count() - 1).setData(Qt.UserRole, pos)
 
@@ -1056,11 +1035,8 @@ class MainWindow(QMainWindow):
 
     def _refresh_stop_list(self) -> None:
         self.stop_list.clear()
-        grid = max(1, self.sb_g1.value())
         for pos, beats in sorted(self.project.stops.items()):
-            measure = int(pos)
-            cell = int(round(float(pos - measure) * grid))
-            text = f"마디 {measure} · 칸 {cell}/{grid} → {float(beats):g}박 정지"
+            text = f"{self._loc(pos)} → {float(beats):g}박"
             self.stop_list.addItem(text)
             self.stop_list.item(self.stop_list.count() - 1).setData(Qt.UserRole, pos)
 
@@ -1078,23 +1054,19 @@ class MainWindow(QMainWindow):
         vp_h = self.scroll.viewport().height()
         vbar.setValue(int(self.view.y_for(float(pos)) - vp_h / 2))
 
-    # -- 노트 속도 (순간 변속 / 선형 변속) --------------------------------- #
+    # -- 노트 속도 (한 점 = 계단 / 끝점 지정 = 구간 램프) ------------------- #
 
-    def _scroll_kind(self) -> str:
-        """Which 노트 속도 kind is selected ('scroll' = 순간, 'speed' = 선형)."""
-        return "speed" if self._scroll_kind_buttons["speed"].isChecked() else "scroll"
+    def _scroll_is_ramp(self) -> bool:
+        """True when the end point is enabled (a range/ramp) rather than a single
+        step."""
+        return self.scroll_ramp_chk.isChecked()
 
-    def _set_scroll_kind(self, kind: str) -> None:
-        self._scroll_kind_buttons.get(kind, self._scroll_kind_buttons["scroll"]).setChecked(True)
-        self._on_scroll_type_changed()
-
-    def _on_scroll_type_changed(self) -> None:
-        # 선형 변속 (SPEED) is a ramp: tag the first row "시작" and reveal the 끝
-        # row. 순간 변속 (SCROLL) is a single step (a bare value row).
-        is_ramp = self._scroll_kind() == "speed"
-        self._scroll_start_tag.setText("시작" if is_ramp else "")
+    def _on_scroll_ramp_toggled(self, checked: bool) -> None:
+        # Enabling the end point turns the single step into a start→end ramp:
+        # reveal the 끝 row and tag the first row "시작".
+        self._scroll_start_tag.setText("시작" if checked else "")
         for w in self._scroll_end_widgets:
-            w.setVisible(is_ramp)
+            w.setVisible(checked)
 
     def _scroll_pos(self, measure_box, cell_box):
         from fractions import Fraction
@@ -1102,14 +1074,22 @@ class MainWindow(QMainWindow):
         cell = min(cell_box.value(), grid)
         return Fraction(measure_box.value()) + Fraction(cell, grid)
 
+    def _loc(self, pos) -> str:
+        """A position label shared by every marker list: '마디 18 · 칸 12'
+        (or just '마디 18' at a measure start), with no grid denominator."""
+        grid = max(1, self.sb_g1.value())
+        m = int(pos)
+        cell = int(round(float(pos - m) * grid))
+        return f"마디 {m}" if cell == 0 else f"마디 {m} · 칸 {cell}"
+
     def _add_scroll(self) -> None:
         from fractions import Fraction
-        if self._scroll_kind() == "speed":
-            # A 선형 변속 ramp = two SPEED markers (start value, end value).
+        if self._scroll_is_ramp():
+            # End point enabled → a ramp = two markers (start value, end value).
             sp = self._scroll_pos(self.scroll_measure, self.scroll_cell)
             ep = self._scroll_pos(self.scroll_measure2, self.scroll_cell2)
             if ep <= sp:
-                self.statusBar().showMessage("선형 변속: 끝 위치가 시작보다 뒤여야 합니다.", 3000)
+                self.statusBar().showMessage("구간 변속: 끝 위치가 시작보다 뒤여야 합니다.", 3000)
                 return
             self.project.speeds[sp] = Fraction(self.scroll_value.value()).limit_denominator(1000)
             self.project.speeds[ep] = Fraction(self.scroll_value2.value()).limit_denominator(1000)
@@ -1139,21 +1119,13 @@ class MainWindow(QMainWindow):
 
     def _refresh_scroll_list(self) -> None:
         self.scroll_list.clear()
-        grid = max(1, self.sb_g1.value())
-
-        def loc(pos):
-            # Compact position: "18" at a measure start, else "18·12/32".
-            m = int(pos)
-            cell = int(round(float(pos - m) * grid))
-            return f"{m}" if cell == 0 else f"{m}·{cell}/{grid}"
-
         rows = []   # (sort_key, text, userdata)
         for pos, val in self.project.scrolls.items():
-            rows.append((float(pos), f"[순간] {loc(pos)} ×{float(val):g}",
+            rows.append((float(pos), f"{self._loc(pos)} → ×{float(val):g}배속",
                          ("scroll", pos)))
         for sp, ep, sv, ev in self.view._speed_ramps():
             rows.append((float(sp),
-                         f"[선형] {loc(sp)} ×{float(sv):g} → {loc(ep)} ×{float(ev):g}",
+                         f"{self._loc(sp)} → {self._loc(ep)}  ×{float(sv):g}→{float(ev):g}배속",
                          ("speed", sp, ep)))
         for _key, text, data in sorted(rows, key=lambda r: r[0]):
             self.scroll_list.addItem(text)
@@ -1173,7 +1145,7 @@ class MainWindow(QMainWindow):
             _, sp, ep = data
             if sp not in self.project.speeds:
                 return
-            self._set_scroll_kind("speed")           # 선형 변속 (shows end row)
+            self.scroll_ramp_chk.setChecked(True)    # ramp: reveals the end row
             set_point(self.scroll_measure, self.scroll_cell, self.scroll_value,
                       sp, self.project.speeds[sp])
             set_point(self.scroll_measure2, self.scroll_cell2, self.scroll_value2,
@@ -1183,7 +1155,7 @@ class MainWindow(QMainWindow):
             _, pos = data
             if pos not in self.project.scrolls:
                 return
-            self._set_scroll_kind("scroll")          # 순간 변속
+            self.scroll_ramp_chk.setChecked(False)   # single step
             set_point(self.scroll_measure, self.scroll_cell, self.scroll_value,
                       pos, self.project.scrolls[pos])
             focus = pos
