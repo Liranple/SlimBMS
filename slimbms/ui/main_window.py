@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -351,29 +352,43 @@ class MainWindow(QMainWindow):
             v.setValue(default)
             return v
 
-        # Start point (also the sole point for 순간 변속).
         self.scroll_measure = NoWheelSpinBox(); self.scroll_measure.setRange(0, 9999)
         self.scroll_cell = NoWheelSpinBox(); self.scroll_cell.setRange(0, self.sb_g1.value())
         self.scroll_value = _mk_value(2.0)
-        scr = QHBoxLayout(); scr.setSpacing(8)
-        self._scroll_start_label = self._labeled("마디", self.scroll_measure)
-        scr.addWidget(self._scroll_start_label)
-        scr.addWidget(self._labeled("칸", self.scroll_cell))
-        scr.addWidget(self._labeled("배수", self.scroll_value))
-        scrollsec.add_layout(scr)
-
-        # End point — only shown for 선형 변속 (a ramp needs two points).
         self.scroll_measure2 = NoWheelSpinBox(); self.scroll_measure2.setRange(0, 9999)
         self.scroll_cell2 = NoWheelSpinBox(); self.scroll_cell2.setRange(0, self.sb_g1.value())
         self.scroll_value2 = _mk_value(1.0)
-        self._scroll_end_row = QWidget()
-        scr2 = QHBoxLayout(self._scroll_end_row)
-        scr2.setContentsMargins(0, 0, 0, 0); scr2.setSpacing(8)
-        scr2.addWidget(self._labeled("끝마디", self.scroll_measure2))
-        scr2.addWidget(self._labeled("끝칸", self.scroll_cell2))
-        scr2.addWidget(self._labeled("끝배수", self.scroll_value2))
-        scrollsec.add_widget(self._scroll_end_row)
-        self._scroll_end_row.setVisible(False)      # 순간 변속 is the default
+
+        # A compact table: one caption row, then a value row per point. The left
+        # "시작"/"끝" tags and the whole end row only appear for 선형 변속, so a
+        # 순간 변속 shows just captions + one value row (no wasted vertical space).
+        def _cap(text):
+            lab = self._hint(text); lab.setAlignment(Qt.AlignCenter); return lab
+        sgrid = QGridLayout()
+        sgrid.setContentsMargins(0, 0, 0, 0)
+        sgrid.setHorizontalSpacing(8); sgrid.setVerticalSpacing(4)
+        sgrid.addWidget(_cap("마디"), 0, 1)
+        sgrid.addWidget(_cap("칸"), 0, 2)
+        sgrid.addWidget(_cap("배수"), 0, 3)
+        self._scroll_start_tag = self._hint("")
+        self._scroll_start_tag.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        sgrid.addWidget(self._scroll_start_tag, 1, 0)
+        sgrid.addWidget(self.scroll_measure, 1, 1)
+        sgrid.addWidget(self.scroll_cell, 1, 2)
+        sgrid.addWidget(self.scroll_value, 1, 3)
+        self._scroll_end_tag = self._hint("끝")
+        self._scroll_end_tag.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        sgrid.addWidget(self._scroll_end_tag, 2, 0)
+        sgrid.addWidget(self.scroll_measure2, 2, 1)
+        sgrid.addWidget(self.scroll_cell2, 2, 2)
+        sgrid.addWidget(self.scroll_value2, 2, 3)
+        for col, stretch in ((0, 0), (1, 1), (2, 1), (3, 1)):
+            sgrid.setColumnStretch(col, stretch)
+        scrollsec.add_layout(sgrid)
+        self._scroll_end_widgets = [self._scroll_end_tag, self.scroll_measure2,
+                                    self.scroll_cell2, self.scroll_value2]
+        for w in self._scroll_end_widgets:
+            w.setVisible(False)                     # 순간 변속 is the default
 
         add_scroll = QPushButton("추가 / 변경")
         add_scroll.clicked.connect(self._add_scroll)
@@ -1072,12 +1087,12 @@ class MainWindow(QMainWindow):
         self._on_scroll_type_changed()
 
     def _on_scroll_type_changed(self) -> None:
-        # 선형 변속 (SPEED) is a ramp: reveal the end-point row. 순간 변속
-        # (SCROLL) is a single step.
+        # 선형 변속 (SPEED) is a ramp: tag the first row "시작" and reveal the 끝
+        # row. 순간 변속 (SCROLL) is a single step (a bare value row).
         is_ramp = self._scroll_kind() == "speed"
-        self._scroll_end_row.setVisible(is_ramp)
-        self._scroll_start_label.layout().itemAt(0).widget().setText(
-            "시작마디" if is_ramp else "마디")
+        self._scroll_start_tag.setText("시작" if is_ramp else "")
+        for w in self._scroll_end_widgets:
+            w.setVisible(is_ramp)
 
     def _scroll_pos(self, measure_box, cell_box):
         from fractions import Fraction
