@@ -399,6 +399,17 @@ class MainWindow(QMainWindow):
         for col, stretch in ((0, 0), (1, 1), (2, 1), (3, 1)):
             sgrid.setColumnStretch(col, stretch)
         scrollsec.add_layout(sgrid)
+        # The end row is what decides 순간 vs 선형, so let it show that: it greys
+        # out while it holds no end point past the start (= a single step) and
+        # lights up the moment one is typed (= a ramp). Still editable either way
+        # — greying it out is the invitation to fill it in, not a lockout.
+        self._scroll_end_row = (end_tag, self.scroll_measure2,
+                                self.scroll_cell2, self.scroll_value2)
+        for box in (self.scroll_measure, self.scroll_cell,
+                    self.scroll_measure2, self.scroll_cell2):
+            box.valueChanged.connect(self._sync_scroll_end_row)
+        self.sb_g1.valueChanged.connect(self._sync_scroll_end_row)
+        self._sync_scroll_end_row()
         self.scroll_list = QListWidget()
         self.scroll_list.setItemDelegate(MarkerListDelegate(self.scroll_list))
         self.scroll_list.setMaximumHeight(96)
@@ -1207,25 +1218,40 @@ class MainWindow(QMainWindow):
         item.setData(Qt.UserRole, userdata)
 
     def _scroll_from_inputs(self):
-        """(start_pos, end_pos, start_val, end_val) from the inputs, or None if
-        the range is invalid (end not after start)."""
+        """(start_pos, end_pos, start_val, end_val) from the inputs. ``end_pos``
+        is None when the end point isn't after the start (e.g. left at 0): that
+        means a 순간 변속 — a single step at the start point — instead of a ramp,
+        so the end row doubles as the "no ramp" switch."""
         from fractions import Fraction
         sp = self._marker_pos(self.scroll_measure, self.scroll_cell)
         ep = self._marker_pos(self.scroll_measure2, self.scroll_cell2)
-        if ep <= sp:
-            self.statusBar().showMessage("끝 위치가 시작보다 뒤여야 합니다.", 3000)
-            return None
-        return (sp, ep,
+        return (sp, ep if ep > sp else None,
                 Fraction(self.scroll_value.value()).limit_denominator(1000),
                 Fraction(self.scroll_value2.value()).limit_denominator(1000))
 
+    def _sync_scroll_end_row(self) -> None:
+        """Grey the 노트 속도 end row while it holds no usable end point, so the
+        순간(단일 지점) / 선형(구간) state is visible without a caption."""
+        active = self._marker_pos(self.scroll_measure2, self.scroll_cell2) > \
+            self._marker_pos(self.scroll_measure, self.scroll_cell)
+        for w in self._scroll_end_row:
+            if w.property("inactive") == (not active):
+                continue                       # already in this state
+            w.setProperty("inactive", not active)
+            w.style().unpolish(w)
+            w.style().polish(w)
+
+    def _write_scroll(self, sp, ep, sv, ev) -> None:
+        """Store either a ramp (two SPEED markers) or a single 순간 SCROLL step."""
+        if ep is None:
+            self.project.scrolls[sp] = sv
+        else:
+            self.project.speeds[sp] = sv
+            self.project.speeds[ep] = ev
+
     def _add_scroll(self) -> None:
-        r = self._scroll_from_inputs()
-        if r is None:
-            return
-        sp, ep, sv, ev = r
-        self.project.speeds[sp] = sv
-        self.project.speeds[ep] = ev
+        sp, ep, sv, ev = self._scroll_from_inputs()
+        self._write_scroll(sp, ep, sv, ev)
         self.view.changed.emit()
         self.view.update()
         self._refresh_scroll_list()
@@ -1238,13 +1264,9 @@ class MainWindow(QMainWindow):
             self.project.scrolls.pop(data[1], None)
 
     def _commit_scroll(self, target) -> bool:
-        r = self._scroll_from_inputs()
-        if r is None:
-            return False
-        sp, ep, sv, ev = r
+        sp, ep, sv, ev = self._scroll_from_inputs()
         self._remove_scroll_data(target)         # drop the edited entry first
-        self.project.speeds[sp] = sv
-        self.project.speeds[ep] = ev
+        self._write_scroll(sp, ep, sv, ev)
         self.view.changed.emit()
         self.view.update()
         self._refresh_scroll_list()
@@ -1285,15 +1307,17 @@ class MainWindow(QMainWindow):
             set_point(self.scroll_measure2, self.scroll_cell2, self.scroll_value2,
                       ep, self.project.speeds.get(ep, self.project.speeds[sp]))
             focus = sp
-        else:                                    # a legacy single (순간) marker
+        else:                                    # a single (순간) marker
             _, pos = data
             if pos not in self.project.scrolls:
                 return
             set_point(self.scroll_measure, self.scroll_cell, self.scroll_value,
                       pos, self.project.scrolls[pos])
-            # mirror the value into the end row so committing keeps it sane
-            self._set_pos_inputs(self.scroll_measure2, self.scroll_cell2, pos)
-            self.scroll_value2.setValue(float(self.project.scrolls[pos]))
+            # Zero the whole end row: that's what marks it as 순간 (no ramp), so
+            # committing it back keeps it a single step instead of growing a ramp.
+            self.scroll_measure2.setValue(0)
+            self.scroll_cell2.setValue(0)
+            self.scroll_value2.setValue(0.0)
             focus = pos
         self._center_canvas(focus)
 

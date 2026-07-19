@@ -139,6 +139,20 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border-color: {ACCENT};
 }}
+/* An input that is present but currently has no effect — used by the 노트 속도
+   end row, which stays editable (typing in it is what switches the marker to a
+   ramp) but reads as "off" until it holds a real end point. Dimmed rather than
+   disabled, so it still invites the click that turns it on. */
+QSpinBox[inactive="true"], QDoubleSpinBox[inactive="true"] {{
+    background: {APP_BG};
+    color: {TEXT_DIM};
+    border-color: {BORDER};
+}}
+/* The matching row tag: dim is already the hint default, so it's the *active*
+   state that brightens. Both selectors carry the #Hint id so they win over the
+   plain QLabel#Hint rule below. */
+QLabel#Hint[inactive="false"] {{ color: {TEXT}; }}
+QLabel#Hint[inactive="true"] {{ color: {BORDER_STRONG}; }}
 QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{
     background: {PANEL};

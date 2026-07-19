@@ -159,6 +159,43 @@ def main() -> int:
     assert sorted(int(n.measure) for n in view.project.charts[4]) == [2, 3], \
         "the passed-over note must stay put"
 
+    # -- 노트 속도: the end row doubles as the "ramp or not" switch ---------- #
+    p = win.project
+    p.scrolls.clear()
+    p.speeds.clear()
+
+    def set_scroll(m1, c1, v1, m2, c2, v2):
+        win.scroll_measure.setValue(m1); win.scroll_cell.setValue(c1)
+        win.scroll_value.setValue(v1)
+        win.scroll_measure2.setValue(m2); win.scroll_cell2.setValue(c2)
+        win.scroll_value2.setValue(v2)
+
+    set_scroll(4, 0, 2.0, 8, 0, 1.0)          # a real range -> linear ramp
+    assert all(not wdg.property("inactive") for wdg in win._scroll_end_row), \
+        "a usable end point must light the end row up"
+    win._add_scroll()
+    assert not p.scrolls and len(p.speeds) == 2, "end after start must stay a ramp"
+
+    set_scroll(12, 0, 3.0, 0, 0, 0.0)         # end below start -> instant step
+    assert all(wdg.property("inactive") for wdg in win._scroll_end_row), \
+        "an end point below the start must grey the end row out"
+    win._add_scroll()
+    assert p.scrolls == {Fraction(12): Fraction(3)}, "end below start must be 순간"
+    assert len(p.speeds) == 2, "the instant step must not touch the ramp"
+
+    win._load_scroll(("scroll", Fraction(12)))   # double-clicking an instant row
+    assert (win.scroll_measure.value(), win.scroll_value.value()) == (12, 3.0)
+    assert (win.scroll_measure2.value(), win.scroll_cell2.value(),
+            win.scroll_value2.value()) == (0, 0, 0.0), "the end row must zero out"
+    assert all(wdg.property("inactive") for wdg in win._scroll_end_row), \
+        "loading a 순간 marker must leave the end row greyed"
+    win._commit_scroll(("scroll", Fraction(12)))
+    assert p.scrolls == {Fraction(12): Fraction(3)}, "re-committing must stay 순간"
+
+    win._load_scroll(("speed", Fraction(4), Fraction(8)))   # ramps load unchanged
+    assert (win.scroll_measure.value(), win.scroll_value.value()) == (4, 2.0)
+    assert (win.scroll_measure2.value(), win.scroll_value2.value()) == (8, 1.0)
+
     print("GUI smoke test PASSED")
     return 0
 
