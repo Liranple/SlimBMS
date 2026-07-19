@@ -233,6 +233,71 @@ def test_build_stretch_falls_back_on_failure():
     assert a.stretch_ready() is True          # won't retry (no UI-thread rebuild)
 
 
+def test_stretch_cached_to_disk_and_reused():
+    """Building a speed writes a PCM cache file; re-selecting that speed loads it
+    from disk instead of recomputing the (heavy) stretch."""
+    a = _player()
+    if a is None:
+        return
+    import slimbms.audio as audio_mod
+    a.set_speed(0.5)
+    a.build_stretch()
+    assert a.stretch_ready() is True
+    path = a._cache_path(0.5)
+    assert path and os.path.exists(path)
+    first = a._stretched
+    # Switch away and back: the second build must be served from disk, so the
+    # stretch function is never called again.
+    calls = {"n": 0}
+    orig = audio_mod._time_stretch
+    def spy(*args):
+        calls["n"] += 1
+        return orig(*args)
+    audio_mod._time_stretch = spy
+    try:
+        a.set_speed(1.0); a.build_stretch()
+        a.set_speed(0.5); a.build_stretch()
+    finally:
+        audio_mod._time_stretch = orig
+    assert calls["n"] == 0                 # cache hit, not recomputed
+    assert a._stretched == first           # identical bytes
+
+
+def test_precompute_populates_cache_without_disturbing_current():
+    """precompute_speeds pre-builds cache files in the background without
+    changing the current playback buffer/speed; a later switch is a cache load."""
+    a = _player()
+    if a is None:
+        return
+    a.precompute_speeds([0.5, 0.7])
+    assert os.path.exists(a._cache_path(0.5))
+    assert os.path.exists(a._cache_path(0.7))
+    assert abs(a.speed - 1.0) < 1e-9       # current speed untouched
+    assert a._stretched == a._raw          # current buffer untouched
+    # Switching to a precomputed speed must not recompute (would raise here).
+    import slimbms.audio as audio_mod
+    orig = audio_mod._time_stretch
+    audio_mod._time_stretch = lambda *a_: (_ for _ in ()).throw(
+        AssertionError("recomputed a precomputed speed"))
+    try:
+        a.set_speed(0.7); a.build_stretch()
+    finally:
+        audio_mod._time_stretch = orig
+    assert a.stretch_ready() is True and abs(a.speed - 0.7) < 1e-9
+
+
+def test_unload_removes_cache_dir():
+    a = _player()
+    if a is None:
+        return
+    a.set_speed(0.5); a.build_stretch()
+    d = a._cache_dir
+    assert d and os.path.isdir(d)
+    a.unload()
+    assert not os.path.exists(d)
+    assert a._cache_dir is None
+
+
 def test_speed_disabled_without_numpy():
     """Documented contract: with no numpy, speed control stays at 1.0x."""
     import slimbms.audio as audio_mod

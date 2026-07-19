@@ -56,6 +56,11 @@ from .worker import _Worker
 _SETTINGS_ORG = "SlimBMS"
 _SETTINGS_APP = "SlimBMS"
 
+# Playback speeds pre-built in the background when a BGM loads, so selecting one
+# later is instant. The common practice range is slow (0.5–0.9); 1.0x needs no
+# build. Faster-than-1 speeds are rarely used and stay build-on-demand.
+PRECOMPUTE_SPEEDS = (0.5, 0.6, 0.7, 0.8, 0.9)
+
 
 def _settings() -> QSettings:
     """The app's persistent settings store (window geometry, last folders, …)."""
@@ -266,7 +271,9 @@ class MainWindow(QMainWindow):
         # -- Audio ---------------------------------------------------------- #
         audio = CollapsibleSection("음원")
         audio.add_widget(self._hint("재생 속도"))
-        self.speed = DragValue("×", 0.25, 2.0, 0.05, 1.0)
+        # 0.1 steps so every reachable speed lands on the pre-built cache grid
+        # (see PRECOMPUTE_SPEEDS); the common practice range is 0.5–1.0.
+        self.speed = DragValue("×", 0.5, 1.5, 0.1, 1.0)
         self.speed.changed.connect(self._set_speed)
         audio.add_widget(self.speed)
         audio.add_widget(self._hint("음량"))
@@ -1259,6 +1266,14 @@ class MainWindow(QMainWindow):
         if loaded and not self.audio.stretch_ready():
             worker = self._bgm_speed_worker = _Worker(self.audio.build_stretch)
             worker.start()
+        if loaded:
+            # Pre-build the common slow speeds in the background so picking one on
+            # the gauge applies instantly (and caps build memory to a small
+            # streamed block instead of the whole song at once).
+            speeds = list(PRECOMPUTE_SPEEDS)
+            pre = self._bgm_precompute_worker = _Worker(
+                lambda: self.audio.precompute_speeds(speeds))
+            pre.start()
         return loaded
 
     # -- updates ------------------------------------------------------------ #
