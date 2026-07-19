@@ -140,8 +140,14 @@ QScrollArea#SidebarScroll {{ background: {PANEL}; border: none; border-left: 1px
 QScrollArea#SidebarScroll > QWidget > QWidget {{ background: {PANEL}; }}
 QWidget#Sidebar {{ background: {PANEL}; }}
 QWidget#SectionContent {{ background: {PANEL}; }}
-/* Labels never paint their own dark rectangle — keep them on the surface. */
-QLabel {{ background: transparent; }}
+/* Text widgets never paint their own dark rectangle — keep them flat on the
+   panel surface (this is the fix for the recurring "black box behind text"). */
+QLabel, QCheckBox, QRadioButton {{ background: transparent; }}
+QCheckBox::indicator, QRadioButton::indicator {{
+    width: 15px; height: 15px; border: 1px solid {BORDER_STRONG};
+    border-radius: 3px; background: {FIELD};
+}}
+QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 QLabel#Section {{
     color: {ACCENT};
     font-size: 8.5pt;
@@ -151,6 +157,24 @@ QLabel#Section {{
 }}
 QLabel#Hint {{ color: {TEXT_DIM}; font-size: 9pt; }}
 QFrame#HLine {{ background: {BORDER}; border: none; max-height: 1px; }}
+
+/* Marker lists (BPM / 정지 / 노트 속도) — padded, rounded rows instead of the
+   cramped default so they read cleanly. */
+QListWidget {{
+    background: {FIELD};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    outline: none;
+    padding: 3px;
+}}
+QListWidget::item {{
+    padding: 5px 8px;
+    border-radius: 4px;
+    margin: 1px 0;
+    color: {TEXT};
+}}
+QListWidget::item:hover {{ background: {BORDER}; }}
+QListWidget::item:selected {{ background: {ACCENT}; color: {ACCENT_INK}; }}
 
 /* Collapsible section headers (act as the dividers between groups). */
 QToolButton#SectionHeader {{

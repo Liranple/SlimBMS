@@ -15,7 +15,6 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QCheckBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -336,29 +335,20 @@ class MainWindow(QMainWindow):
         sgrid.addWidget(_cap("마디"), 0, 1)
         sgrid.addWidget(_cap("칸"), 0, 2)
         sgrid.addWidget(_cap("배속"), 0, 3)
-        self._scroll_start_tag = self._hint("")
-        self._scroll_start_tag.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        sgrid.addWidget(self._scroll_start_tag, 1, 0)
+        # Always a start → end range (two points), so both rows show at once.
+        start_tag = self._hint("시작"); start_tag.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        sgrid.addWidget(start_tag, 1, 0)
         sgrid.addWidget(self.scroll_measure, 1, 1)
         sgrid.addWidget(self.scroll_cell, 1, 2)
         sgrid.addWidget(self.scroll_value, 1, 3)
-        self._scroll_end_tag = self._hint("끝")
-        self._scroll_end_tag.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        sgrid.addWidget(self._scroll_end_tag, 2, 0)
+        end_tag = self._hint("끝"); end_tag.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        sgrid.addWidget(end_tag, 2, 0)
         sgrid.addWidget(self.scroll_measure2, 2, 1)
         sgrid.addWidget(self.scroll_cell2, 2, 2)
         sgrid.addWidget(self.scroll_value2, 2, 3)
         for col, stretch in ((0, 0), (1, 1), (2, 1), (3, 1)):
             sgrid.setColumnStretch(col, stretch)
-
-        self.scroll_ramp_chk = QCheckBox("끝점 지정 (구간)")
-        self.scroll_ramp_chk.toggled.connect(self._on_scroll_ramp_toggled)
-        scrollsec.add_widget(self.scroll_ramp_chk)
         scrollsec.add_layout(sgrid)
-        self._scroll_end_widgets = [self._scroll_end_tag, self.scroll_measure2,
-                                    self.scroll_cell2, self.scroll_value2]
-        for w in self._scroll_end_widgets:
-            w.setVisible(False)                     # a single point by default
 
         add_scroll = QPushButton("추가 / 변경")
         add_scroll.clicked.connect(self._add_scroll)
@@ -1054,19 +1044,7 @@ class MainWindow(QMainWindow):
         vp_h = self.scroll.viewport().height()
         vbar.setValue(int(self.view.y_for(float(pos)) - vp_h / 2))
 
-    # -- 노트 속도 (한 점 = 계단 / 끝점 지정 = 구간 램프) ------------------- #
-
-    def _scroll_is_ramp(self) -> bool:
-        """True when the end point is enabled (a range/ramp) rather than a single
-        step."""
-        return self.scroll_ramp_chk.isChecked()
-
-    def _on_scroll_ramp_toggled(self, checked: bool) -> None:
-        # Enabling the end point turns the single step into a start→end ramp:
-        # reveal the 끝 row and tag the first row "시작".
-        self._scroll_start_tag.setText("시작" if checked else "")
-        for w in self._scroll_end_widgets:
-            w.setVisible(checked)
+    # -- 노트 속도 (시작 → 끝 구간 변속) ---------------------------------- #
 
     def _scroll_pos(self, measure_box, cell_box):
         from fractions import Fraction
@@ -1084,21 +1062,14 @@ class MainWindow(QMainWindow):
 
     def _add_scroll(self) -> None:
         from fractions import Fraction
-        if self._scroll_is_ramp():
-            # End point enabled → a ramp = two markers (start value, end value).
-            sp = self._scroll_pos(self.scroll_measure, self.scroll_cell)
-            ep = self._scroll_pos(self.scroll_measure2, self.scroll_cell2)
-            if ep <= sp:
-                self.statusBar().showMessage("구간 변속: 끝 위치가 시작보다 뒤여야 합니다.", 3000)
-                return
-            self.project.speeds[sp] = Fraction(self.scroll_value.value()).limit_denominator(1000)
-            self.project.speeds[ep] = Fraction(self.scroll_value2.value()).limit_denominator(1000)
-        else:
-            pos = self._scroll_pos(self.scroll_measure, self.scroll_cell)
-            value = Fraction(self.scroll_value.value()).limit_denominator(1000)
-            if value == 0:
-                return                   # a 0x step would freeze the field flat
-            self.project.scrolls[pos] = value
+        # A start → end range = two markers (start value, end value).
+        sp = self._scroll_pos(self.scroll_measure, self.scroll_cell)
+        ep = self._scroll_pos(self.scroll_measure2, self.scroll_cell2)
+        if ep <= sp:
+            self.statusBar().showMessage("끝 위치가 시작보다 뒤여야 합니다.", 3000)
+            return
+        self.project.speeds[sp] = Fraction(self.scroll_value.value()).limit_denominator(1000)
+        self.project.speeds[ep] = Fraction(self.scroll_value2.value()).limit_denominator(1000)
         self.view.changed.emit()
         self.view.update()
         self._refresh_scroll_list()
@@ -1145,17 +1116,15 @@ class MainWindow(QMainWindow):
             _, sp, ep = data
             if sp not in self.project.speeds:
                 return
-            self.scroll_ramp_chk.setChecked(True)    # ramp: reveals the end row
             set_point(self.scroll_measure, self.scroll_cell, self.scroll_value,
                       sp, self.project.speeds[sp])
             set_point(self.scroll_measure2, self.scroll_cell2, self.scroll_value2,
                       ep, self.project.speeds.get(ep, self.project.speeds[sp]))
             focus = sp
-        else:
+        else:                                    # a legacy single (순간) marker
             _, pos = data
             if pos not in self.project.scrolls:
                 return
-            self.scroll_ramp_chk.setChecked(False)   # single step
             set_point(self.scroll_measure, self.scroll_cell, self.scroll_value,
                       pos, self.project.scrolls[pos])
             focus = pos

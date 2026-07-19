@@ -7,6 +7,7 @@ from PySide6.QtCore import (
     QPoint,
     QPropertyAnimation,
     QRect,
+    QSize,
     Qt,
     Signal,
 )
@@ -62,16 +63,45 @@ class NoWheelComboBox(QComboBox):
         event.ignore()
 
 
-class CollapsibleSection(QWidget):
-    """A titled section whose body expands/collapses with a smooth animation
-    when its header is clicked. Add content with :meth:`add_widget` /
-    :meth:`add_layout`.
+class _ClipReveal(QWidget):
+    """Shows its single body child pinned to the top and clips whatever overflows
+    the bottom. The body is positioned MANUALLY (not by a layout) and always at
+    its own natural height, so shrinking this widget during the collapse
+    animation reveals/hides the body like a curtain — the body's inner widgets
+    are never resized or re-laid-out frame by frame (that reflow was the source
+    of the trembling)."""
 
-    The body lives inside a fixed-height *host* that is top-aligned within an
-    animated *clip*. Collapsing shrinks the clip's ``maximumHeight`` while the
-    host keeps its full natural height and is simply clipped from the bottom — a
-    curtain, not a squeeze. That's what stops the frame-by-frame trembling: the
-    body's widgets never get re-laid-out mid-animation."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(0)
+        self._child = None
+
+    def set_child(self, child: QWidget) -> None:
+        self._child = child
+        child.setParent(self)
+        child.show()
+        self._place()
+
+    def _natural(self) -> int:
+        return self._child.sizeHint().height() if self._child is not None else 0
+
+    def _place(self) -> None:
+        if self._child is not None:
+            self._child.setGeometry(0, 0, self.width(), self._natural())
+
+    def sizeHint(self):  # noqa: N802
+        w = self._child.sizeHint().width() if self._child is not None else 0
+        return QSize(w, self._natural())
+
+    def resizeEvent(self, event):  # noqa: N802
+        # Only re-place the body (same height every time → no inner reflow); the
+        # clip's own height is whatever the animation set.
+        self._place()
+
+
+class CollapsibleSection(QWidget):
+    """A titled section whose body expands/collapses with a smooth animation when
+    its header is clicked. Add content with :meth:`add_widget` / :meth:`add_layout`."""
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
@@ -92,26 +122,27 @@ class CollapsibleSection(QWidget):
         self.header.clicked.connect(self._toggle)
         outer.addWidget(self.header)
 
-        # `content` is the animated clip; `_host` holds the real body at its
-        # full natural height and is top-aligned so the clip reveals/hides it
-        # like a curtain instead of squashing it.
-        self.content = QWidget()
+        # `content` is the animated clip; the real body lives in a plain host
+        # widget that the clip positions manually at full height.
+        self.content = _ClipReveal()
         self.content.setObjectName("SectionContent")
-        self.content.setMinimumHeight(0)
-        clip = QVBoxLayout(self.content)
-        clip.setContentsMargins(0, 0, 0, 0)
-        clip.setSpacing(0)
-        self._host = QWidget()
+        self._host = QWidget(self.content)
         self._host.setObjectName("SectionContent")
         self.body = QVBoxLayout(self._host)
         self.body.setContentsMargins(12, 8, 8, 12)
         self.body.setSpacing(8)
-        clip.addWidget(self._host, 0, Qt.AlignTop)
+        self.content.set_child(self._host)
         outer.addWidget(self.content)
 
+        # Animating maximumHeight would let the sidebar layout also stretch the
+        # clip toward its sizeHint; lock the minimum to the same value each frame
+        # so the clip's height is EXACTLY the animated number — no negotiation,
+        # no per-frame wobble.
         self._anim = QPropertyAnimation(self.content, b"maximumHeight", self)
-        self._anim.setDuration(200)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.setDuration(190)
+        self._anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._anim.valueChanged.connect(
+            lambda v: self.content.setMinimumHeight(int(v)))
         self._anim.finished.connect(self._on_anim_done)
 
     # -- content ------------------------------------------------------------ #
@@ -124,9 +155,6 @@ class CollapsibleSection(QWidget):
 
     # -- expand / collapse -------------------------------------------------- #
 
-    def _body_height(self) -> int:
-        return self._host.sizeHint().height()
-
     def _toggle(self) -> None:
         expanded = self.header.isChecked()
         if expanded == self._expanded:
@@ -134,24 +162,16 @@ class CollapsibleSection(QWidget):
         self._expanded = expanded
         self.header.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
         self._anim.stop()
-        # Pin the host to its natural height so the clip animation can't squash
-        # it; start from the current height so mid-animation reversals are smooth.
-        full = self._body_height()
-        self._host.setFixedHeight(full)
-        start = self.content.maximumHeight()
-        if start >= _UNLIMITED:
-            start = full
-        self.content.setMaximumHeight(start)
+        full = self.content._natural()
+        start = self.content.height()               # from current → smooth reversals
         self._anim.setStartValue(start)
         self._anim.setEndValue(full if expanded else 0)
         self._anim.start()
 
     def _on_anim_done(self) -> None:
         if self._expanded:
-            # Uncap so the section can still grow if its body content changes;
-            # release the fixed height so it tracks the body again.
-            self._host.setMinimumHeight(0)
-            self._host.setMaximumHeight(_UNLIMITED)
+            # Uncap so the section tracks its body again if content ever changes.
+            self.content.setMinimumHeight(0)
             self.content.setMaximumHeight(_UNLIMITED)
 
     def is_expanded(self) -> bool:
@@ -167,11 +187,10 @@ class CollapsibleSection(QWidget):
         self.header.setArrowType(Qt.DownArrow if self._expanded else Qt.RightArrow)
         self._anim.stop()
         if self._expanded:
-            self._host.setMinimumHeight(0)
-            self._host.setMaximumHeight(_UNLIMITED)
+            self.content.setMinimumHeight(0)
             self.content.setMaximumHeight(_UNLIMITED)
         else:
-            self._host.setFixedHeight(self._body_height())
+            self.content.setMinimumHeight(0)
             self.content.setMaximumHeight(0)
 
 
