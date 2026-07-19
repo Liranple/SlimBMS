@@ -164,16 +164,30 @@ def test_stop_slbms_roundtrip():
     assert back.stops == p.stops
 
 
-def test_scroll_speed_roundtrip_bms():
-    # SCROLL (SC) and SPEED (SP), incl. fractional and negative multipliers.
+def test_scroll_roundtrip_bms():
+    # 순간 변속 (SCROLL / SC), incl. fractional and negative multipliers.
     p = make_project()
     p.scrolls[Fraction(1)] = Fraction(2)
     p.scrolls[Fraction(5, 2)] = Fraction(1, 2)  # fractional position
     p.scrolls[Fraction(3)] = Fraction(-1)       # reverse scroll (all < 4 measures)
-    p.speeds[Fraction(2)] = Fraction(3, 2)
     back = bms_io.parse_bms(bms_io.export_bms(p, 6))
     assert back.scrolls == p.scrolls
-    assert back.speeds == p.speeds
+
+
+def test_speed_ramp_exports_as_scroll_staircase():
+    # 선형 변속 (SPEED) is exported as fine SCROLL steps, NOT #SPEED — the target
+    # engine reads #SCROLL only. The ramp's endpoints must come out exactly.
+    p = make_project()
+    p.speeds[Fraction(1)] = Fraction(2)         # ramp start ×2 at measure 1
+    p.speeds[Fraction(2)] = Fraction(1)         # ramp end   ×1 at measure 2
+    text = bms_io.export_bms(p, 6)
+    assert "#SPEED" not in text.upper()
+    assert not any(l[4:6].upper() == "SP" for l in text.splitlines() if len(l) > 6)
+    back = bms_io.parse_bms(text)
+    assert not back.speeds                      # nothing on the SP channel
+    assert back.scrolls.get(Fraction(1)) == Fraction(2)   # start value
+    assert back.scrolls.get(Fraction(2)) == Fraction(1)   # end value held
+    assert len(back.scrolls) > 2                # a staircase of steps in between
 
 
 def test_scroll_dedup_shares_one_definition():

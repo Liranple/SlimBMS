@@ -72,6 +72,31 @@ def _format_bpm(bpm: float) -> str:
     return repr(float(bpm))
 
 
+# How finely a 선형 변속 ramp is chopped into SCROLL steps on export: one step
+# per 1/16 of a measure. Fine enough to read as a smooth ramp, moderate enough
+# not to stress the player with an extreme number of scroll changes.
+_RAMP_STEP = Fraction(1, 16)
+
+
+def _ramp_to_scroll_steps(ramps):
+    """Turn 선형 변속 ramps into a ``{position: multiplier}`` staircase of SCROLL
+    steps that approximates each smooth ramp (the game reads #SCROLL, not
+    #SPEED). Each step holds its value until the next, so the last step lands the
+    end value exactly, matching the ramp's end."""
+    out = {}
+    for sp, ep, sv, ev in ramps:
+        span = ep - sp
+        if span <= 0:
+            out[sp] = sv
+            continue
+        p = sp
+        while p < ep:
+            out[p] = sv + (ev - sv) * ((p - sp) / span)
+            p += _RAMP_STEP
+        out[ep] = ev                    # exact end value, held afterwards
+    return out
+
+
 def _format_decimal(x) -> str:
     """A tidy decimal string for a SCROLL/SPEED multiplier (may be negative or
     fractional): integers stay bare, otherwise a short float."""
@@ -193,8 +218,15 @@ def export_bms(project: Project, key_mode: int) -> str:
             pos_index[pos] = val_index[val]
         return pos_index
 
-    scroll_index = _valued_defs(project.scrolls, "SCROLL")
-    speed_index = _valued_defs(project.speeds, "SPEED")
+    # 선형 변속(SPEED) is exported as a staircase of fine SCROLL steps rather
+    # than #SPEED markers: the target engine (Qwilight) reads #SCROLL but not
+    # #SPEED, so approximating each smooth ramp with many small SCROLL steps is
+    # what actually produces the gradual scroll change in-game. Explicit 순간
+    # 변속 markers win at any shared position.
+    combined_scrolls = dict(project.scrolls)
+    for pos, val in _ramp_to_scroll_steps(project.speed_ramps()).items():
+        combined_scrolls.setdefault(pos, val)
+    scroll_index = _valued_defs(combined_scrolls, "SCROLL")
     lines.append("")
     if project.bgm_file:
         lines.append(f"#WAV{BGM_WAV_INDEX} {project.bgm_file}")
@@ -230,13 +262,13 @@ def export_bms(project: Project, key_mode: int) -> str:
         if data:
             rows.append(f"#{measure:03d}{STOP_CH}:{data}")
 
-        # SCROLL / SPEED multipliers on channels SC / SP.
-        for ch, index in ((SCROLL_CH, scroll_index), (SPEED_CH, speed_index)):
-            here = [(frac(pos - measure), idx) for pos, idx in index.items()
-                    if int(pos) == measure]
-            data = _measure_data_valued(here)
-            if data:
-                rows.append(f"#{measure:03d}{ch}:{data}")
+        # Note-speed multipliers on channel SC (선형 ramps are folded into these
+        # as fine steps above; #SPEED is not emitted — the game ignores it).
+        scroll_here = [(frac(pos - measure), idx) for pos, idx in scroll_index.items()
+                       if int(pos) == measure]
+        data = _measure_data_valued(scroll_here)
+        if data:
+            rows.append(f"#{measure:03d}{SCROLL_CH}:{data}")
 
         # BGM objects on channel 01.
         bgm_here = [Note(measure, frac(n.pos), 0)

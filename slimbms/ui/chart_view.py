@@ -667,18 +667,8 @@ class ChartView(QWidget):
         p.drawText(tag, Qt.AlignCenter, text)
 
     def _speed_ramps(self):
-        """Pair the SPEED markers into ramps for display/editing. They're added
-        as (start, end) pairs, so sorting and pairing (0,1),(2,3)… reconstructs
-        each 선형 변속 range as (start_pos, end_pos, start_val, end_val)."""
-        items = sorted(self.project.speeds.items())
-        ramps = []
-        for i in range(0, len(items) - 1, 2):
-            (sp, sv), (ep, ev) = items[i], items[i + 1]
-            ramps.append((sp, ep, sv, ev))
-        if len(items) % 2:                       # dangling marker → a point ramp
-            p_, v_ = items[-1]
-            ramps.append((p_, p_, v_, v_))
-        return ramps
+        """선형 변속 ramps for display/editing (see Project.speed_ramps)."""
+        return self.project.speed_ramps()
 
     def _paint_speed_regions(self, p: QPainter) -> None:
         """Faintly shade each 선형 변속 (SPEED) ramp span across the note lanes so

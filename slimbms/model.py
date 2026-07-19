@@ -167,6 +167,21 @@ class Project:
         s = self.measure_scales.get(m)
         return s if s is not None else Fraction(1)
 
+    def speed_ramps(self):
+        """Pair the SPEED (선형 변속) markers into ramps. They're added as
+        (start, end) pairs, so sorting and pairing (0,1),(2,3)… reconstructs each
+        ramp as ``(start_pos, end_pos, start_val, end_val)``. A dangling odd
+        marker becomes a zero-length (point) ramp."""
+        items = sorted(self.speeds.items())
+        ramps = []
+        for i in range(0, len(items) - 1, 2):
+            (sp, sv), (ep, ev) = items[i], items[i + 1]
+            ramps.append((sp, ep, sv, ev))
+        if len(items) % 2:
+            p, v = items[-1]
+            ramps.append((p, p, v, v))
+        return ramps
+
     def cumulative_lengths(self):
         """Prefix sums of measure lengths: ``out[m]`` is the total length of all
         measures before ``m`` (so ``out[measures]`` is the whole song length in
