@@ -252,11 +252,13 @@ def _ico(name: str) -> str:
 
 
 def _section(title: str, body: str) -> str:
-    """An accent header bar followed by its description block."""
+    """A header bar followed by its description block. The header is plain text
+    while the item labels below are accent-coloured, so the two levels read as a
+    hierarchy instead of one flat wall of the same colour."""
     return (
         f'<table width="100%" cellspacing="0" cellpadding="7" '
         f'style="margin-top:16px;"><tr>'
-        f'<td bgcolor="{PANEL}" style="color:{ACCENT};"><b>{title}</b></td>'
+        f'<td bgcolor="{PANEL}" style="color:{TEXT};"><b>{title}</b></td>'
         f'</tr></table>' + body
     )
 
@@ -282,17 +284,20 @@ def _help_html(version: str) -> str:
             (f'{_ico("import")} 가져오기', "bms 파일을 가져옵니다"),
             (f'{_ico("export")} 내보내기', "선택한 키로 bms 파일을 내보냅니다"),
         ])),
-        ("재생 패널", _rows([
+        ("재생", _rows([
             (f'{_ico("first")} 처음으로', "재생 위치를 곡의 맨 앞으로 옮깁니다"),
             (f'{_ico("back")} 1초 뒤로', "재생 위치를 1초 뒤로 옮깁니다"),
             (f'{_ico("play")} 재생 / 일시정지', "미리보기를 재생하거나 멈춥니다"),
             (f'{_ico("forward")} 1초 앞으로', "재생 위치를 1초 앞으로 옮깁니다"),
             (f'{_ico("stop")} 정지', "재생을 멈춥니다"),
+            ("재생 위치선", "마우스 휠클릭으로 재생 위치를 지정합니다"),
         ])),
-        ("편집 / 추가", _rows([
-            ("편집", "노트의 위치를 방향키 · 마우스로 수정할 수 있습니다"),
-            ("추가", "마우스 좌클릭(드래그)으로 노트(롱노트)를 추가 · 변경하고, "
-                    "우클릭으로 노트를 삭제할 수 있습니다"),
+        ("제작", _rows([
+            ("편집[F2]", "노트의 위치를 방향키 · 마우스로 수정할 수 있습니다"),
+            ("추가[F3]", "마우스 좌클릭(드래그)으로 노트(롱노트)를 추가 · 변경하고, "
+                       "우클릭으로 노트를 삭제할 수 있습니다"),
+            ("마디 눈금", "마디의 번호가 적힌 세로 줄을 드래그하여 "
+                        "마디의 길이를 조절할 수 있습니다"),
         ])),
         ("키 선택", _rows([
             ("4K / 6K", "bms로 내보낼 키 모드를 선택하며, 선택한 키의 레인이 강조됩니다"),
@@ -302,9 +307,14 @@ def _help_html(version: str) -> str:
             ("이미지", "대표 · 배너 · 배경 이미지를 지정합니다"),
             ("격자", "노트가 놓이는 스냅 격자와 참고용 보조 격자를 설정합니다"),
             ("확대/축소", "채보의 세로 · 가로 배율을 조절합니다"),
-            ("BPM 변화", "곡 중간의 BPM 변화를 추가 · 삭제합니다"),
+            ("BPM 변화", "곡 중간의 BPM 변화를 추가합니다"),
+            ("정지", "지정한 위치에서 노트의 진행을 잠시 멈춥니다. "
+                    "음원은 그대로 흐르고 화면만 정지하며, 멈추는 길이는 박자로 지정합니다"),
+            ("노트 속도", "구간의 노트 진행 속도를 바꿉니다. "
+                        "시작 · 끝 두 지점의 배속을 정하면 그 사이가 점점 빨라지거나 "
+                        "느려지고, 배속을 음수로 주면 거꾸로 흐릅니다"),
             ("음원", "곡 음원을 등록하고 재생 속도 · 음량 · 파형 표시를 조절합니다"),
-            ("실시간 채보", "재생 중 키 입력으로 노트를 녹음하며, "
+            ("실시간 채보", "재생 중 키 입력으로 노트를 추가하며, "
                           "카운트인 · 메트로놈 · 입력 보정을 지원합니다"),
         ])),
     ]
