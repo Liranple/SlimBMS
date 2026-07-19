@@ -1,10 +1,17 @@
 """Conversion between audio time (seconds) and chart position (measures).
 
-Supports mid-song tempo changes AND per-measure lengths (BMS channel 02). The
-BPM is piecewise-constant over *real* position — the running sum of measure
-lengths — so a shortened measure genuinely takes less time and everything after
-it plays earlier. Audio ``t = 0`` corresponds to the first BGM object's chart
-position, so moving the BGM marker shifts where the song lines up.
+Supports mid-song tempo changes, per-measure lengths (BMS channel 02) AND STOP
+sequences (channel 09). The BPM is piecewise-constant over *real* position — the
+running sum of measure lengths — so a shortened measure genuinely takes less
+time and everything after it plays earlier. A STOP inserts a flat segment where
+real position (and thus the chart playhead) holds still while seconds keep
+advancing — the audio keeps playing but the scroll freezes. Audio ``t = 0``
+corresponds to the first BGM object's chart position, so moving the BGM marker
+shifts where the song lines up.
+
+All of this is precomputed once at construction into piecewise breakpoint arrays,
+so per-frame :meth:`chart_pos` during playback is just a small lookup — no
+gimmick is re-evaluated every tick.
 """
 
 from __future__ import annotations
@@ -39,17 +46,42 @@ class TimeMap:
         for r, b in changes:
             if r <= self.t0:
                 start_bpm = b
+
+        # Merge BPM changes and STOPs into one event stream ordered by real
+        # position, then walk it once building the piecewise breakpoint arrays.
+        # ``kind`` 0 = BPM change, 1 = STOP; at the same position the BPM change
+        # is applied first so the stop's duration uses the new tempo.
+        events = [(r, 0, b) for r, b in changes if r > self.t0]
+        for p, beats in project.stops.items():
+            r = self._real(float(p))
+            if r > self.t0 and beats > 0:
+                events.append((r, 1, float(beats)))
+        events.sort(key=lambda e: (e[0], e[1]))
+
         self._rpos = [self.t0]
-        self._bpm = [start_bpm]
-        for r, b in changes:
-            if r > self.t0:
-                self._rpos.append(r)
-                self._bpm.append(b)
-        # Cumulative seconds at each breakpoint.
         self._sec = [0.0]
-        for i in range(1, len(self._rpos)):
-            dpos = self._rpos[i] - self._rpos[i - 1]
-            self._sec.append(self._sec[-1] + dpos / _mps(self._bpm[i - 1]))
+        self._bpm = [start_bpm]
+        for real, kind, val in events:
+            last_r, last_sec, last_bpm = self._rpos[-1], self._sec[-1], self._bpm[-1]
+            if real > last_r:
+                # Normal segment advancing at the running tempo up to this event.
+                self._rpos.append(real)
+                self._sec.append(last_sec + (real - last_r) / _mps(last_bpm))
+                self._bpm.append(last_bpm)
+            if kind == 0:                                   # BPM change
+                if self._rpos[-1] == real:
+                    self._bpm[-1] = val
+                else:
+                    self._rpos.append(real)
+                    self._sec.append(self._sec[-1])
+                    self._bpm.append(val)
+            else:                                           # STOP: flat segment
+                # `val` beats hold at the current tempo: seconds advance, real
+                # (and the playhead) stay put.
+                pause = val * 60.0 / max(1.0, self._bpm[-1])
+                self._rpos.append(real)
+                self._sec.append(self._sec[-1] + pause)
+                self._bpm.append(self._bpm[-1])
 
     # -- absolute <-> real (measure-length aware) --------------------------- #
 
@@ -102,6 +134,11 @@ class TimeMap:
         s = max(0.0, audio_seconds)
         i = self._seg_by_seconds(s)
         real = self._rpos[i] + (s - self._sec[i]) * _mps(self._bpm[i])
+        # Never run past the segment's end. For a STOP segment the next
+        # breakpoint shares this real position, so the playhead holds still for
+        # the freeze; for a normal segment this is a no-op bound.
+        if i + 1 < len(self._rpos):
+            real = min(real, self._rpos[i + 1])
         return self._absolute(real)
 
     def audio_seconds(self, chart_pos: float) -> float:

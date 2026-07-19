@@ -15,6 +15,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -267,6 +268,72 @@ class MainWindow(QMainWindow):
         del_bpm.clicked.connect(self._remove_bpm_change)
         tempo.add_widget(del_bpm)
         outer.addWidget(tempo)
+
+        # -- STOP (freeze) gimmick ------------------------------------------ #
+        stopsec = CollapsibleSection("정지 (STOP)")
+        self.stop_measure = NoWheelSpinBox()
+        self.stop_measure.setRange(0, 9999)
+        self.stop_cell = NoWheelSpinBox()
+        self.stop_cell.setRange(0, self.sb_g1.value())
+        # Freeze length in beats (1 beat = a quarter note); the scroll holds this
+        # long while the audio keeps playing.
+        self.stop_beats = NoWheelDoubleSpinBox()
+        self.stop_beats.setRange(0.05, 64.0)
+        self.stop_beats.setDecimals(2)
+        self.stop_beats.setSingleStep(0.25)
+        self.stop_beats.setValue(1.0)
+        srow = QHBoxLayout()
+        srow.setSpacing(8)
+        srow.addWidget(self._labeled("마디", self.stop_measure))
+        srow.addWidget(self._labeled("칸", self.stop_cell))
+        srow.addWidget(self._labeled("정지(박)", self.stop_beats))
+        stopsec.add_layout(srow)
+        add_stop = QPushButton("추가 / 변경")
+        add_stop.clicked.connect(self._add_stop)
+        stopsec.add_widget(add_stop)
+        self.stop_list = QListWidget()
+        self.stop_list.setMaximumHeight(84)
+        self.stop_list.itemDoubleClicked.connect(self._edit_stop)
+        stopsec.add_widget(self.stop_list)
+        del_stop = QPushButton("선택 삭제")
+        del_stop.clicked.connect(self._remove_stop)
+        stopsec.add_widget(del_stop)
+        outer.addWidget(stopsec)
+
+        # -- SCROLL / SPEED (scroll-velocity) gimmick ----------------------- #
+        scrollsec = CollapsibleSection("스크롤 / 속도")
+        self.scroll_type = QComboBox()
+        self.scroll_type.addItem("SCROLL (단계)", "scroll")
+        self.scroll_type.addItem("SPEED (보간)", "speed")
+        scrollsec.add_widget(self.scroll_type)
+        self.scroll_measure = NoWheelSpinBox()
+        self.scroll_measure.setRange(0, 9999)
+        self.scroll_cell = NoWheelSpinBox()
+        self.scroll_cell.setRange(0, self.sb_g1.value())
+        # Scroll-velocity multiplier (visual only; the game renders it). Negative
+        # values reverse the scroll direction.
+        self.scroll_value = NoWheelDoubleSpinBox()
+        self.scroll_value.setRange(-64.0, 64.0)
+        self.scroll_value.setDecimals(2)
+        self.scroll_value.setSingleStep(0.25)
+        self.scroll_value.setValue(2.0)
+        scr = QHBoxLayout()
+        scr.setSpacing(8)
+        scr.addWidget(self._labeled("마디", self.scroll_measure))
+        scr.addWidget(self._labeled("칸", self.scroll_cell))
+        scr.addWidget(self._labeled("배수", self.scroll_value))
+        scrollsec.add_layout(scr)
+        add_scroll = QPushButton("추가 / 변경")
+        add_scroll.clicked.connect(self._add_scroll)
+        scrollsec.add_widget(add_scroll)
+        self.scroll_list = QListWidget()
+        self.scroll_list.setMaximumHeight(96)
+        self.scroll_list.itemDoubleClicked.connect(self._edit_scroll)
+        scrollsec.add_widget(self.scroll_list)
+        del_scroll = QPushButton("선택 삭제")
+        del_scroll.clicked.connect(self._remove_scroll)
+        scrollsec.add_widget(del_scroll)
+        outer.addWidget(scrollsec)
 
         # -- Audio ---------------------------------------------------------- #
         audio = CollapsibleSection("음원")
@@ -702,6 +769,8 @@ class MainWindow(QMainWindow):
         for field in self._image_buttons:
             self._refresh_image_button(field)
         self._refresh_bpm_list()
+        self._refresh_stop_list()
+        self._refresh_scroll_list()
 
     def _set_meta(self, field: str, value) -> None:
         setattr(self.project, field, value)
@@ -796,6 +865,10 @@ class MainWindow(QMainWindow):
         # caps at the snap-grid value (a bigger cell is clamped down to it).
         if hasattr(self, "bpm_cell"):
             self.bpm_cell.setMaximum(self.sb_g1.value())
+        if hasattr(self, "stop_cell"):
+            self.stop_cell.setMaximum(self.sb_g1.value())
+        if hasattr(self, "scroll_cell"):
+            self.scroll_cell.setMaximum(self.sb_g1.value())
 
     def _toggle_snap(self, on: bool) -> None:
         self.view.set_snap_on(on)
@@ -874,6 +947,116 @@ class MainWindow(QMainWindow):
         self.bpm_cell.setValue(cell)
         self.bpm_value.setValue(self.project.bpm_changes[pos])
         # Centre the canvas on the change's position.
+        vbar = self.scroll.verticalScrollBar()
+        vp_h = self.scroll.viewport().height()
+        vbar.setValue(int(self.view.y_for(float(pos)) - vp_h / 2))
+
+    def _add_stop(self) -> None:
+        from fractions import Fraction
+        grid = max(1, self.sb_g1.value())
+        cell = min(self.stop_cell.value(), grid)   # never past one measure of cells
+        pos = Fraction(self.stop_measure.value()) + Fraction(cell, grid)
+        beats = Fraction(self.stop_beats.value()).limit_denominator(192)
+        if beats <= 0:
+            return
+        self.project.stops[pos] = beats
+        self.view.changed.emit()   # marks dirty + schedules an undo entry
+        self.view.update()
+        self._refresh_stop_list()
+
+    def _remove_stop(self) -> None:
+        item = self.stop_list.currentItem()
+        if item is None:
+            return
+        pos = item.data(Qt.UserRole)
+        if pos in self.project.stops:
+            del self.project.stops[pos]
+            self.view.changed.emit()
+            self.view.update()
+            self._refresh_stop_list()
+
+    def _refresh_stop_list(self) -> None:
+        self.stop_list.clear()
+        grid = max(1, self.sb_g1.value())
+        for pos, beats in sorted(self.project.stops.items()):
+            measure = int(pos)
+            cell = int(round(float(pos - measure) * grid))
+            text = f"마디 {measure} · 칸 {cell}/{grid} → {float(beats):g}박 정지"
+            self.stop_list.addItem(text)
+            self.stop_list.item(self.stop_list.count() - 1).setData(Qt.UserRole, pos)
+
+    def _edit_stop(self, item) -> None:
+        pos = item.data(Qt.UserRole)
+        if pos not in self.project.stops:
+            return
+        grid = max(1, self.sb_g1.value())
+        measure = int(pos)
+        cell = int(round(float(pos - measure) * grid))
+        self.stop_measure.setValue(measure)
+        self.stop_cell.setValue(cell)
+        self.stop_beats.setValue(float(self.project.stops[pos]))
+        vbar = self.scroll.verticalScrollBar()
+        vp_h = self.scroll.viewport().height()
+        vbar.setValue(int(self.view.y_for(float(pos)) - vp_h / 2))
+
+    # -- SCROLL / SPEED gimmick --------------------------------------------- #
+
+    def _scroll_map(self, kind: str):
+        """The project dict backing a scroll-gimmick kind ('scroll' | 'speed')."""
+        return self.project.speeds if kind == "speed" else self.project.scrolls
+
+    def _add_scroll(self) -> None:
+        from fractions import Fraction
+        kind = self.scroll_type.currentData()
+        grid = max(1, self.sb_g1.value())
+        cell = min(self.scroll_cell.value(), grid)
+        pos = Fraction(self.scroll_measure.value()) + Fraction(cell, grid)
+        value = Fraction(self.scroll_value.value()).limit_denominator(1000)
+        if value == 0:
+            return                       # a 0x scroll would freeze the field flat
+        self._scroll_map(kind)[pos] = value
+        self.view.changed.emit()
+        self.view.update()
+        self._refresh_scroll_list()
+
+    def _remove_scroll(self) -> None:
+        item = self.scroll_list.currentItem()
+        if item is None:
+            return
+        kind, pos = item.data(Qt.UserRole)
+        m = self._scroll_map(kind)
+        if pos in m:
+            del m[pos]
+            self.view.changed.emit()
+            self.view.update()
+            self._refresh_scroll_list()
+
+    def _refresh_scroll_list(self) -> None:
+        self.scroll_list.clear()
+        grid = max(1, self.sb_g1.value())
+        rows = ([("scroll", pos, val) for pos, val in self.project.scrolls.items()]
+                + [("speed", pos, val) for pos, val in self.project.speeds.items()])
+        for kind, pos, val in sorted(rows, key=lambda r: (float(r[1]), r[0])):
+            measure = int(pos)
+            cell = int(round(float(pos - measure) * grid))
+            tag = "SCROLL" if kind == "scroll" else "SPEED"
+            text = f"[{tag}] 마디 {measure} · 칸 {cell}/{grid} → ×{float(val):g}"
+            self.scroll_list.addItem(text)
+            self.scroll_list.item(self.scroll_list.count() - 1).setData(
+                Qt.UserRole, (kind, pos))
+
+    def _edit_scroll(self, item) -> None:
+        kind, pos = item.data(Qt.UserRole)
+        m = self._scroll_map(kind)
+        if pos not in m:
+            return
+        grid = max(1, self.sb_g1.value())
+        measure = int(pos)
+        cell = int(round(float(pos - measure) * grid))
+        self.scroll_type.setCurrentIndex(0 if kind == "scroll" else 1)
+        self.scroll_measure.setValue(measure)
+        self.scroll_cell.setValue(cell)
+        self.scroll_value.setValue(float(m[pos]))
         vbar = self.scroll.verticalScrollBar()
         vp_h = self.scroll.viewport().height()
         vbar.setValue(int(self.view.y_for(float(pos)) - vp_h / 2))
@@ -1060,6 +1243,8 @@ class MainWindow(QMainWindow):
         lines = [
             f"마디 수 : {p.measures}",
             f"기본 BPM : {p.bpm:g}    BPM 변화 : {len(p.bpm_changes)}개",
+            f"정지(STOP) : {len(p.stops)}개",
+            f"스크롤/속도 : {len(p.scrolls) + len(p.speeds)}개",
             f"BGM 마커 : {len(p.bgm)}개",
             "",
         ]

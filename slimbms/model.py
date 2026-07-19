@@ -134,6 +134,17 @@ class Project:
     # playhead and everything after it shift up together (this is BMS channel
     # 02). A note keeps its offset ``pos`` within the (shorter) measure.
     measure_scales: Dict[int, Fraction] = field(default_factory=dict)
+    # STOP sequences (BMS channel 09): absolute chart position (measures) ->
+    # freeze duration in BEATS. At a stop the scroll/playhead freeze for that
+    # many beats (at the BPM in effect) while the audio keeps playing — the
+    # classic "정지" gimmick. Held in beats so it's independent of measure length.
+    stops: Dict[Fraction, Fraction] = field(default_factory=dict)
+    # SCROLL (BMS channel SC) and SPEED (channel SP): absolute chart position ->
+    # a note-scroll VELOCITY multiplier (visual only — judgement/audio timing is
+    # unchanged). SCROLL is a step change; SPEED interpolates between markers.
+    # These are beatoraja/Qwilight extensions; the game renders the distortion.
+    scrolls: Dict[Fraction, Fraction] = field(default_factory=dict)
+    speeds: Dict[Fraction, Fraction] = field(default_factory=dict)
     # Editor/session settings (selected key mode, grid, zoom, speed, volume);
     # saved in .slbms so the workspace comes back as you left it.
     editor: Dict = field(default_factory=dict)
@@ -176,15 +187,22 @@ class Project:
             dict(self.bpm_changes),
             self.measures,
             dict(self.measure_scales),
+            dict(self.stops),
+            dict(self.scrolls),
+            dict(self.speeds),
         )
 
     def restore(self, snap) -> None:
-        charts, bgm, bpm_changes, measures, measure_scales = snap
+        (charts, bgm, bpm_changes, measures, measure_scales,
+         stops, scrolls, speeds) = snap
         self.charts = {km: list(s) for km, s in charts.items()}
         self.bgm = set(bgm)
         self.bpm_changes = dict(bpm_changes)
         self.measures = measures
         self.measure_scales = dict(measure_scales)
+        self.stops = dict(stops)
+        self.scrolls = dict(scrolls)
+        self.speeds = dict(speeds)
 
     # -- note editing ------------------------------------------------------- #
 

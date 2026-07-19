@@ -46,6 +46,9 @@ C_CONFLICT = QColor("#ff4d4d")   # notes that overlap another note in the same l
 C_BPM = QColor("#c792ea")        # mid-song tempo-change markers
 C_BPM_FAST = QColor(255, 70, 70, 26)   # faint tint where a segment is faster than base
 C_BPM_SLOW = QColor(70, 130, 255, 26)  # faint tint where a segment is slower than base
+C_STOP = QColor("#ffb454")       # STOP (freeze) markers — a warm amber, distinct from BPM
+C_SCROLL = QColor("#4ec9b0")     # SCROLL (step scroll-speed) markers — teal
+C_SPEED = QColor("#dcdcaa")      # SPEED (interpolated scroll-speed) markers — khaki
 C_WAVE = QColor(120, 180, 255, 70)  # BGM waveform in the BGM lane
 
 # Note colour by lane code.
@@ -396,6 +399,9 @@ class ChartView(QWidget):
             {km: list(c) for km, c in self.project.charts.items()},
             set(self.project.bgm),
             dict(self.project.bpm_changes),
+            dict(self.project.stops),
+            dict(self.project.scrolls),
+            dict(self.project.speeds),
         )
 
     def _reflow_from(self, origin) -> bool:
@@ -405,7 +411,7 @@ class ChartView(QWidget):
         spreads its trailing notes across the next measure (cells 22,24,26… →
         0,2,4…), not piling them all on the first cell. Returns True if anything
         moved."""
-        orig_charts, orig_bgm, orig_bpm = origin
+        orig_charts, orig_bgm, orig_bpm, orig_stops, orig_scrolls, orig_speeds = origin
         changed = False
         highest = self.project.measures - 1
 
@@ -447,6 +453,27 @@ class ChartView(QWidget):
             out_bpm[m2 + p2] = val
             highest = max(highest, m2)
         self.project.bpm_changes = out_bpm
+
+        out_stops = {}
+        for abspos, beats in orig_stops.items():
+            m = int(abspos)
+            m2, p2, moved = self._reflow_one(m, abspos - m)
+            if moved:
+                changed = True
+            out_stops[m2 + p2] = beats
+            highest = max(highest, m2)
+        self.project.stops = out_stops
+
+        for orig_map, attr in ((orig_scrolls, "scrolls"), (orig_speeds, "speeds")):
+            out = {}
+            for abspos, val in orig_map.items():
+                m = int(abspos)
+                m2, p2, moved = self._reflow_one(m, abspos - m)
+                if moved:
+                    changed = True
+                out[m2 + p2] = val
+                highest = max(highest, m2)
+            setattr(self.project, attr, out)
 
         if highest + 1 > self.project.measures:
             self.project.measures = highest + 1
@@ -517,6 +544,8 @@ class ChartView(QWidget):
         self._paint_hover(p)
         self._paint_drag(p)
         self._paint_bpm_changes(p)
+        self._paint_stops(p)
+        self._paint_scrolls(p)
         self._paint_playhead(p)
         p.end()
 
@@ -641,6 +670,69 @@ class ChartView(QWidget):
             p.drawRoundedRect(tag, 4, 4)
             p.setPen(QPen(C_GROUP_BG_B, 1))     # dark ink on the accent pill
             p.drawText(tag, Qt.AlignCenter, label)
+
+    def _paint_stops(self, p: QPainter) -> None:
+        """Mark STOP (freeze) positions with an amber dashed line + a pill naming
+        the freeze length in beats. Only the exposed strip is drawn."""
+        if not self.project.stops:
+            return
+        x0 = L.LEFT_MARGIN
+        x1 = self.groups[-1].x1
+        font = QFont()
+        font.setPointSize(9)
+        font.setBold(True)
+        for pos, beats in self.project.stops.items():
+            y = int(self.y_for(float(pos)))
+            if y < self._vis_lo - 20 or y > self._vis_hi + 20:
+                continue
+            # A dashed line (distinct from the solid BPM line) across the lanes.
+            pen = QPen(C_STOP, 2, Qt.DashLine)
+            p.setPen(pen)
+            p.drawLine(x0, y, x1, y)
+            label = f"■ {float(beats):g}박 정지"
+            p.setFont(font)
+            fm = p.fontMetrics()
+            tw = fm.horizontalAdvance(label) + 12
+            # Sit the pill on the RIGHT so it doesn't collide with a BPM pill that
+            # may share the same line.
+            tag = QRect(x1 - tw - 2, y - 19, tw, 17)
+            p.setPen(Qt.NoPen)
+            p.setBrush(C_STOP)
+            p.drawRoundedRect(tag, 4, 4)
+            p.setPen(QPen(C_GROUP_BG_B, 1))     # dark ink on the accent pill
+            p.drawText(tag, Qt.AlignCenter, label)
+
+    def _paint_scrolls(self, p: QPainter) -> None:
+        """Mark SCROLL (step) and SPEED (interpolated) scroll-velocity changes
+        with a dotted line + a centred pill naming the multiplier. Editing only
+        marks WHERE they are — the game (Qwilight) renders the actual scroll
+        distortion. Only the exposed strip is drawn."""
+        if not self.project.scrolls and not self.project.speeds:
+            return
+        x0 = L.LEFT_MARGIN
+        x1 = self.groups[-1].x1
+        font = QFont()
+        font.setPointSize(9)
+        font.setBold(True)
+        cx = (x0 + x1) // 2                       # centre pills to dodge BPM/STOP
+        for source, col, tag_txt in ((self.project.scrolls, C_SCROLL, "SCROLL"),
+                                     (self.project.speeds, C_SPEED, "SPEED")):
+            for pos, mult in source.items():
+                y = int(self.y_for(float(pos)))
+                if y < self._vis_lo - 20 or y > self._vis_hi + 20:
+                    continue
+                p.setPen(QPen(col, 2, Qt.DotLine))
+                p.drawLine(x0, y, x1, y)
+                label = f"{tag_txt} ×{float(mult):g}"
+                p.setFont(font)
+                fm = p.fontMetrics()
+                tw = fm.horizontalAdvance(label) + 12
+                tag = QRect(int(cx - tw / 2), y - 19, tw, 17)
+                p.setPen(Qt.NoPen)
+                p.setBrush(col)
+                p.drawRoundedRect(tag, 4, 4)
+                p.setPen(QPen(C_GROUP_BG_B, 1))
+                p.drawText(tag, Qt.AlignCenter, label)
 
     def set_playhead(self, absolute: Optional[float]) -> None:
         prev = self.playhead

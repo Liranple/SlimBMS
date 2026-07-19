@@ -35,6 +35,12 @@ from .model import (
 BPM_CH_INT = "03"    # inline integer BPM (2-hex-digit value)
 BPM_CH_EXT = "08"    # extended BPM: value indexes a #BPMxx definition
 MEASURE_LEN_CH = "02"   # measure length (a decimal multiplier of a full measure)
+STOP_CH = "09"       # STOP sequence: value indexes a #STOPxx definition
+# #STOPxx values are in 1/192 of a 4/4 measure; one beat (1/4 measure) = 48 of
+# those units. Stops are stored in beats, so beats <-> value is a factor of 48.
+STOP_UNITS_PER_BEAT = 48
+SCROLL_CH = "SC"     # scroll-velocity multiplier (step), indexes #SCROLLxx
+SPEED_CH = "SP"      # scroll-velocity multiplier (interpolated), indexes #SPEEDxx
 
 _B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
@@ -64,6 +70,15 @@ def _format_bpm(bpm: float) -> str:
     if float(bpm).is_integer():
         return str(int(bpm))
     return repr(float(bpm))
+
+
+def _format_decimal(x) -> str:
+    """A tidy decimal string for a SCROLL/SPEED multiplier (may be negative or
+    fractional): integers stay bare, otherwise a short float."""
+    f = float(x)
+    if f.is_integer():
+        return str(int(f))
+    return repr(round(f, 6))
 
 
 def _measure_data(objects: List[Note], value: str = OBJ_VALUE) -> str:
@@ -151,6 +166,35 @@ def export_bms(project: Project, key_mode: int) -> str:
         idx = _b36(i)
         bpm_index[pos] = idx
         lines.append(f"#BPM{idx} {_format_bpm(bpm)}")
+
+    # STOP sequences: define #STOPxx values (deduplicated by duration) and place
+    # them on channel 09. A stop's beats become 1/192-measure units (beats * 48).
+    stop_val_index = {}   # duration (beats, Fraction) -> 2-char index
+    stop_index = {}       # absolute position -> 2-char index
+    for pos, beats in sorted(project.stops.items()):
+        if beats <= 0:
+            continue
+        if beats not in stop_val_index:
+            idx = _b36(len(stop_val_index) + 1)
+            stop_val_index[beats] = idx
+            lines.append(f"#STOP{idx} {int(round(float(beats) * STOP_UNITS_PER_BEAT))}")
+        stop_index[pos] = stop_val_index[beats]
+
+    # SCROLL / SPEED velocity multipliers (beatoraja/Qwilight): #SCROLLxx / #SPEEDxx
+    # definitions (deduplicated by value) placed on channels SC / SP.
+    def _valued_defs(source, keyword):
+        val_index = {}   # multiplier -> index
+        pos_index = {}   # absolute position -> index
+        for pos, val in sorted(source.items()):
+            if val not in val_index:
+                idx = _b36(len(val_index) + 1)
+                val_index[val] = idx
+                lines.append(f"#{keyword}{idx} {_format_decimal(val)}")
+            pos_index[pos] = val_index[val]
+        return pos_index
+
+    scroll_index = _valued_defs(project.scrolls, "SCROLL")
+    speed_index = _valued_defs(project.speeds, "SPEED")
     lines.append("")
     if project.bgm_file:
         lines.append(f"#WAV{BGM_WAV_INDEX} {project.bgm_file}")
@@ -178,6 +222,21 @@ def export_bms(project: Project, key_mode: int) -> str:
         data = _measure_data_valued(bpm_here)
         if data:
             rows.append(f"#{measure:03d}{BPM_CH_EXT}:{data}")
+
+        # STOP sequences on channel 09.
+        stop_here = [(frac(pos - measure), idx) for pos, idx in stop_index.items()
+                     if int(pos) == measure]
+        data = _measure_data_valued(stop_here)
+        if data:
+            rows.append(f"#{measure:03d}{STOP_CH}:{data}")
+
+        # SCROLL / SPEED multipliers on channels SC / SP.
+        for ch, index in ((SCROLL_CH, scroll_index), (SPEED_CH, speed_index)):
+            here = [(frac(pos - measure), idx) for pos, idx in index.items()
+                    if int(pos) == measure]
+            data = _measure_data_valued(here)
+            if data:
+                rows.append(f"#{measure:03d}{ch}:{data}")
 
         # BGM objects on channel 01.
         bgm_here = [Note(measure, frac(n.pos), 0)
@@ -270,6 +329,12 @@ def parse_bms(text: str) -> Project:
     bpm_defs: Dict[str, float] = {}   # #BPMxx index -> value
     tempo_objs: List = []             # (measure, Fraction pos, channel, value)
     measure_lengths: Dict[int, Fraction] = {}   # measure -> length multiplier
+    stop_defs: Dict[str, Fraction] = {}   # #STOPxx index -> duration in beats
+    stop_objs: List = []                  # (measure, Fraction pos, value)
+    scroll_defs: Dict[str, Fraction] = {}   # #SCROLLxx index -> multiplier
+    speed_defs: Dict[str, Fraction] = {}    # #SPEEDxx index -> multiplier
+    scroll_objs: List = []                  # (measure, Fraction pos, value)
+    speed_objs: List = []                   # (measure, Fraction pos, value)
 
     for raw in text.splitlines():
         line = raw.strip()
@@ -293,6 +358,26 @@ def parse_bms(text: str) -> Project:
             try:
                 bpm_defs[idx] = float(line.split(None, 1)[1])
             except (IndexError, ValueError):
+                pass
+        elif upper.startswith("#STOP") and len(line) > 5 and line[5] != " ":
+            # Indexed stop definition: #STOPxx units (1/192 of a 4/4 measure).
+            idx = upper[5:7]
+            try:
+                units = int(line.split(None, 1)[1])
+                stop_defs[idx] = Fraction(units, STOP_UNITS_PER_BEAT)
+            except (IndexError, ValueError):
+                pass
+        elif upper.startswith("#SCROLL") and len(line) > 7 and line[7] != " ":
+            idx = upper[7:9]
+            try:
+                scroll_defs[idx] = Fraction(line.split(None, 1)[1]).limit_denominator(100000)
+            except (IndexError, ValueError, ZeroDivisionError):
+                pass
+        elif upper.startswith("#SPEED") and len(line) > 6 and line[6] != " ":
+            idx = upper[6:8]
+            try:
+                speed_defs[idx] = Fraction(line.split(None, 1)[1]).limit_denominator(100000)
+            except (IndexError, ValueError, ZeroDivisionError):
                 pass
         elif upper.startswith("#STAGEFILE "):
             project.stagefile = line[len("#STAGEFILE "):].strip()
@@ -329,6 +414,21 @@ def parse_bms(text: str) -> Project:
                     tempo_objs.append((measure, pos, channel, val))
                 max_measure = max(max_measure, measure)
                 continue
+            if channel == STOP_CH:
+                for pos, val in _parse_valued(data):
+                    stop_objs.append((measure, pos, val))
+                max_measure = max(max_measure, measure)
+                continue
+            if channel.upper() == SCROLL_CH:
+                for pos, val in _parse_valued(data):
+                    scroll_objs.append((measure, pos, val))
+                max_measure = max(max_measure, measure)
+                continue
+            if channel.upper() == SPEED_CH:
+                for pos, val in _parse_valued(data):
+                    speed_objs.append((measure, pos, val))
+                max_measure = max(max_measure, measure)
+                continue
             positions = _parse_objects(data)
             if not positions:
                 continue
@@ -355,6 +455,26 @@ def parse_bms(text: str) -> Project:
             project.bpm = bpm
         else:
             project.bpm_changes[abs_pos] = bpm
+
+    # Resolve STOP objects against their #STOPxx definitions.
+    for measure, pos, val in stop_objs:
+        beats = stop_defs.get(val.upper())
+        if beats is None or beats <= 0:
+            continue
+        abs_pos = measure + pos * mlen(measure)
+        if abs_pos > 0:
+            project.stops[abs_pos] = beats
+
+    # Resolve SCROLL / SPEED objects against their definitions.
+    for objs, defs, target in ((scroll_objs, scroll_defs, project.scrolls),
+                               (speed_objs, speed_defs, project.speeds)):
+        for measure, pos, val in objs:
+            mult = defs.get(val.upper())
+            if mult is None:
+                continue
+            abs_pos = measure + pos * mlen(measure)
+            if abs_pos >= 0:
+                target[abs_pos] = mult
 
     project.measure_scales = dict(measure_lengths)
     project.measures = max(16, max_measure + 1)
@@ -418,7 +538,7 @@ def project_to_dict(project: Project) -> dict:
 
     return {
         "format": "slimbms",
-        "version": 2,
+        "version": 3,
         "title": project.title,
         "artist": project.artist,
         "genre": project.genre,
@@ -435,6 +555,12 @@ def project_to_dict(project: Project) -> dict:
                               for p, b in project.bpm_changes.items()),
         "measure_scales": sorted([m, s.numerator, s.denominator]
                                  for m, s in project.measure_scales.items()),
+        "stops": sorted([p.numerator, p.denominator, b.numerator, b.denominator]
+                        for p, b in project.stops.items()),
+        "scrolls": sorted([p.numerator, p.denominator, v.numerator, v.denominator]
+                          for p, v in project.scrolls.items()),
+        "speeds": sorted([p.numerator, p.denominator, v.numerator, v.denominator]
+                         for p, v in project.speeds.items()),
         "bgm": notes(project.bgm),
         "charts": {str(km): notes(project.charts[km]) for km in ALL_MODES},
     }
@@ -464,6 +590,11 @@ def project_from_dict(data: dict) -> Project:
         project.bpm_changes[Fraction(int(row[0]), int(row[1]))] = float(row[2])
     for row in data.get("measure_scales", []):
         project.measure_scales[int(row[0])] = Fraction(int(row[1]), int(row[2]))
+    for row in data.get("stops", []):
+        project.stops[Fraction(int(row[0]), int(row[1]))] = Fraction(int(row[2]), int(row[3]))
+    for key, target in (("scrolls", project.scrolls), ("speeds", project.speeds)):
+        for row in data.get(key, []):
+            target[Fraction(int(row[0]), int(row[1]))] = Fraction(int(row[2]), int(row[3]))
     for row in data.get("bgm", []):
         project.bgm.add(to_note(row))
     for km_str, objs in data.get("charts", {}).items():

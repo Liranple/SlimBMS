@@ -73,6 +73,35 @@ def test_variable_measure_length():
         assert abs(tm.audio_seconds(tm.chart_pos(secs)) - secs) < 1e-6
 
 
+def test_stop_freezes_playhead():
+    # 120 bpm -> 2 s per measure. A 2-beat STOP at measure 1 (=2 s) freezes the
+    # scroll for 1 s while the audio keeps rolling.
+    p = Project(bpm=120.0)
+    p.toggle_bgm(0, Fraction(0))
+    p.stops[Fraction(1)] = Fraction(2)         # 2 beats at 120bpm = 1.0 s
+    tm = TimeMap(p)
+    # Reaches measure 1 at t=2.0, holds there through t=3.0, then resumes.
+    assert abs(tm.chart_pos(2.0) - 1.0) < 1e-9
+    for t in (2.0, 2.5, 3.0):
+        assert abs(tm.chart_pos(t) - 1.0) < 1e-6   # frozen during the stop
+    assert abs(tm.chart_pos(4.0) - 1.5) < 1e-9     # 1 s past the freeze = 0.5 measure
+    # The playhead never runs backwards across the stop.
+    vals = [tm.chart_pos(t / 20) for t in range(0, 120)]
+    assert all(b >= a - 1e-9 for a, b in zip(vals, vals[1:]))
+    # A position after the stop includes the paused second in its audio time.
+    assert abs(tm.audio_seconds(2.0) - 5.0) < 1e-9  # 4 s travel + 1 s stop
+
+
+def test_stop_with_no_stops_is_identity():
+    # With no stops the timing must be exactly the plain-BPM result (no drift).
+    a = Project(bpm=137.0)
+    a.toggle_bgm(0, Fraction(0))
+    a.bpm_changes[Fraction(3)] = 90.0
+    tm = TimeMap(a)
+    for secs in (0.0, 1.3, 4.0, 9.9):
+        assert abs(tm.audio_seconds(tm.chart_pos(secs)) - secs) < 1e-6
+
+
 def test_bpm_at():
     p = Project(bpm=100.0)
     p.bpm_changes[Fraction(4)] = 150.0
@@ -87,13 +116,22 @@ def test_snapshot_restore():
     p = Project(bpm=120.0)
     p.charts[4].append(Note(0, Fraction(0), 0))
     p.bpm_changes[Fraction(2)] = 140.0
+    p.stops[Fraction(1)] = Fraction(2)
+    p.scrolls[Fraction(1)] = Fraction(2)
+    p.speeds[Fraction(2)] = Fraction(3, 2)
     snap = p.snapshot()
     p.charts[4].append(Note(1, Fraction(0), 1))
     p.bpm_changes[Fraction(3)] = 90.0
+    p.stops[Fraction(5)] = Fraction(1)
+    p.scrolls[Fraction(6)] = Fraction(-1)
+    p.speeds.clear()
     p.measures = 40
     p.restore(snap)
     assert len(p.charts[4]) == 1
     assert dict(p.bpm_changes) == {Fraction(2): 140.0}
+    assert dict(p.stops) == {Fraction(1): Fraction(2)}
+    assert dict(p.scrolls) == {Fraction(1): Fraction(2)}
+    assert dict(p.speeds) == {Fraction(2): Fraction(3, 2)}
     assert p.measures == 16
 
 

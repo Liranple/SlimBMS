@@ -134,6 +134,70 @@ def test_bpm_change_slbms_roundtrip():
     assert back.bpm_changes == p.bpm_changes
 
 
+def test_stop_roundtrip_bms():
+    # STOP sequences survive export -> import (channel 09 + #STOPxx).
+    p = make_project()
+    p.stops[Fraction(1)] = Fraction(2)          # 2-beat freeze
+    p.stops[Fraction(5, 2)] = Fraction(1, 2)    # half-beat freeze at a fractional pos
+    back = bms_io.parse_bms(bms_io.export_bms(p, 6))
+    assert back.stops == p.stops
+
+
+def test_stop_dedup_shares_one_definition():
+    # Two stops of the same length must share a single #STOPxx definition.
+    p = make_project()
+    p.stops[Fraction(1)] = Fraction(1)
+    p.stops[Fraction(3)] = Fraction(1)          # same duration -> same index
+    text = bms_io.export_bms(p, 4)
+    stop_defs = [l for l in text.splitlines() if l.upper().startswith("#STOP")]
+    assert len(stop_defs) == 1
+    assert bms_io.parse_bms(text).stops == p.stops
+
+
+def test_stop_slbms_roundtrip():
+    p = make_project()
+    p.stops[Fraction(7, 2)] = Fraction(3, 4)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "p.slbms")
+        bms_io.save_project(p, path)
+        back = bms_io.load_project(path)
+    assert back.stops == p.stops
+
+
+def test_scroll_speed_roundtrip_bms():
+    # SCROLL (SC) and SPEED (SP), incl. fractional and negative multipliers.
+    p = make_project()
+    p.scrolls[Fraction(1)] = Fraction(2)
+    p.scrolls[Fraction(5, 2)] = Fraction(1, 2)  # fractional position
+    p.scrolls[Fraction(3)] = Fraction(-1)       # reverse scroll (all < 4 measures)
+    p.speeds[Fraction(2)] = Fraction(3, 2)
+    back = bms_io.parse_bms(bms_io.export_bms(p, 6))
+    assert back.scrolls == p.scrolls
+    assert back.speeds == p.speeds
+
+
+def test_scroll_dedup_shares_one_definition():
+    p = make_project()
+    p.scrolls[Fraction(1)] = Fraction(2)
+    p.scrolls[Fraction(3)] = Fraction(2)        # same multiplier -> one #SCROLLxx
+    text = bms_io.export_bms(p, 4)
+    defs = [l for l in text.splitlines() if l.upper().startswith("#SCROLL")]
+    assert len(defs) == 1
+    assert bms_io.parse_bms(text).scrolls == p.scrolls
+
+
+def test_scroll_speed_slbms_roundtrip():
+    p = make_project()
+    p.scrolls[Fraction(5, 2)] = Fraction(-3, 4)
+    p.speeds[Fraction(1)] = Fraction(2)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "p.slbms")
+        bms_io.save_project(p, path)
+        back = bms_io.load_project(path)
+    assert back.scrolls == p.scrolls
+    assert back.speeds == p.speeds
+
+
 def test_measure_scales_slbms_roundtrip():
     p = make_project()
     p.measure_scales[1] = Fraction(1, 2)
