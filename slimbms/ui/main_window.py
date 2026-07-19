@@ -440,17 +440,20 @@ class MainWindow(QMainWindow):
         self.rec_offset.setSuffix(" ms")
         self.rec_offset.valueChanged.connect(self._update_record_offset)
         rec.add_widget(self._labeled("입력 지연 보정", self.rec_offset))
+        rec.add_widget(self._hint("보정값을 늘리면 노트가 더 빠르게 기록됨"))
         self.rec_countin = QPushButton("카운트인 : 꺼짐")
         self.rec_countin.setCheckable(True)
         self.rec_countin.toggled.connect(
             lambda on: self.rec_countin.setText("카운트인 : 켜짐" if on else "카운트인 : 꺼짐"))
-        rec.add_widget(self.rec_countin)
         self.rec_metronome = QPushButton("메트로놈 : 꺼짐")
         self.rec_metronome.setCheckable(True)
         self.rec_metronome.toggled.connect(
             lambda on: self.rec_metronome.setText("메트로놈 : 켜짐" if on else "메트로놈 : 꺼짐"))
-        rec.add_widget(self.rec_metronome)
-        rec.add_widget(self._hint("보정값을 늘리면 노트가 더 빠르게 기록됨"))
+        rrow = QHBoxLayout()
+        rrow.setSpacing(6)
+        rrow.addWidget(self.rec_countin)
+        rrow.addWidget(self.rec_metronome)
+        rec.add_layout(rrow)
         outer.addWidget(rec)
 
         # Keyed by title so the collapsed/expanded state can be saved & restored.
@@ -690,10 +693,10 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tb.addWidget(spacer)
-        self.expand_all_action = QAction("▾ 모두 펴기", self)
+        self.expand_all_action = QAction("모두 펴기", self)
         self.expand_all_action.triggered.connect(lambda: self._set_all_sections(True))
         tb.addAction(self.expand_all_action)
-        self.collapse_all_action = QAction("▸ 모두 접기", self)
+        self.collapse_all_action = QAction("모두 접기", self)
         self.collapse_all_action.triggered.connect(lambda: self._set_all_sections(False))
         tb.addAction(self.collapse_all_action)
 
@@ -704,6 +707,11 @@ class MainWindow(QMainWindow):
             btn = tb.widgetForAction(act)
             if btn is not None:
                 btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        # Give the collapse/expand-all pair a clean pill look (styled in theme).
+        for act in (self.expand_all_action, self.collapse_all_action):
+            btn = tb.widgetForAction(act)
+            if btn is not None:
+                btn.setObjectName("SectionToggle")
 
         # No hover tooltips on any toolbar button: an empty tip just falls back
         # to the button text, so swallow the ToolTip event on each button.

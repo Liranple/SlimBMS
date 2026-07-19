@@ -92,6 +92,17 @@ QToolButton:checked {{
     color: {ACCENT};
 }}
 QToolButton:focus {{ border: 1px solid {ACCENT}; }}
+/* The 'collapse / expand all' pair — a clean muted pill on the right. */
+QToolButton#SectionToggle {{
+    background: {FIELD};
+    color: {TEXT_DIM};
+    border: 1px solid {BORDER_STRONG};
+    border-radius: 11px;
+    padding: 3px 12px;
+    margin: 0 1px;
+    font-size: 8.5pt;
+}}
+QToolButton#SectionToggle:hover {{ color: {ACCENT}; border-color: {ACCENT}; background: rgba(111, 208, 255, 0.10); }}
 
 /* Buttons ---------------------------------------------------------------- */
 QPushButton {{
