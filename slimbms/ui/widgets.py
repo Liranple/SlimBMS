@@ -113,6 +113,7 @@ class CollapsibleSection(QWidget):
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
         self._expanded = True
+        self._natural_h = None      # last measured open height (accurate; see _toggle)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -170,6 +171,14 @@ class CollapsibleSection(QWidget):
         self.content.setMinimumHeight(0)
         self.content.setMaximumHeight(_UNLIMITED)
 
+    def _open_height(self) -> int:
+        """The section's real open height. Prefer the last measured value — a
+        wordwrap label's sizeHint over-reports (it assumes 2 lines when 1 fits at
+        the actual width), which would make the section animate too tall and then
+        snap shorter on release (the 'jerk'). The live content.height() when open
+        is accurate; sizeHint is only the first-time fallback."""
+        return self._natural_h or self._host.sizeHint().height()
+
     def _toggle(self) -> None:
         expanded = self.header.isChecked()
         if expanded == self._expanded:
@@ -177,13 +186,18 @@ class CollapsibleSection(QWidget):
         self._expanded = expanded
         self.header.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
         self._anim.stop()
-        full = self._host.sizeHint().height()
-        self._host.setFixedHeight(full)             # can't squash mid-animation
-        start = self.content.height()               # from current → smooth reversals
+        start = self.content.height()               # current, actual → smooth reversals
+        if expanded:
+            end = self._open_height()
+        else:
+            if start > 0:
+                self._natural_h = start             # cache the accurate open height
+            end = 0
+        self._host.setFixedHeight(max(start, end))  # pin so the body can't squash
         self.content.setMinimumHeight(start)
         self.content.setMaximumHeight(start)
         self._anim.setStartValue(start)
-        self._anim.setEndValue(full if expanded else 0)
+        self._anim.setEndValue(end)
         self._anim.start()
 
     def _on_anim_done(self) -> None:
@@ -205,7 +219,8 @@ class CollapsibleSection(QWidget):
         if self._expanded:
             self._release()
         else:
-            self._host.setFixedHeight(self._host.sizeHint().height())
+            if self.content.height() > 0:
+                self._natural_h = self.content.height()   # remember accurate open height
             self.content.setMinimumHeight(0)
             self.content.setMaximumHeight(0)
 

@@ -1055,7 +1055,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_bpm_list(self) -> None:
         self.bpm_list.clear()
-        for pos, bpm in sorted(self.project.bpm_changes.items()):
+        for pos, bpm in sorted(self.project.bpm_changes.items(), reverse=True):
             self._add_marker_row(self.bpm_list, self._loc(pos), f"♩ {bpm:g}", pos)
 
     def _load_bpm(self, pos) -> None:
@@ -1107,7 +1107,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_stop_list(self) -> None:
         self.stop_list.clear()
-        for pos, beats in sorted(self.project.stops.items()):
+        for pos, beats in sorted(self.project.stops.items(), reverse=True):
             self._add_marker_row(self.stop_list, self._loc(pos),
                                  f"■ {float(beats):g}박", pos)
 
@@ -1227,8 +1227,8 @@ class MainWindow(QMainWindow):
                          ("scroll", pos)))
         for sp, ep, sv, ev in self.view._speed_ramps():
             rows.append((float(sp), f"{self._loc(sp)} ~ {self._loc(ep)}",
-                         f"×{float(sv):g} → ×{float(ev):g}", ("speed", sp, ep)))
-        for _key, left, right, data in sorted(rows, key=lambda r: r[0]):
+                         f"×{float(sv):g} ~ ×{float(ev):g}", ("speed", sp, ep)))
+        for _key, left, right, data in sorted(rows, key=lambda r: r[0], reverse=True):
             self._add_marker_row(self.scroll_list, left, right, data)
 
     def _load_scroll(self, data) -> None:
