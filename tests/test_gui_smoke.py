@@ -196,6 +196,76 @@ def main() -> int:
     assert (win.scroll_measure.value(), win.scroll_value.value()) == (4, 2.0)
     assert (win.scroll_measure2.value(), win.scroll_value2.value()) == (8, 1.0)
 
+    # -- the timeline length follows the measure lengths -------------------- #
+    # The song's length is real time, not a measure count: halving every measure
+    # means each covers half as much music, so the timeline has to grow to still
+    # reach the end of the audio — and shrink back when they're stretched out.
+    p2 = Project(title="Fit", bpm=120, measures=16)
+    win2 = MainWindow(p2)
+    win2.audio.duration = 120.0            # 2 min at 120 BPM = 60 full measures
+    win2._autofit_measures()
+    full = p2.measures
+    assert full >= 62, f"the timeline must span the whole song, got {full}"
+
+    for m in range(full * 8):          # plenty, including past the current end
+        p2.measure_scales[m] = Fraction(1, 2)
+    win2._autofit_measures()
+    assert p2.measures > full * 1.8, \
+        f"halved measures must roughly double the count, got {p2.measures}"
+
+    p2.measure_scales.clear()
+    win2._autofit_measures()
+    assert p2.measures == full, "restoring the lengths must restore the count"
+
+    # Resizing must not move the chart under the user: the timeline grows at the
+    # top, so the scroll value has to absorb the height change exactly.
+    vbar2 = win2.scroll.verticalScrollBar()
+    for m in range(full * 8):
+        p2.measure_scales[m] = Fraction(1, 2)
+    win2.view.refresh()                     # the drag itself already redrew
+    # The window is never shown here, so the scroll area never lays out and its
+    # bar range is stale — put it where a real layout pass would have.
+    vp_h2 = win2.scroll.viewport().height()
+    vbar2.setRange(0, max(0, win2.view.content_height() - vp_h2))
+    vbar2.setValue(vbar2.maximum() // 2)
+    anchor = win2.view.y_for(10.0) - vbar2.value()
+    win2._autofit_measures()                # only the measure *count* changes here
+    assert abs((win2.view.y_for(10.0) - vbar2.value()) - anchor) < 1.0, \
+        "measure 10 must stay put on screen while the timeline resizes"
+
+    # Trimming waits for a measure-length drag to settle, so the canvas never
+    # resizes under the cursor mid-drag.
+    grown = p2.measures
+    win2.view._scale_drag = {"active": True}
+    p2.measure_scales.clear()
+    win2._autofit_measures()
+    assert p2.measures == grown, "no trimming while a measure is being dragged"
+    win2.view._scale_drag = None
+    win2._autofit_measures()
+    assert p2.measures == full, "the trim lands once the drag ends"
+
+    # -- file dialogs start next to the .slbms ------------------------------ #
+    saved_bgm_dir = win2._dir_for("bgm")
+    proj_dir = os.path.join(os.sep, "songs", "alpha")
+    win2._set_project_path(os.path.join(proj_dir, "alpha.slbms"))
+    for key in ("bgm", "export", "image", "import", "save"):
+        assert win2._dir_for(key) == proj_dir, f"{key} dialog must start at the project"
+
+    other = os.path.join(os.sep, "audio", "stems")
+    win2._remember_dir("bgm", os.path.join(other, "song.ogg"))
+    assert win2._dir_for("bgm") == other, "a folder the user picked is reused"
+    assert win2._dir_for("export") == proj_dir, "…only for that one operation"
+
+    beta_dir = os.path.join(os.sep, "songs", "beta")
+    win2._set_project_path(os.path.join(beta_dir, "beta.slbms"))
+    assert win2._dir_for("bgm") == beta_dir, "opening a project resets the overrides"
+
+    win2._set_project_path(None)
+    _settings_module = win2._dir_for("bgm")     # falls back to the stored folder
+    assert _settings_module == other
+    if saved_bgm_dir:                           # don't leave the user's setting changed
+        win2._remember_dir("bgm", os.path.join(saved_bgm_dir, "x"))
+
     print("GUI smoke test PASSED")
     return 0
 

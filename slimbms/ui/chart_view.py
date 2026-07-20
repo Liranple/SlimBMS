@@ -207,9 +207,18 @@ class ChartView(QWidget):
 
     def _apply_size(self) -> None:
         self._rebuild_scale_prefix()
-        height = self._vtotal * self.measure_px + 2 * self.v_pad
-        self.setFixedSize(self._width, int(height))
+        self.setFixedSize(self._width, self.content_height())
         self.updateGeometry()
+
+    def content_height(self) -> int:
+        """Pixel height of the whole timeline at the current zoom / measure
+        lengths. Callers resizing the timeline use the before/after difference to
+        keep the viewport anchored (the chart grows at the top)."""
+        return int(self._vtotal * self.measure_px + 2 * self.v_pad)
+
+    def is_scaling(self) -> bool:
+        """True while a measure-length drag is in progress on the left ruler."""
+        return self._scale_drag is not None
 
     def set_zoom(self, measure_px: int) -> None:
         self.measure_px = max(40, min(600, measure_px))

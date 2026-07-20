@@ -133,7 +133,7 @@ class MainWindow(QMainWindow):
         self.project = project or Project()
         self.project_path: Optional[str] = None
         self._dirty = False
-        self._last_dirs = {}  # per-operation last folder (open/save/import/export/bgm)
+        self._last_dirs = {}  # per-operation folder used since this project opened
 
         # Playback / preview (transport handled by PlaybackController).
         self.audio = AudioPlayer()
@@ -969,8 +969,14 @@ class MainWindow(QMainWindow):
                 sec.set_expanded(bool(expanded))
 
     def _autofit_measures(self) -> None:
-        """Grow the timeline to cover all notes and the BGM length (never
-        shrinks, so the view doesn't jump while editing)."""
+        """Size the timeline so it spans every note and the whole song.
+
+        The song's length is measured in *real* units (the running sum of measure
+        lengths), not in measure counts: a shortened measure covers less music, so
+        the count has to grow to keep reaching the end of the audio — and shrink
+        back when the measures are stretched out again. Growing is immediate;
+        trimming waits until a measure-length drag has settled so the canvas never
+        resizes under the cursor mid-drag."""
         highest = 0
         for chart in self.project.charts.values():
             for n in chart:
@@ -979,11 +985,25 @@ class MainWindow(QMainWindow):
             highest = max(highest, n.measure)
         need = highest + 4  # keep a few empty measures above for placing notes
         if self.audio.duration > 0:
-            mps = TimeMap(self.project).measures_per_second
-            need = max(need, int(self.audio.duration * mps) + 2)
+            tm = TimeMap(self.project)
+            # Real span the audio occupies, starting where the BGM marker sits.
+            target = tm.t0 + self.audio.duration * tm.measures_per_second
+            need = max(need, self._measures_spanning(target) + 2)
         need = max(16, need)
         if need > self.project.measures:
             self._resize_measures(need)
+        elif need < self.project.measures and not self.view.is_scaling():
+            self._resize_measures(need)
+
+    def _measures_spanning(self, target: float) -> int:
+        """How many measures it takes to cover ``target`` real units. Measures
+        past the current end of the timeline count as full length."""
+        total = 0.0
+        m = 0
+        while total < target and m < 100000:
+            total += float(self.project.measure_length(m))
+            m += 1
+        return m
 
     def _center_on_last_note(self) -> None:
         """Scroll so the last-placed note sits at the vertical centre of the
@@ -1029,13 +1049,22 @@ class MainWindow(QMainWindow):
         vbar.setValue(int(round(target)))
 
     def _resize_measures(self, need: int) -> None:
-        # Preserve the chart position at the viewport centre across the resize.
+        # The chart is drawn bottom-up, so measures are added (or dropped) at the
+        # top: shifting the scroll value by exactly the height change leaves every
+        # pixel of chart where it was. The scroll area only recomputes the bar's
+        # range on its next layout pass, so set the new range here too — otherwise
+        # the value would clamp to the stale maximum and the view would visibly
+        # jolt before snapping back.
         vbar = self.scroll.verticalScrollBar()
         vp_h = self.scroll.viewport().height()
-        center_abs = self.view.absolute_at(vbar.value() + vp_h / 2)
+        before = self.view.content_height()
         self.project.measures = need
         self.view.refresh()
-        vbar.setValue(int(self.view.y_for(center_abs) - vp_h / 2))
+        delta = self.view.content_height() - before
+        if not delta:
+            return
+        vbar.setRange(0, max(0, self.view.content_height() - vp_h))
+        vbar.setValue(vbar.value() + delta)
 
     def _apply_grids(self) -> None:
         # Left box drives the snap grid; right box is the reference grid.
@@ -1471,7 +1500,7 @@ class MainWindow(QMainWindow):
             except Exception as exc:  # noqa: BLE001
                 QMessageBox.critical(self, "복구 실패", str(exc))
                 return
-            self.project_path = None
+            self._set_project_path(None)
             self._dirty = True
             self._reload_view()
             self._auto_load_bgm()          # the recovery .slbms keeps the full path
@@ -1529,7 +1558,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             return
         self.project = Project()
-        self.project_path = None
+        self._set_project_path(None)
         self._dirty = False
         self._clear_recovery()
         self._reset_editor_settings()
@@ -1574,7 +1603,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "열기 실패", str(exc))
             return False
         self._remember_dir("open", path)
-        self.project_path = path
+        self._set_project_path(path)
         self._dirty = False
         self._reload_view()
         self._auto_load_bgm()          # reconnect the audio automatically
@@ -1607,7 +1636,7 @@ class MainWindow(QMainWindow):
         if not path.lower().endswith(".slbms"):
             path += ".slbms"
         self._remember_dir("save", path)
-        self.project_path = path
+        self._set_project_path(path)
         self.save_project()
 
     def import_bms(self) -> None:
@@ -1625,7 +1654,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "가져오기 실패", str(exc))
             return
         self._remember_dir("import", path)
-        self.project_path = None
+        self._set_project_path(None)
         self._dirty = True
         self._reload_view()
         # Highlight the key mode the notes landed in, so it matches the view.
@@ -1805,18 +1834,38 @@ class MainWindow(QMainWindow):
 
     # -- helpers ------------------------------------------------------------ #
 
+    def _set_project_path(self, path: Optional[str]) -> None:
+        """Point the window at a .slbms file (or none). Drops the per-operation
+        folder overrides so every dialog starts at the new project's folder."""
+        self.project_path = path
+        self._last_dirs.clear()
+
+    def _project_dir(self) -> str:
+        """The folder the current .slbms lives in ("" when never saved)."""
+        return os.path.dirname(self.project_path) if self.project_path else ""
+
     def _dir_for(self, key: str) -> str:
-        """The folder last used for the ``key`` operation (open/save/import/
-        export/bgm), remembered separately and persisted across sessions."""
+        """Where a file dialog for the ``key`` operation (open/save/import/export/
+        bgm/image) should start: the project's own folder, since a song's audio,
+        images and exports normally sit next to the .slbms. Once the user picks a
+        different folder for an operation it's reused for the rest of the session
+        (reset when another project is opened); with no project open it falls back
+        to that operation's last folder from the previous session."""
         d = self._last_dirs.get(key)
-        if d is None:
-            d = _settings().value(f"paths/{key}", "") or ""
-            self._last_dirs[key] = d
-        return d
+        if d:
+            return d
+        d = self._project_dir()
+        if d:
+            return d
+        return _settings().value(f"paths/{key}", "") or ""
 
     def _remember_dir(self, key: str, path: str) -> None:
         d = os.path.dirname(path)
-        self._last_dirs[key] = d
+        # Only override the project folder when the user actually went elsewhere.
+        if d and d != self._project_dir():
+            self._last_dirs[key] = d
+        else:
+            self._last_dirs.pop(key, None)
         _settings().setValue(f"paths/{key}", d)
 
     def _dialog_path(self, key: str, name: str) -> str:
