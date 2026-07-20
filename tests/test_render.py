@@ -228,6 +228,41 @@ def test_move_long_note_keeps_visible_length_across_shortened_measure():
     assert tail_frac < p.measure_length(tm) or tail_frac == 0
 
 
+def test_arrow_move_long_note_across_one_cell_measures():
+    """Arrow keys must move a long note rigidly in display space just like a
+    drag does. Regression: a run of 1-cell measures above the note made the
+    tail keep its *absolute* length, so it landed in the hidden tail of a
+    shrunk measure and rendered clipped."""
+    _app()
+    p = Project(bpm=120, measures=80)
+    for m in range(66, 73):                            # 66..72 shrunk to 1 cell
+        p.measure_scales[m] = Fraction(1, 32)
+    ln = Note(65, Fraction(0), 0, Fraction(4, 32))     # 4-cell hold in measure 65
+    p.charts[4].append(ln)
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v.set_mode("edit")
+    v.refresh()
+
+    cum = p.cumulative_lengths()
+    before = (v._display_pos_frac(ln.end_absolute, cum)
+              - v._display_pos_frac(ln.absolute, cum))
+    cur = ln
+    # 32 presses to clear measure 65, then one per 1-cell measure 66..72.
+    for _ in range(45):
+        v.selection = {(4, cur)}
+        v._move_selection(0, 1)
+        cur = next(iter(v.selection))[1]
+        span = (v._display_pos_frac(cur.end_absolute, cum)
+                - v._display_pos_frac(cur.absolute, cum))
+        assert span == before, f"visible length changed at measure {cur.measure}"
+        tm = int(cur.end_absolute)
+        tail_frac = cur.end_absolute - tm
+        assert tail_frac < p.measure_length(tm) or tail_frac == 0, \
+            f"tail hidden inside measure {tm}"
+    assert cur.measure > 72                            # actually got past the run
+
+
 def test_copy_paste_carries_measure_scales():
     """Copying notes from shortened measures and pasting reproduces the measure
     lengths on the pasted block (24-cell measures stay 24-cell), and pasting past

@@ -1831,13 +1831,22 @@ class ChartView(QWidget):
         vdelta = self._vertical_delta(vdir, vmode) if vdir else Fraction(0)
         proposed = []
         for mode, n in self.selection:
+            # A long note is rigid on screen: the tail follows the head by the
+            # same *display* span, then converts back to an absolute length.
+            # Carrying n.length over verbatim would let the tail land inside a
+            # shortened measure's hidden tail and render clipped.
+            len_d = (self._display_pos_frac(n.end_absolute, cum)
+                     - self._display_pos_frac(n.absolute, cum)) if n.length else Fraction(0)
             if vdir:
                 disp = self._display_pos_frac(n.absolute, cum) + vdelta
-                if disp < 0 or disp >= total:
+                if disp < 0 or disp + len_d >= total:
                     return self._reject_feedback()
                 new_abs = self._absolute_from_display_frac(disp, cum)
+                new_len = (self._absolute_from_display_frac(disp + len_d, cum) - new_abs
+                           if n.length else Fraction(0))
             else:
                 new_abs = n.absolute
+                new_len = n.length
             if mode == "bgm":
                 newmode, newlane = "bgm", 0   # BGM has no lane space to move in
             elif mode_jump:
@@ -1853,7 +1862,7 @@ class ChartView(QWidget):
                 if g < 0 or g >= len(_GLOBAL_LANES):
                     return self._reject_feedback()
                 newmode, newlane = _GLOBAL_LANES[g]
-            proposed.append((mode, n, newmode, newlane, new_abs))
+            proposed.append((mode, n, newmode, newlane, new_abs, new_len))
         # Lift the selected notes out first; the remaining ("stationary") notes
         # are the ones a move must never delete. Notes overlap freely now (charts
         # are lists), so a move can pass through others instead of absorbing them.
@@ -1862,10 +1871,10 @@ class ChartView(QWidget):
         stationary = {m: list(c) for m, c in self.project.charts.items()}
         new_sel = set()
         overlap = False
-        for mode, n, newmode, newlane, new_abs in proposed:
+        for mode, n, newmode, newlane, new_abs, new_len in proposed:
             measure = int(new_abs)
             pos = new_abs - measure
-            moved = Note(measure, pos, newlane, n.length)
+            moved = Note(measure, pos, newlane, new_len)
             if newmode != "bgm":
                 for other in stationary.get(newmode, ()):
                     if other.lane == newlane and self._overlaps(moved, other):
