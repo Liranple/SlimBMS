@@ -392,7 +392,11 @@ class ChartView(QWidget):
         pos = absolute - m
         if pos == 0:                       # on a boundary → end of measure m-1
             m -= 1
-            pos = Fraction(1)
+            # …at that measure's *own* length, not a full measure. Assuming 1
+            # here made a tail on the boundary after a shortened measure look
+            # stranded past its end, so the loop below shoved it forward and
+            # the note grew every time a reflow ran.
+            pos = self.project.measure_length(m)
         while pos > self.project.measure_length(m):   # strict: boundary stays put
             pos -= self.project.measure_length(m)
             m += 1
@@ -432,6 +436,11 @@ class ChartView(QWidget):
                     # collapsed tail carries its end into the next measure instead
                     # of stopping at the boundary; recompute the length.
                     tail, tmoved = self._reflow_end(n.end_absolute)
+                    if tail <= head:
+                        # The note sat wholly inside the collapsed tail, so the
+                        # head relocated past its end. Carry the length across
+                        # rather than letting it shrink to a point (or invert).
+                        tail, tmoved = head + n.length, True
                     if hmoved or tmoved:
                         changed = True
                         n = Note(int(head), head - int(head), n.lane, tail - head)

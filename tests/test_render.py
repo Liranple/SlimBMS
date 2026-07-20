@@ -362,6 +362,41 @@ def test_reflow_moves_long_note_tail():
     assert (m.measure, m.pos, m.length) == (4, Fraction(0), Fraction(12, 32))
 
 
+def test_reflow_keeps_boundary_tail_after_shortened_measure():
+    """A long note whose tail sits exactly on a measure boundary right after a
+    shortened measure must not creep forward. `_reflow_end` used to treat the
+    boundary as 'end of measure m-1' at a FULL measure's length, so with m-1
+    shrunk to one cell the tail read as stranded past the measure's end and got
+    shoved into the following measures — the note grew a little on every reflow
+    (e.g. resizing a later measure)."""
+    _app()
+    p = Project(bpm=120, measures=140)
+    for m in (70, 71, 85, 96, 97, 104, 112):        # visual-gimmick measures
+        p.measure_scales[m] = Fraction(1, 32)
+    ln = Note(65, Fraction(0), 0, Fraction(113) - Fraction(65))   # tail at 113.0
+    p.charts[4].append(ln)
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v.refresh()
+
+    def disp(a):
+        return v._display_pos_frac(a, p.cumulative_lengths())
+
+    tail0 = disp(ln.end_absolute)
+    # Resizing measure 113 — strictly after the tail — must not move the note.
+    origin = v._capture_reflow_origin()
+    v._set_measure_cells(113, 16)
+    v._reflow_from(origin)
+    n = p.charts[4][0]
+    assert n.absolute == ln.absolute
+    assert disp(n.end_absolute) == tail0
+    assert n.length > 0
+    # …and reflow must be idempotent: no drift from repeated passes.
+    for _ in range(5):
+        v._reflow_from(v._capture_reflow_origin())
+        assert p.charts[4][0].length == n.length
+
+
 def test_ctrl_mode_jump():
     """Ctrl+Left/Right hops to the adjacent key mode keeping the lane index,
     aborting the whole move if any note's lane doesn't exist there."""
