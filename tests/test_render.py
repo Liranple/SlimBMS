@@ -145,6 +145,49 @@ def test_measure_shrink_spreads_notes_and_restores_on_grow():
     assert back == [(3, 20, 12), (3, 22, 0), (3, 24, 0), (3, 26, 0), (3, 28, 0), (3, 30, 0)]
 
 
+def test_measure_shrink_survives_viewport_scroll_mid_drag():
+    """Reflowing a note past the end of the timeline grows `project.measures`,
+    and the host scrolls the viewport to keep the centre — which shifts
+    widget-local y under a stationary mouse. The ruler drag must key off screen
+    coordinates, or that shift reads as a huge upward drag and snaps the
+    measure back to full length (bug: the shrink cancelled itself on the first
+    try and only worked on a retry)."""
+    from PySide6.QtCore import Qt, QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+    import slimbms.ui.layout as L
+
+    _app()
+    p = Project(bpm=120, measures=8)
+    p.charts[4].append(Note(3, Fraction(20, 32), 0))   # sits in the tail we collapse
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v.measure_px = 160
+    v.refresh()
+    v.resize(v._width, 2000)
+
+    x = L.LEFT_MARGIN / 2
+    y = v.y_for(3.0)
+    cell_px = v.measure_px * float(v.grid_main)         # 5 px per cell
+
+    def ev(kind, local_y, global_y, btn, btns):
+        return QMouseEvent(kind, QPointF(x, local_y), QPointF(x, global_y),
+                           btn, btns, Qt.NoModifier)
+
+    v.mousePressEvent(ev(QEvent.MouseButtonPress, y, y, Qt.LeftButton, Qt.LeftButton))
+    # Drag up 12 cells. Between the two moves the viewport scrolls by 300px, so
+    # local y jumps while the physical (global) mouse position barely moves.
+    v.mouseMoveEvent(ev(QEvent.MouseMove, y - 6 * cell_px, y - 6 * cell_px,
+                        Qt.NoButton, Qt.LeftButton))
+    v.mouseMoveEvent(ev(QEvent.MouseMove, y - 12 * cell_px + 300, y - 12 * cell_px,
+                        Qt.NoButton, Qt.LeftButton))
+    v.mouseReleaseEvent(ev(QEvent.MouseButtonRelease, y - 12 * cell_px + 300,
+                           y - 12 * cell_px, Qt.LeftButton, Qt.NoButton))
+
+    assert v._current_cells(3) == 20        # stayed shrunk, not reset to 32
+    n = p.charts[4][0]
+    assert n.measure == 4 and n.pos == Fraction(0)   # and the note reflowed
+
+
 def test_move_long_note_keeps_visible_length_across_shortened_measure():
     """Dragging a long note in edit mode moves it rigidly in display space, so
     its visible length is unchanged even when the move carries it across a

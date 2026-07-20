@@ -328,7 +328,11 @@ class ChartView(QWidget):
         d = self._scale_drag
         # Measures stack upward from their number, so grabbing the number and
         # pushing it up should collapse the measure: drag up = fewer cells.
-        dy = event.position().y() - d["y0"]      # drag up = negative = shrink
+        # The delta is measured in *screen* coordinates: reflowing a note past
+        # the end of the timeline grows `project.measures`, and the resize
+        # scrolls the viewport — which would shift widget-local y under a
+        # stationary mouse and snap the measure back to full length.
+        dy = event.globalPosition().y() - d["g0"]  # drag up = negative = shrink
         if not d["active"] and abs(dy) < 4:
             return                               # still might be a plain click
         d["active"] = True
@@ -1444,7 +1448,11 @@ class ChartView(QWidget):
         if event.button() == Qt.LeftButton and x < L.LEFT_MARGIN:
             m = int(self.absolute_at(y))
             if 0 <= m < self.project.measures:
-                self._scale_drag = {"measure": m, "y0": y, "active": False,
+                # y0 = widget y (for the plain-click seek fallback);
+                # g0 = screen y (drag delta, immune to viewport scrolling).
+                self._scale_drag = {"measure": m, "y0": y,
+                                    "g0": event.globalPosition().y(),
+                                    "active": False,
                                     "start_cells": self._current_cells(m),
                                     "min_cells": 1,
                                     "origin": self._capture_reflow_origin()}
