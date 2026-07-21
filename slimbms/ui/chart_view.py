@@ -220,6 +220,16 @@ class ChartView(QWidget):
         """True while a measure-length drag is in progress on the left ruler."""
         return self._scale_drag is not None
 
+    def is_editing_notes(self) -> bool:
+        """True while a mouse gesture that rewrites notes every frame is in
+        flight (move / long-note draw / endpoint resize). The timeline must not
+        resize itself mid-gesture: dragging the BGM marker moves the song start,
+        which changes how many measures the audio spans, and refitting on every
+        mouse step makes the canvas — and the scroll bar — shudder under the
+        cursor. The fit runs once on release instead."""
+        return (self._move_drag is not None or self._add_drag is not None
+                or self._len_drag is not None)
+
     def set_zoom(self, measure_px: int) -> None:
         self.measure_px = max(40, min(600, measure_px))
         self._apply_size()
@@ -1564,10 +1574,12 @@ class ChartView(QWidget):
             return
         if self._add_drag is not None:      # finished dragging out a long note
             self._add_drag = None
+            self.changed.emit()             # gesture over: let the timeline refit
             self.update()
             return
         if self._len_drag is not None:      # finished resizing a long note
             self._len_drag = None
+            self.changed.emit()
             self.update()
             return
         if self._move_drag is not None:     # finished dragging notes to move them
@@ -1578,6 +1590,7 @@ class ChartView(QWidget):
                 self.selection = self.selection ^ {md["toggle"]}
             else:
                 self._flag_overlap(self._selection_overlaps())
+                self.changed.emit()
             self.update()
             return
         if self.mode != "edit" or self._drag_start is None:

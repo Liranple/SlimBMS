@@ -244,6 +244,22 @@ def main() -> int:
     win2._autofit_measures()
     assert p2.measures == full, "the trim lands once the drag ends"
 
+    # Dragging notes holds the fit off entirely — including growth. Moving the
+    # BGM marker shifts the song start, so refitting on every mouse step made the
+    # canvas and the scroll bar shudder under the cursor.
+    p2.bgm.add(Note(0, Fraction(0), 0))
+    settled = p2.measures
+    win2.view._move_drag = {"moved": True}
+    p2.bgm.clear()
+    p2.bgm.add(Note(40, Fraction(0), 0))        # marker dragged 40 measures up
+    win2._autofit_measures()
+    assert p2.measures == settled, "no refit while notes are being dragged"
+    win2.view._move_drag = None
+    win2._autofit_measures()
+    assert p2.measures > settled, "the fit lands once the note drag ends"
+    p2.bgm.clear()
+    win2._autofit_measures()
+
     # -- file dialogs start next to the .slbms ------------------------------ #
     saved_bgm_dir = win2._dir_for("bgm")
     proj_dir = os.path.join(os.sep, "songs", "alpha")

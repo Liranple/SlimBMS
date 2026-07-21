@@ -977,6 +977,12 @@ class MainWindow(QMainWindow):
         back when the measures are stretched out again. Growing is immediate;
         trimming waits until a measure-length drag has settled so the canvas never
         resizes under the cursor mid-drag."""
+        if self.view.is_editing_notes():
+            # A note drag rewrites notes on every mouse step, and dragging the
+            # BGM marker moves the song start with them. Refitting here would
+            # rebuild the canvas and the scroll bar under the cursor each frame;
+            # the release re-emits `changed`, so the fit happens once, after.
+            return
         highest = 0
         for chart in self.project.charts.values():
             for n in chart:
