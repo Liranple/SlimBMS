@@ -106,24 +106,25 @@ def _format_decimal(x) -> str:
     return repr(round(f, 6))
 
 
-def _measure_data(objects: List[Note], value: str = OBJ_VALUE) -> str:
+def _measure_data(positions: List[Fraction], value: str = OBJ_VALUE) -> str:
     """Build the ``ZZ...`` data string for one channel within one measure.
 
+    ``positions`` are fractions of the measure's data length in ``[0, 1)``.
     Every object uses ``value`` as its marker (BGM points at the song, chart
     notes at a silent slot); the slot count is the least common multiple of the
     positions' denominators, then reduced to the shortest form.
     """
-    if not objects:
+    if not positions:
         return ""
     length = 1
-    for n in objects:
-        length = length * n.pos.denominator // gcd(length, n.pos.denominator)
+    for pos in positions:
+        length = length * pos.denominator // gcd(length, pos.denominator)
     slots = ["00"] * length
-    for n in objects:
-        idx = n.pos.numerator * (length // n.pos.denominator)
-        # An object at pos >= the measure's length falls past a shortened
-        # measure's end (e.g. a long-note tail or BPM change the UI let slip
-        # through). Clamp it to the last slot rather than crash the whole export.
+    for pos in positions:
+        idx = pos.numerator * (length // pos.denominator)
+        # Positions are derived from the measure's own span now, so an index
+        # past the end can't normally happen; clamp defensively rather than
+        # crash the whole export on a corrupt file.
         idx = min(idx, length - 1)
         slots[idx] = value
     # Reduce: if every filled index shares a factor with the length, shrink it.
@@ -234,71 +235,83 @@ def export_bms(project: Project, key_mode: int) -> str:
     lines.append("*---------------------- MAIN DATA FIELD")
 
     channels = KEY_CHANNELS[key_mode]
+    cum = project.cumulative_lengths()
+
+    # Pre-split every object's chart-axis position into (measure, offset) once,
+    # grouped by measure, so the per-measure loop below never rescans the whole
+    # chart. Long notes contribute a head AND a tail endpoint (both on the
+    # paired 5x channel); a tail landing exactly on a barline belongs to the
+    # next measure at offset 0.
+    def by_measure(pairs):
+        out: Dict[int, list] = {}
+        for a, payload in pairs:
+            m, off = project.locate(a, cum)
+            out.setdefault(m, []).append((off, payload))
+        return out
+
+    bpm_by = by_measure((pos, idx) for pos, idx in bpm_index.items())
+    stop_by = by_measure((pos, idx) for pos, idx in stop_index.items())
+    scroll_by = by_measure((pos, idx) for pos, idx in scroll_index.items())
+    bgm_by = by_measure((n.absolute, None) for n in project.bgm)
+
+    chart = project.charts[key_mode]
+    taps_by: Dict[int, Dict[int, list]] = {}   # measure -> lane -> [offset]
+    ln_by: Dict[int, Dict[int, list]] = {}     # measure -> lane -> [offset]
+    for n in chart:
+        m, off = project.locate(n.absolute, cum)
+        if n.is_long:
+            ln_by.setdefault(m, {}).setdefault(n.lane, []).append(off)
+            tm, toff = project.locate(n.end_absolute, cum)
+            ln_by.setdefault(tm, {}).setdefault(n.lane, []).append(toff)
+        else:
+            taps_by.setdefault(m, {}).setdefault(n.lane, []).append(off)
 
     for measure in range(project.measures):
         rows: List[str] = []
 
         # Measure length (channel 02) when this measure is shortened. Object
-        # positions below are given as a fraction of the shortened measure, so a
-        # note at offset ``pos`` becomes ``pos / mlen``.
+        # positions below are given as a fraction of the shortened measure, so
+        # an in-measure offset ``off`` becomes ``off / mlen``.
         mlen = project.measure_length(measure)
         if mlen != 1:
             rows.append(f"#{measure:03d}{MEASURE_LEN_CH}:{_format_length(mlen)}")
 
-        def frac(pos: Fraction) -> Fraction:
-            return pos / mlen if mlen != 1 else pos
+        def frac(off: Fraction) -> Fraction:
+            return off / mlen if mlen != 1 else off
 
         # Tempo changes on channel 08 (extended BPM).
-        bpm_here = [(frac(pos - measure), idx) for pos, idx in bpm_index.items()
-                    if int(pos) == measure]
+        bpm_here = [(frac(off), idx) for off, idx in bpm_by.get(measure, ())]
         data = _measure_data_valued(bpm_here)
         if data:
             rows.append(f"#{measure:03d}{BPM_CH_EXT}:{data}")
 
         # STOP sequences on channel 09.
-        stop_here = [(frac(pos - measure), idx) for pos, idx in stop_index.items()
-                     if int(pos) == measure]
+        stop_here = [(frac(off), idx) for off, idx in stop_by.get(measure, ())]
         data = _measure_data_valued(stop_here)
         if data:
             rows.append(f"#{measure:03d}{STOP_CH}:{data}")
 
         # Note-speed multipliers on channel SC (선형 ramps are folded into these
         # as fine steps above; #SPEED is not emitted — the game ignores it).
-        scroll_here = [(frac(pos - measure), idx) for pos, idx in scroll_index.items()
-                       if int(pos) == measure]
+        scroll_here = [(frac(off), idx) for off, idx in scroll_by.get(measure, ())]
         data = _measure_data_valued(scroll_here)
         if data:
             rows.append(f"#{measure:03d}{SCROLL_CH}:{data}")
 
         # BGM objects on channel 01.
-        bgm_here = [Note(measure, frac(n.pos), 0)
-                    for n in project.bgm if n.measure == measure]
-        data = _measure_data(bgm_here)
+        data = _measure_data([frac(off) for off, _ in bgm_by.get(measure, ())])
         if data:
             rows.append(f"#{measure:03d}{BGM_CHANNEL}:{data}")
 
         # Key objects grouped by lane -> channel. Tap notes go on the normal
-        # channel (1x); long notes emit a head object at their start and a tail
-        # object at their end, both on the paired LN channel (5x).
-        chart = project.charts[key_mode]
+        # channel (1x); long-note endpoints go on the paired LN channel (5x).
         for lane, channel in enumerate(channels):
-            lane_notes = [n for n in chart if n.lane == lane]
-            taps = [Note(measure, frac(n.pos), lane)
-                    for n in lane_notes if not n.is_long and n.measure == measure]
+            taps = [frac(off) for off in taps_by.get(measure, {}).get(lane, ())]
             data = _measure_data(taps, NOTE_VALUE)
             if data:
                 rows.append(f"#{measure:03d}{channel}:{data}")
 
-            endpoints: List[Note] = []
-            for n in lane_notes:
-                if not n.is_long:
-                    continue
-                if n.measure == measure:
-                    endpoints.append(Note(measure, frac(n.pos), lane))
-                end_abs = n.end_absolute
-                end_measure = int(end_abs)
-                if end_measure == measure:
-                    endpoints.append(Note(measure, frac(end_abs - end_measure), lane))
+            endpoints = [frac(off) for off in ln_by.get(measure, {}).get(lane, ())]
             data = _measure_data(endpoints, NOTE_VALUE)
             if data:
                 rows.append(f"#{measure:03d}{_ln_channel(channel)}:{data}")
@@ -470,8 +483,17 @@ def parse_bms(text: str) -> Project:
     def mlen(m: int) -> Fraction:
         return measure_lengths.get(m, Fraction(1))
 
+    # Chart-axis prefix over the parsed range: measure m starts at cum[m]. A
+    # data-string fraction ``pos`` inside measure m therefore sits at
+    # ``cum[m] + pos * mlen(m)`` on the axis.
+    cum = [Fraction(0)]
+    for m in range(max_measure + 2):
+        cum.append(cum[-1] + mlen(m))
+
+    def axis(measure: int, pos: Fraction) -> Fraction:
+        return cum[measure] + pos * mlen(measure)
+
     # Resolve tempo changes; a change at the very start becomes the base BPM.
-    # A within-measure fraction maps to the shortened measure: pos -> pos * len.
     for measure, pos, channel, val in tempo_objs:
         if channel == BPM_CH_INT:
             try:
@@ -482,7 +504,7 @@ def parse_bms(text: str) -> Project:
             bpm = bpm_defs.get(val.upper())
             if bpm is None:
                 continue
-        abs_pos = measure + pos * mlen(measure)
+        abs_pos = axis(measure, pos)
         if abs_pos <= 0:
             project.bpm = bpm
         else:
@@ -493,7 +515,7 @@ def parse_bms(text: str) -> Project:
         beats = stop_defs.get(val.upper())
         if beats is None or beats <= 0:
             continue
-        abs_pos = measure + pos * mlen(measure)
+        abs_pos = axis(measure, pos)
         if abs_pos > 0:
             project.stops[abs_pos] = beats
 
@@ -504,7 +526,7 @@ def parse_bms(text: str) -> Project:
             mult = defs.get(val.upper())
             if mult is None:
                 continue
-            abs_pos = measure + pos * mlen(measure)
+            abs_pos = axis(measure, pos)
             if abs_pos >= 0:
                 target[abs_pos] = mult
 
@@ -523,31 +545,29 @@ def parse_bms(text: str) -> Project:
     # can be matched in time order.
     ln_points: Dict[str, List[Fraction]] = {}
     for measure, chans in body.items():
-        L = mlen(measure)
         for channel, positions in chans.items():
             if channel == BGM_CHANNEL:
                 for pos in positions:
-                    project.bgm.add(Note(measure, pos * L, 0))
+                    project.bgm.add(Note(axis(measure, pos), 0))
             elif channel in import_lane:
                 lane = import_lane[channel]
                 for pos in positions:
-                    chart.append(Note(measure, pos * L, lane))
+                    chart.append(Note(axis(measure, pos), lane))
             elif channel in ln_lane:
                 ln_points.setdefault(channel, []).extend(
-                    measure + pos * L for pos in positions)
+                    axis(measure, pos) for pos in positions)
 
     # Pair consecutive LN endpoints into hold notes (head, tail, head, tail…).
+    # Lengths are chart-axis differences, so a hold spanning a shortened
+    # measure keeps its true musical duration.
     for channel, points in ln_points.items():
         lane = ln_lane[channel]
         points.sort()
         for i in range(0, len(points) - 1, 2):
             start, end = points[i], points[i + 1]
-            m = int(start)
-            chart.append(Note(m, start - m, lane, end - start))
+            chart.append(Note(start, lane, end - start))
         if len(points) % 2:  # dangling head with no tail -> a plain tap
-            start = points[-1]
-            m = int(start)
-            chart.append(Note(m, start - m, lane))
+            chart.append(Note(points[-1], lane))
     return project
 
 
@@ -556,13 +576,18 @@ def parse_bms(text: str) -> Project:
 # --------------------------------------------------------------------------- #
 
 def project_to_dict(project: Project) -> dict:
+    cum = project.cumulative_lengths()
+
     def notes(objs) -> List[list]:
-        # [measure, pos_num, pos_den, lane, len_num, len_den]. The two length
-        # fields are omitted for taps to keep files compact and are treated as 0
-        # when absent (so v1 files without them still load).
+        # [measure, off_num, off_den, lane, len_num, len_den]. ``off`` is the
+        # note's chart-axis offset into its measure (< the measure's length)
+        # and ``len`` its chart-axis hold length (a true musical duration,
+        # since v4). The two length fields are omitted for taps to keep files
+        # compact and are treated as 0 when absent.
         rows = []
         for n in objs:
-            row = [n.measure, n.pos.numerator, n.pos.denominator, n.lane]
+            m, off = project.locate(n.absolute, cum)
+            row = [m, off.numerator, off.denominator, n.lane]
             if n.is_long:
                 row += [n.length.numerator, n.length.denominator]
             rows.append(row)
@@ -570,7 +595,10 @@ def project_to_dict(project: Project) -> dict:
 
     return {
         "format": "slimbms",
-        "version": 3,
+        # v4: positions/lengths are chart-axis values (cumulative measure
+        # lengths); v1–v3 stored the legacy nominal axis (every measure
+        # counted as length 1). project_from_dict migrates old files.
+        "version": 4,
         "title": project.title,
         "artist": project.artist,
         "genre": project.genre,
@@ -613,20 +641,76 @@ def project_from_dict(data: dict) -> Project:
         editor=data.get("editor", {}) or {},
         measures=int(data.get("measures", 16)),
     )
-    def to_note(row) -> Note:
-        m, num, den, lane = row[0], row[1], row[2], row[3]
-        length = Fraction(row[4], row[5]) if len(row) >= 6 else Fraction(0)
-        return Note(m, Fraction(num, den), lane, length)
-
-    for row in data.get("bpm_changes", []):
-        project.bpm_changes[Fraction(int(row[0]), int(row[1]))] = float(row[2])
+    version = int(data.get("version", 1))
+    # Measure scales must be known before any position converts, so read them
+    # first — they define where each measure starts on the chart axis.
     for row in data.get("measure_scales", []):
         project.measure_scales[int(row[0])] = Fraction(int(row[1]), int(row[2]))
-    for row in data.get("stops", []):
-        project.stops[Fraction(int(row[0]), int(row[1]))] = Fraction(int(row[2]), int(row[3]))
-    for key, target in (("scrolls", project.scrolls), ("speeds", project.speeds)):
-        for row in data.get(key, []):
-            target[Fraction(int(row[0]), int(row[1]))] = Fraction(int(row[2]), int(row[3]))
+    cum = project.cumulative_lengths()
+
+    if version >= 4:
+        # Positions/lengths are chart-axis values already.
+        def to_note(row) -> Note:
+            off = Fraction(int(row[1]), int(row[2]))
+            length = Fraction(int(row[4]), int(row[5])) if len(row) >= 6 else Fraction(0)
+            return Note(project.position(int(row[0]), off, cum), int(row[3]), length)
+
+        def convert_keys(src: dict) -> dict:
+            return src
+    else:
+        # v1–v3 stored the legacy nominal axis: measure + pos with every
+        # measure counted as length 1, and long-note lengths as nominal
+        # distances. Fold onto the chart axis using the loaded scales. A
+        # position inside a shortened measure's hidden tail clamps to that
+        # measure's end — the point the old app actually displayed/played.
+        def real(h: Fraction) -> Fraction:
+            if h < 0:
+                return h
+            m = int(h)
+            if m >= project.measures:
+                return cum[-1] + (h - project.measures)
+            return cum[m] + min(h - m, project.measure_length(m))
+
+        def to_note(row) -> Note:
+            h = int(row[0]) + Fraction(int(row[1]), int(row[2]))
+            start = real(h)
+            length = Fraction(0)
+            if len(row) >= 6:
+                nominal = Fraction(int(row[4]), int(row[5]))
+                # Fold the end through the same mapping so a hold spanning a
+                # shortened measure keeps its true (played) duration…
+                length = real(h + nominal) - start
+                if length <= 0 < nominal:
+                    # …but a hold wholly inside a hidden tail would collapse
+                    # to a point; carry its nominal length instead.
+                    length = nominal
+            return Note(start, int(row[3]), length)
+
+        # Distinct nominal keys inside the same hidden tail clamp to the same
+        # axis point; nudge later ones forward so no marker is lost and the
+        # sorted order (which encodes SPEED ramp pairing) is preserved.
+        EPS = Fraction(1, 3840)
+
+        def convert_keys(src: dict) -> dict:
+            out, prev = {}, None
+            for k in sorted(src):
+                k2 = real(k)
+                if prev is not None and k2 <= prev:
+                    k2 = prev + EPS
+                out[k2] = src[k]
+                prev = k2
+            return out
+
+    bpm_raw = {Fraction(int(r[0]), int(r[1])): float(r[2])
+               for r in data.get("bpm_changes", [])}
+    project.bpm_changes = convert_keys(bpm_raw)
+    stops_raw = {Fraction(int(r[0]), int(r[1])): Fraction(int(r[2]), int(r[3]))
+                 for r in data.get("stops", [])}
+    project.stops = convert_keys(stops_raw)
+    for key, attr in (("scrolls", "scrolls"), ("speeds", "speeds")):
+        raw = {Fraction(int(r[0]), int(r[1])): Fraction(int(r[2]), int(r[3]))
+               for r in data.get(key, [])}
+        setattr(project, attr, convert_keys(raw))
     for row in data.get("bgm", []):
         project.bgm.add(to_note(row))
     for km_str, objs in data.get("charts", {}).items():

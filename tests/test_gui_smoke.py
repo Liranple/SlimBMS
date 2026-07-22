@@ -123,7 +123,7 @@ def main() -> int:
     press(view, Qt.Key_Q, autorep=True)     # auto-repeat is ignored
     view.set_playhead(5.0)
     release(view, Qt.Key_Q)
-    held = [n for n in view.project.charts[4] if n.measure == 4]
+    held = [n for n in view.project.charts[4] if int(n.absolute) == 4]
     assert len(held) == 1 and not held[0].is_long, \
         f"a held key should record one plain tap, got {held}"
 
@@ -147,8 +147,8 @@ def main() -> int:
     view.grid_main = Fraction(1)
     for km in view.project.charts.values():
         km.clear()
-    a = Note(1, Fraction(0), 0)
-    b = Note(2, Fraction(0), 0)
+    a = Note(Fraction(1), 0)
+    b = Note(Fraction(2), 0)
     view.project.charts[4].append(a)
     view.project.charts[4].append(b)
     view.selection = {(4, a)}
@@ -156,7 +156,7 @@ def main() -> int:
     assert len(view.project.charts[4]) == 2, "a move must not absorb another note"
     assert warned, "overlapping another note should warn"
     view._move_selection(0, 1)              # a passes through to measure 3, b stays
-    assert sorted(int(n.measure) for n in view.project.charts[4]) == [2, 3], \
+    assert sorted(int(n.absolute) for n in view.project.charts[4]) == [2, 3], \
         "the passed-over note must stay put"
 
     # -- 노트 속도: the end row doubles as the "ramp or not" switch ---------- #
@@ -247,11 +247,11 @@ def main() -> int:
     # Dragging notes holds the fit off entirely — including growth. Moving the
     # BGM marker shifts the song start, so refitting on every mouse step made the
     # canvas and the scroll bar shudder under the cursor.
-    p2.bgm.add(Note(0, Fraction(0), 0))
+    p2.bgm.add(Note(Fraction(0), 0))
     settled = p2.measures
     win2.view._move_drag = {"moved": True}
     p2.bgm.clear()
-    p2.bgm.add(Note(40, Fraction(0), 0))        # marker dragged 40 measures up
+    p2.bgm.add(Note(Fraction(40), 0))           # marker dragged 40 measures up
     win2._autofit_measures()
     assert p2.measures == settled, "no refit while notes are being dragged"
     win2.view._move_drag = None

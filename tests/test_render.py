@@ -1,8 +1,9 @@
 """Offscreen rendering tests for the chart canvas.
 
-Guards the P3 hot-path optimizations: grid-line culling to the visible strip
-must draw exactly what a full-song scan would, and the whole paint path (grid,
-notes, long notes, playhead) must render without error after layout changes.
+Guards the P3 hot-path optimizations (grid-line culling to the visible strip
+must draw exactly what a full-song scan would) and the chart-axis coordinate
+system: positions live on the cumulative-measure-length axis, so resizing a
+measure moves barlines — never notes.
 
 Run: QT_QPA_PLATFORM=offscreen python tests/test_render.py
 """
@@ -37,8 +38,8 @@ def test_grid_culling_matches_full_scan():
         v._vis_lo, v._vis_hi = lo, hi
         abs_top = v.absolute_at(lo)
         abs_bot = v.absolute_at(hi)
-        gm_lo = max(0, int(abs_bot) - 1)
-        gm_hi = min(measures, int(abs_top) + 2)
+        gm_lo = max(0, v._measure_key(abs_bot) - 1)
+        gm_hi = min(measures, v._measure_key(abs_top) + 2)
         for step in (v.grid_main, v.grid_sub):
             full = {int(y) for y in v._grid_line_ys(step, 0, measures)
                     if lo <= int(y) <= hi}
@@ -52,9 +53,9 @@ def test_paint_path_renders():
     playhead, and after a lane-width change (which rebuilds the col_x cache)."""
     _app()
     p = Project(bpm=150, measures=64)
-    p.charts[4].append(Note(3, Fraction(1, 4), 0))
-    p.charts[6].append(Note(10, Fraction(0), 2, Fraction(1, 2)))   # long note
-    p.bgm.add(Note(0, Fraction(0), 0))
+    p.charts[4].append(Note(Fraction(13, 4), 0))
+    p.charts[6].append(Note(Fraction(10), 2, Fraction(1, 2)))   # long note
+    p.bgm.add(Note(Fraction(0), 0))
     v = ChartView(p)
     v.resize(v._width, 800)
     v.set_playhead(5.0)
@@ -67,9 +68,9 @@ def test_paint_path_renders():
 
 
 def test_measure_scale_geometry():
-    """A per-measure display scale collapses that measure's tail: it takes less
-    height and shows fewer grid cells, while y_for/absolute_at stay invertible
-    and the measures below it are pulled up with no gap."""
+    """A per-measure length scales that measure's height and grid-cell count;
+    y_for/absolute_at stay invertible and the later barlines are pulled up
+    with no gap (the axis is contiguous)."""
     _app()
     p = Project(bpm=120, measures=8)
     v = ChartView(p)
@@ -79,86 +80,97 @@ def test_measure_scale_geometry():
     v._set_measure_cells(2, 16)                       # half of measure 2
     assert p.measure_scales[2] == Fraction(1, 2)
     assert v.height() == full_h - v.measure_px // 2   # lost half a measure
-    for a in (0.0, 1.0, 2.0, 2.25, 3.0, 7.0):         # round-trips through it
+    for a in (0.0, 1.0, 2.0, 2.25, 2.5, 6.0):         # round-trips on the axis
         assert abs(v.absolute_at(v.y_for(a)) - a) < 1e-6
-    assert abs(v.y_for(3.0) - v.y_for(2.5)) < 1e-6    # no gap after the tail
+    # Measure 3 now starts right where measure 2's half ends — no gap.
+    assert v._vprefix[3] == 2.5
+    assert abs(v.y_for(v._vprefix[3]) - (v.y_for(2.0) - v.measure_px / 2)) < 1e-6
     assert len(list(v._grid_line_ys(v.grid_main, 2, 3))) == 15   # 16 cells
     assert len(list(v._grid_line_ys(v.grid_main, 1, 2))) == 31   # 32 cells
 
 
-def test_measure_scale_reflows_notes_past_shrink():
-    """Shrinking a measure past a note carries the note into the next measure
-    (grid 32, note at cell 16 of measure 3, halve the measure -> measure 4 cell
-    0). The note keeps its offset from the collapsed boundary."""
+def test_measure_scale_keeps_note_positions():
+    """Resizing a measure moves only the barlines: every note keeps its
+    chart-axis position and length — including its on-screen distance from the
+    song start — while the derived (measure, cell) view re-buckets."""
     _app()
     p = Project(bpm=120, measures=8)
-    p.charts[4].append(Note(3, Fraction(1, 2), 0))    # cell 16 of a 32-cell grid
-    v = ChartView(p)
-    v.set_grid_main(32)
-    v._set_measure_cells(3, 16)                        # halve the measure
-    assert v._current_cells(3) == 16                   # no clamp — it really shrank
-    v._reflow_collapsed()                              # commit (as on drag release)
-    notes = p.charts[4]
-    assert len(notes) == 1
-    n = notes[0]
-    assert n.measure == 4 and n.pos == Fraction(0)     # moved to measure 4 cell 0
-
-
-def test_measure_scale_reflow_offsets_and_cascades():
-    """A note deeper in the collapsed tail keeps its cell offset past the seam,
-    and reflow cascades through consecutive shortened measures."""
-    _app()
-    p = Project(bpm=120, measures=8)
-    p.charts[4].append(Note(3, Fraction(20, 32), 0))   # cell 20
-    v = ChartView(p)
-    v.set_grid_main(32)
-    v._set_measure_cells(3, 16)                         # keep cells 0..15
-    v._reflow_collapsed()
-    n = p.charts[4][0]
-    assert n.measure == 4 and n.pos == Fraction(4, 32)  # 20 - 16 = cell 4
-
-
-def test_measure_shrink_spreads_notes_and_restores_on_grow():
-    """Shrinking a measure spreads every trailing note across the next measure
-    keeping their spacing (not piling them on cell 0), and reflowing from the
-    pristine originals means growing it again slides them back."""
-    _app()
-    p = Project(bpm=120, measures=8)
-    for c in (22, 24, 26, 28, 30):
-        p.charts[4].append(Note(3, Fraction(c, 32), 0))
-    p.charts[4].append(Note(3, Fraction(20, 32), 0, Fraction(12, 32)))  # long note
+    taps = [Note(Fraction(3) + Fraction(c, 32), 0) for c in (0, 16, 22, 30)]
+    ln = Note(Fraction(3) + Fraction(31, 32), 1, Fraction(2, 32))  # crosses 3|4
+    p.charts[4].extend(taps + [ln])
     v = ChartView(p)
     v.set_grid_main(32)
     v.refresh()
-    origin = v._capture_reflow_origin()
+    baseline = [(n.absolute, n.length) for n in p.charts[4]]
+    dist0 = [v.y_for(0.0) - v.y_for(float(n.absolute)) for n in p.charts[4]]
 
-    # Shrink measure 3 to 20 cells: cells 20..31 collapse.
-    v._set_measure_cells(3, 20)
-    v._reflow_from(origin)
-    cells = sorted((n.measure, int(n.pos * 32), int(n.length * 32)) for n in p.charts[4])
-    assert cells == [(4, 0, 12), (4, 2, 0), (4, 4, 0), (4, 6, 0), (4, 8, 0), (4, 10, 0)]
+    for cells in (16, 1, 24, 32):          # shrink, shrink hard, grow, restore
+        v._set_measure_cells(3, cells)
+        assert [(n.absolute, n.length) for n in p.charts[4]] == baseline
+        assert [v.y_for(0.0) - v.y_for(float(n.absolute))
+                for n in p.charts[4]] == dist0
+    # Fully restored: the derived cell view is back where it started.
+    assert p.locate(ln.absolute) == (3, Fraction(31, 32))
+    # While shrunk to 16 cells the same note reads as measure-4 content.
+    v._set_measure_cells(3, 16)
+    assert p.locate(ln.absolute) == (4, Fraction(15, 32))
+    assert p.locate(ln.end_absolute) == (4, Fraction(17, 32))
 
-    # Grow back to full: every note returns to its original spot (long note too).
-    v._set_measure_cells(3, 32)
-    v._reflow_from(origin)
-    back = sorted((n.measure, int(n.pos * 32), int(n.length * 32)) for n in p.charts[4])
-    assert back == [(3, 20, 12), (3, 22, 0), (3, 24, 0), (3, 26, 0), (3, 28, 0), (3, 30, 0)]
+
+def test_boundary_long_note_survives_measure_shrink():
+    """The reported bug: a 2-cell hold from the last cell of measure 80 into
+    the first cell of measure 81 must keep its position and 2-cell length no
+    matter how measure 80 is resized (16→15→…→1→16 cells)."""
+    _app()
+    p = Project(bpm=120, measures=100)
+    ln = Note(Fraction(80) + Fraction(15, 16), 0, Fraction(2, 16))
+    p.charts[4].append(ln)
+    v = ChartView(p)
+    v.set_grid_main(16)
+    v.refresh()
+    for cells in (15, 14, 8, 1, 16):
+        v._set_measure_cells(80, cells)
+        assert p.charts[4] == [ln], f"note rewritten at {cells} cells"
+    assert p.locate(ln.absolute) == (80, Fraction(15, 16))   # fully restored
+
+
+def test_scale_edit_never_touches_long_notes():
+    """Long notes are never rewritten by measure resizes — including the old
+    drift bug's setup (a tail on a barline after a run of 1-cell measures,
+    then resizing a measure after the tail; the nominal-axis reflow used to
+    grow the note a little on every pass)."""
+    _app()
+    p = Project(bpm=120, measures=140)
+    for m in (70, 71, 85, 96, 97, 104, 112):        # visual-gimmick measures
+        p.measure_scales[m] = Fraction(1, 32)
+    ln = Note(Fraction(65), 0, p.position(113, Fraction(0)) - Fraction(65))
+    p.charts[4].append(ln)
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v.refresh()
+    for cells in (16, 32, 1, 32):        # resize a measure after the tail
+        v._set_measure_cells(113, cells)
+        assert p.charts[4] == [ln]
+    for cells in (16, 32):               # and one the note's body spans
+        v._set_measure_cells(85, cells)
+        assert p.charts[4] == [ln]
 
 
 def test_measure_shrink_survives_viewport_scroll_mid_drag():
-    """Reflowing a note past the end of the timeline grows `project.measures`,
-    and the host scrolls the viewport to keep the centre — which shifts
-    widget-local y under a stationary mouse. The ruler drag must key off screen
-    coordinates, or that shift reads as a huge upward drag and snaps the
-    measure back to full length (bug: the shrink cancelled itself on the first
-    try and only worked on a retry)."""
+    """The host may scroll the viewport mid-drag, which shifts widget-local y
+    under a stationary mouse. The ruler drag must key off screen coordinates,
+    or that shift reads as a huge upward drag and snaps the measure back to
+    full length (bug: the shrink cancelled itself on the first try and only
+    worked on a retry). The release must emit one settle `changed` so the
+    timeline autofit can land."""
     from PySide6.QtCore import Qt, QPointF, QEvent
     from PySide6.QtGui import QMouseEvent
     import slimbms.ui.layout as L
 
     _app()
     p = Project(bpm=120, measures=8)
-    p.charts[4].append(Note(3, Fraction(20, 32), 0))   # sits in the tail we collapse
+    note = Note(Fraction(3) + Fraction(20, 32), 0)   # sits in the range we collapse
+    p.charts[4].append(note)
     v = ChartView(p)
     v.set_grid_main(32)
     v.measure_px = 160
@@ -180,26 +192,29 @@ def test_measure_shrink_survives_viewport_scroll_mid_drag():
                         Qt.NoButton, Qt.LeftButton))
     v.mouseMoveEvent(ev(QEvent.MouseMove, y - 12 * cell_px + 300, y - 12 * cell_px,
                         Qt.NoButton, Qt.LeftButton))
+    fired = []
+    v.changed.connect(lambda: fired.append(v.is_scaling()))
     v.mouseReleaseEvent(ev(QEvent.MouseButtonRelease, y - 12 * cell_px + 300,
                            y - 12 * cell_px, Qt.LeftButton, Qt.NoButton))
 
     assert v._current_cells(3) == 20        # stayed shrunk, not reset to 32
     n = p.charts[4][0]
-    assert n.measure == 4 and n.pos == Fraction(0)   # and the note reflowed
+    assert n.absolute == note.absolute      # the note itself never moved…
+    assert p.locate(n.absolute) == (4, Fraction(0))   # …but now reads as measure 4
+    assert fired and fired[-1] is False     # release emitted a settle signal
 
 
-def test_move_long_note_keeps_visible_length_across_shortened_measure():
-    """Dragging a long note in edit mode moves it rigidly in display space, so
-    its visible length is unchanged even when the move carries it across a
-    shortened measure — its tail can't slip into the hidden region and look
-    resized. Edit mode must never change a long note's length."""
+def test_move_long_note_keeps_length_across_shortened_measure():
+    """Dragging a long note in edit mode translates it on the chart axis, so
+    both its true and visible length are unchanged even inside a shortened
+    measure. Edit mode must never change a long note's length."""
     from PySide6.QtCore import Qt, QPointF, QEvent
     from PySide6.QtGui import QMouseEvent
 
     _app()
     p = Project(bpm=120, measures=10)
     p.measure_scales[3] = Fraction(16, 32)             # measure 3 halved
-    ln = Note(3, Fraction(5, 32), 0, Fraction(7, 32))  # head cell 5, tail cell 12
+    ln = Note(Fraction(3) + Fraction(5, 32), 0, Fraction(7, 32))
     p.charts[4].append(ln)
     v = ChartView(p)
     v.set_grid_main(32)
@@ -221,46 +236,34 @@ def test_move_long_note_keeps_visible_length_across_shortened_measure():
     v.mouseReleaseEvent(ev(QEvent.MouseButtonRelease, head_y - 1 - 6 * cell, Qt.LeftButton, Qt.NoButton))
 
     moved = next(iter(v.selection))[1]
+    assert moved.length == ln.length                   # true length unchanged
     assert vis(moved) == before                        # visible length unchanged
-    # Tail sits on a visible cell (frac below the measure's scale), never hidden.
-    tm = int(moved.end_absolute)
-    tail_frac = moved.end_absolute - tm
-    assert tail_frac < p.measure_length(tm) or tail_frac == 0
+    assert moved.absolute == ln.absolute + Fraction(6, 32)
 
 
 def test_arrow_move_long_note_across_one_cell_measures():
-    """Arrow keys must move a long note rigidly in display space just like a
-    drag does. Regression: a run of 1-cell measures above the note made the
-    tail keep its *absolute* length, so it landed in the hidden tail of a
-    shrunk measure and rendered clipped."""
+    """Arrow keys translate a long note on the chart axis — through a run of
+    1-cell measures its length (true == visible) never changes."""
     _app()
     p = Project(bpm=120, measures=80)
     for m in range(66, 73):                            # 66..72 shrunk to 1 cell
         p.measure_scales[m] = Fraction(1, 32)
-    ln = Note(65, Fraction(0), 0, Fraction(4, 32))     # 4-cell hold in measure 65
+    ln = Note(Fraction(65), 0, Fraction(4, 32))        # 4-cell hold in measure 65
     p.charts[4].append(ln)
     v = ChartView(p)
     v.set_grid_main(32)
     v.set_mode("edit")
     v.refresh()
 
-    cum = p.cumulative_lengths()
-    before = (v._display_pos_frac(ln.end_absolute, cum)
-              - v._display_pos_frac(ln.absolute, cum))
     cur = ln
-    # 32 presses to clear measure 65, then one per 1-cell measure 66..72.
-    for _ in range(45):
+    # 45 one-cell steps: clears measure 65 and the whole 1-cell run.
+    for i in range(45):
         v.selection = {(4, cur)}
         v._move_selection(0, 1)
         cur = next(iter(v.selection))[1]
-        span = (v._display_pos_frac(cur.end_absolute, cum)
-                - v._display_pos_frac(cur.absolute, cum))
-        assert span == before, f"visible length changed at measure {cur.measure}"
-        tm = int(cur.end_absolute)
-        tail_frac = cur.end_absolute - tm
-        assert tail_frac < p.measure_length(tm) or tail_frac == 0, \
-            f"tail hidden inside measure {tm}"
-    assert cur.measure > 72                            # actually got past the run
+        assert cur.length == ln.length, f"length changed at step {i}"
+        assert cur.absolute == ln.absolute + Fraction(i + 1, 32)
+    assert p.locate(cur.absolute)[0] > 72              # actually got past the run
 
 
 def test_paste_fills_free_space_in_clicked_measure():
@@ -271,18 +274,18 @@ def test_paste_fills_free_space_in_clicked_measure():
     p = Project(bpm=120, measures=16)
     step = Fraction(1, 32)
     for i in range(16):                       # measure 5, cells 0..15 full
-        p.charts[4].append(Note(5, i * step, 0))
-    p.charts[4].append(Note(6, Fraction(0), 0))   # measure 6 has a note (like "46마디")
+        p.charts[4].append(Note(5 + i * step, 0))
+    p.charts[4].append(Note(Fraction(6), 0))  # measure 6 has a note (like "46마디")
     v = ChartView(p)
     v.set_grid_main(32)
     v.refresh()
-    v.selection = {(4, n) for n in list(p.charts[4]) if n.measure == 5}
+    v.selection = {(4, n) for n in list(p.charts[4]) if 5 <= n.absolute < 6}
     v._copy_selection(cut=False)
 
     v._paste_anchor = 5.0                     # click measure 5, paste
     v._paste()
-    assert all(n.measure == 5 for _m, n in v.selection)     # stayed in the clicked measure
-    assert sorted(n.pos for _m, n in v.selection) == [(16 + i) * step for i in range(16)]
+    got = sorted(p.locate(n.absolute) for _m, n in v.selection)
+    assert got == [(5, (16 + i) * step) for i in range(16)]
 
 
 def test_paste_overlaps_in_place_when_no_room():
@@ -293,19 +296,19 @@ def test_paste_overlaps_in_place_when_no_room():
     p = Project(bpm=120, measures=16)
     step = Fraction(1, 32)
     for i in range(20):                       # cells 0..19 full → only 12 free < 20
-        p.charts[4].append(Note(5, i * step, 0))
+        p.charts[4].append(Note(5 + i * step, 0))
     v = ChartView(p)
     v.set_grid_main(32)
     v.refresh()
-    v.selection = {(4, n) for n in list(p.charts[4]) if n.measure == 5}
+    v.selection = {(4, n) for n in list(p.charts[4])}
     v._copy_selection(cut=False)
     before = len(p.charts[4])
 
     v._paste_anchor = 5.0
     v._paste()
     assert len(p.charts[4]) == before + 20                  # 20 duplicates added
-    assert all(n.measure == 5 for _m, n in v.selection)     # in the clicked measure
-    assert sorted(n.pos for _m, n in v.selection) == [i * step for i in range(20)]
+    got = sorted(p.locate(n.absolute) for _m, n in v.selection)
+    assert got == [(5, i * step) for i in range(20)]
 
 
 def test_paste_multi_measure_block_lands_at_clicked_measure():
@@ -316,19 +319,42 @@ def test_paste_multi_measure_block_lands_at_clicked_measure():
     p = Project(bpm=120, measures=16)
     for m in (3, 4, 5):
         p.measure_scales[m] = Fraction(24, 32)     # copied from shortened measures
-        p.charts[4].append(Note(m, Fraction(0), 0))
+    for m in (3, 4, 5):
+        p.charts[4].append(Note(p.position(m, Fraction(0)), 0))
     v = ChartView(p)
     v.set_grid_main(32)
     v.refresh()
     v.selection = {(4, n) for n in list(p.charts[4])}
     v._copy_selection(cut=False)
 
-    v._paste_anchor = 8.0
+    v._paste_anchor = float(p.position(8, Fraction(0)))
     v._paste()
-    pasted = sorted((n.measure, n.pos) for _m, n in v.selection)
+    pasted = sorted(p.locate(n.absolute) for _m, n in v.selection)
     assert pasted == [(8, Fraction(0)), (9, Fraction(0)), (10, Fraction(0))]
     # Target measures keep their own (full) length — copied scales aren't applied.
     assert all(p.measure_length(m) == Fraction(1) for m in (8, 9, 10))
+
+
+def test_paste_into_shortened_measure_never_hides_notes():
+    """Pasting a block copied from a full measure into a shorter one keeps
+    every note visible: an offset past the target measure's end simply lands
+    in the next measure — the axis has no hidden region to fall into."""
+    _app()
+    p = Project(bpm=120, measures=16)
+    step = Fraction(1, 32)
+    a, b = Note(Fraction(3), 0), Note(3 + 28 * step, 0)
+    p.charts[4].extend([a, b])
+    p.measure_scales[8] = Fraction(16, 32)      # target is half length
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v.refresh()
+    v.selection = {(4, a), (4, b)}
+    v._copy_selection(cut=False)
+    v._paste_anchor = float(p.position(8, Fraction(0)))
+    v._paste()
+    got = sorted(p.locate(n.absolute) for _m, n in v.selection)
+    # Cell 0 fits in measure 8; cell 28 overflows the 16-cell measure into 9.
+    assert got == [(8, Fraction(0)), (9, Fraction(12, 32))]
 
 
 def test_paste_requests_focus_on_pasted_block():
@@ -337,7 +363,7 @@ def test_paste_requests_focus_on_pasted_block():
     _app()
     p = Project(bpm=120, measures=16)
     for m in (3, 4):
-        p.charts[4].append(Note(m, Fraction(0), 0))
+        p.charts[4].append(Note(Fraction(m), 0))
     v = ChartView(p)
     v.set_grid_main(32)
     v.refresh()
@@ -369,7 +395,7 @@ def test_alt_drag_copies_selection():
     v.refresh()
     v.resize(1400, 3000)
     v.measure_px = 160
-    n = Note(2, Fraction(0), 0)
+    n = Note(Fraction(2), 0)
     p.charts[4].append(n)
     x = v._col_x()[(4, 0)] + v.lane_w / 2
     y = v.y_for(n.absolute)
@@ -380,12 +406,12 @@ def test_alt_drag_copies_selection():
                                  Qt.NoButton, Qt.LeftButton, Qt.NoModifier))
     v.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, QPointF(x, y - 10),
                                     Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
-    positions = sorted(nn.pos for nn in p.charts[4])
+    positions = sorted(nn.absolute for nn in p.charts[4])
     assert len(p.charts[4]) == 2                        # original + copy
-    assert positions == [Fraction(0), Fraction(1, 16)]  # original stayed, copy moved
+    assert positions == [Fraction(2), 2 + Fraction(1, 16)]  # original stayed, copy moved
     # The copy (not the original) ends up selected for further nudging.
     assert len(v.selection) == 1
-    assert next(iter(v.selection))[1].pos == Fraction(1, 16)
+    assert next(iter(v.selection))[1].absolute == 2 + Fraction(1, 16)
 
 
 def test_alt_click_without_drag_makes_no_copy():
@@ -401,7 +427,7 @@ def test_alt_click_without_drag_makes_no_copy():
     v.refresh()
     v.resize(1400, 3000)
     v.measure_px = 160
-    n = Note(2, Fraction(0), 0)
+    n = Note(Fraction(2), 0)
     p.charts[4].append(n)
     x = v._col_x()[(4, 0)] + v.lane_w / 2
     y = v.y_for(n.absolute)
@@ -412,72 +438,20 @@ def test_alt_click_without_drag_makes_no_copy():
     assert len(p.charts[4]) == 1                        # no duplicate
 
 
-def test_reflow_moves_long_note_tail():
-    """Shrinking a measure carries a long note's tail into the next measure too
-    (not just the head): a tail in the collapsed region relocates, and a note
-    wholly inside the collapsed region keeps its length."""
+def test_playhead_cell_snaps_measure_locally():
+    """Recording snap quantises within the measure under the playhead; near a
+    shortened measure's end it rounds onto the next measure's first cell —
+    never into cells the measure doesn't have."""
     _app()
-    # head visible, tail in the collapsed region -> tail moves, length grows to
-    # span the (removed) gap.
     p = Project(bpm=120, measures=8)
-    p.charts[4].append(Note(3, Fraction(10, 32), 0, Fraction(18, 32)))
-    v = ChartView(p)
-    v.set_grid_main(32)
-    origin = v._capture_reflow_origin()
-    p.measure_scales[3] = Fraction(24, 32)
-    v.refresh()
-    v._reflow_from(origin)
-    n = p.charts[4][0]
-    assert (n.measure, n.pos) == (3, Fraction(10, 32))
-    assert n.end_absolute == 4 + Fraction(4, 32)          # tail now in measure 4
-
-    # whole note inside the collapsed region, tail on the boundary -> both ends
-    # relocate and the length is preserved (no shrink to a point).
-    p2 = Project(bpm=120, measures=8)
-    p2.charts[4].append(Note(3, Fraction(20, 32), 0, Fraction(12, 32)))
-    v2 = ChartView(p2)
-    v2.set_grid_main(32)
-    origin2 = v2._capture_reflow_origin()
-    p2.measure_scales[3] = Fraction(20, 32)
-    v2.refresh()
-    v2._reflow_from(origin2)
-    m = p2.charts[4][0]
-    assert (m.measure, m.pos, m.length) == (4, Fraction(0), Fraction(12, 32))
-
-
-def test_reflow_keeps_boundary_tail_after_shortened_measure():
-    """A long note whose tail sits exactly on a measure boundary right after a
-    shortened measure must not creep forward. `_reflow_end` used to treat the
-    boundary as 'end of measure m-1' at a FULL measure's length, so with m-1
-    shrunk to one cell the tail read as stranded past the measure's end and got
-    shoved into the following measures — the note grew a little on every reflow
-    (e.g. resizing a later measure)."""
-    _app()
-    p = Project(bpm=120, measures=140)
-    for m in (70, 71, 85, 96, 97, 104, 112):        # visual-gimmick measures
-        p.measure_scales[m] = Fraction(1, 32)
-    ln = Note(65, Fraction(0), 0, Fraction(113) - Fraction(65))   # tail at 113.0
-    p.charts[4].append(ln)
+    p.measure_scales[3] = Fraction(8, 32)       # 8-cell measure: axis [3, 3.25)
     v = ChartView(p)
     v.set_grid_main(32)
     v.refresh()
-
-    def disp(a):
-        return v._display_pos_frac(a, p.cumulative_lengths())
-
-    tail0 = disp(ln.end_absolute)
-    # Resizing measure 113 — strictly after the tail — must not move the note.
-    origin = v._capture_reflow_origin()
-    v._set_measure_cells(113, 16)
-    v._reflow_from(origin)
-    n = p.charts[4][0]
-    assert n.absolute == ln.absolute
-    assert disp(n.end_absolute) == tail0
-    assert n.length > 0
-    # …and reflow must be idempotent: no drift from repeated passes.
-    for _ in range(5):
-        v._reflow_from(v._capture_reflow_origin())
-        assert p.charts[4][0].length == n.length
+    v.playhead = 3.0 + 7.4 / 32                 # inside cell 7
+    assert v.playhead_cell(True) == (3, Fraction(7, 32))
+    v.playhead = 3.0 + 7.9 / 32                 # rounds up past the measure's end
+    assert v.playhead_cell(True) == (4, Fraction(0))
 
 
 def test_ctrl_mode_jump():
@@ -488,7 +462,7 @@ def test_ctrl_mode_jump():
     _app()
     def setup(mode, lanes):
         p = Project(bpm=120, measures=8)
-        notes = [Note(2, Fraction(0), L) for L in lanes]
+        notes = [Note(Fraction(2), L) for L in lanes]
         p.charts[mode] += notes
         v = ChartView(p)
         v.set_mode("edit")
@@ -530,7 +504,7 @@ def test_ctrl_sub_move_preserves_spacing_no_overlap():
     p = Project(bpm=120, measures=210)
     cells = [1, 3, 5, 9, 11, 13]                      # grid 32, sub 12
     for c in cells:
-        p.charts[6].append(Note(202, Fraction(c, 32), 0))
+        p.charts[6].append(Note(202 + Fraction(c, 32), 0))
     v = ChartView(p)
     v.set_grid_main(32)
     v.set_grid_sub(12)
@@ -539,7 +513,7 @@ def test_ctrl_sub_move_preserves_spacing_no_overlap():
     v.selection = {(6, n) for n in list(p.charts[6])}
 
     def positions():
-        return sorted(n.pos for n in p.charts[6])
+        return sorted(n.absolute for n in p.charts[6])
     before = positions()
     gaps_before = [before[i + 1] - before[i] for i in range(len(before) - 1)]
 
@@ -558,7 +532,7 @@ def test_rejected_move_triggers_shake_feedback():
 
     _app()
     p = Project(bpm=120, measures=8)
-    n = Note(2, Fraction(0), 5)                     # 6K lane 5 (no 4K equivalent)
+    n = Note(Fraction(2), 5)                        # 6K lane 5 (no 4K equivalent)
     p.charts[6].append(n)
     v = ChartView(p)
     v.set_mode("edit")
@@ -601,15 +575,15 @@ def test_edit_move_modifiers():
     p, v = fresh()
     v.set_grid_main(32)
     v.set_grid_sub(8)
-    n = Note(2, Fraction(0), 0)
+    n = Note(Fraction(2), 0)
     p.charts[4].append(n)
     v.selection = {(4, n)}
     v._move_selection(0, 1, "sub")
-    assert sole(v).pos == Fraction(4, 32)
+    assert sole(v).absolute == 2 + Fraction(4, 32)
     v._move_selection(0, 1, "sub")
-    assert sole(v).pos == Fraction(8, 32)
+    assert sole(v).absolute == 2 + Fraction(8, 32)
     v._move_selection(0, -1, "sub")
-    assert sole(v).pos == Fraction(4, 32)
+    assert sole(v).absolute == 2 + Fraction(4, 32)
     # A non-dividing ratio floors: 21-cell grid, /4 secondary -> 21 // 4 = 5 cells.
     v.set_grid_main(21)
     v.set_grid_sub(4)
@@ -617,32 +591,32 @@ def test_edit_move_modifiers():
 
     # Shift nudges one pixel (free placement); plain steps one primary cell.
     p, v = fresh()
-    n = Note(2, Fraction(0), 0)
+    n = Note(Fraction(2), 0)
     p.charts[4].append(n)
     v.selection = {(4, n)}
     v._move_selection(0, 1, "px")
-    assert sole(v).pos == Fraction(1, 160)          # 1 px at measure_px 160
+    assert sole(v).absolute == 2 + Fraction(1, 160)  # 1 px at measure_px 160
     p, v = fresh()
-    n = Note(2, Fraction(0), 0)
+    n = Note(Fraction(2), 0)
     p.charts[4].append(n)
     v.selection = {(4, n)}
     v._move_selection(0, 1, "main")
-    assert sole(v).pos == Fraction(1, 16)
+    assert sole(v).absolute == 2 + Fraction(1, 16)
 
     # Lane walls: 4K lane 0 can't go left; a right move crosses 4K -> 6K.
     p, v = fresh()
-    n = Note(2, Fraction(0), 0)
+    n = Note(Fraction(2), 0)
     p.charts[4].append(n)
     v.selection = {(4, n)}
     v._move_selection(-1, 0)
     assert next(iter(v.selection))[0] == 4 and sole(v).lane == 0   # blocked, unchanged
-    n2 = Note(2, Fraction(0), 3)                                   # rightmost 4K lane
+    n2 = Note(Fraction(2), 3)                                      # rightmost 4K lane
     p.charts[4] = [n2]
     v.selection = {(4, n2)}
     v._move_selection(1, 0)
     assert next(iter(v.selection))[0] == 6 and sole(v).lane == 0   # 4K -> 6K
     # LOAD rightmost lane can't go further right.
-    n3 = Note(2, Fraction(0), 7)
+    n3 = Note(Fraction(2), 7)
     p.charts[IMPORT_MODE] = [n3]
     v.selection = {(IMPORT_MODE, n3)}
     v._move_selection(1, 0)
@@ -676,21 +650,20 @@ def test_edit_shift_drag_is_free_placement():
 
     # Shift-drag an unselected note up 16px -> free placement, no duplicate.
     p, v = setup()
-    n = Note(2, Fraction(0), 0)
+    n = Note(Fraction(2), 0)
     p.charts[4].append(n)
     x = v._col_x()[(4, 0)] + v.lane_w / 2
     drag(v, x, v.y_for(n.absolute), -16, Qt.ShiftModifier)
     assert len(p.charts[4]) == 1
-    assert p.charts[4][0].pos == Fraction(16, 160)   # 16 px, off the 1/16 grid
-
+    assert p.charts[4][0].absolute == 2 + Fraction(16, 160)  # 16 px, off the grid
     # A plain drag of 7px snaps to the nearest grid cell.
     p, v = setup()
-    n = Note(2, Fraction(0), 0)
+    n = Note(Fraction(2), 0)
     p.charts[4].append(n)
     x = v._col_x()[(4, 0)] + v.lane_w / 2
     drag(v, x, v.y_for(n.absolute), -7, Qt.NoModifier)
     assert len(p.charts[4]) == 1
-    assert p.charts[4][0].pos == Fraction(1, 16)
+    assert p.charts[4][0].absolute == 2 + Fraction(1, 16)
 
 
 def test_mouse_drag_crosses_key_modes():
@@ -726,7 +699,7 @@ def test_mouse_drag_crosses_key_modes():
 
     # 6K lane 0 -> drag to the 4K group (lane 1).
     p, v = setup()
-    n = Note(2, Fraction(0), 0)
+    n = Note(Fraction(2), 0)
     p.charts[6].append(n)
     drag(v, center(v, 6, 0), center(v, 4, 1), v.y_for(n.absolute))
     assert len(p.charts[6]) == 0 and len(p.charts[4]) == 1
@@ -734,7 +707,7 @@ def test_mouse_drag_crosses_key_modes():
 
     # 4K lane 2 -> drag all the way into LOAD.
     p, v = setup()
-    n = Note(2, Fraction(0), 2)
+    n = Note(Fraction(2), 2)
     p.charts[4].append(n)
     drag(v, center(v, 4, 2), center(v, IMPORT_MODE, 5), v.y_for(n.absolute))
     assert len(p.charts[4]) == 0 and len(p.charts[IMPORT_MODE]) == 1
@@ -743,8 +716,8 @@ def test_mouse_drag_crosses_key_modes():
     # Two notes dragged past the LOAD right edge shift together (collective
     # clamp) instead of both squishing onto the last lane.
     p, v = setup()
-    a = Note(2, Fraction(0), 0)                # LOAD lane 0
-    b = Note(2, Fraction(0), 1)                # LOAD lane 1
+    a = Note(Fraction(2), 0)                   # LOAD lane 0
+    b = Note(Fraction(2), 1)                   # LOAD lane 1
     p.charts[IMPORT_MODE].extend([a, b])
     v.selection = {(IMPORT_MODE, a), (IMPORT_MODE, b)}
     v._move_drag = {"origs": [(IMPORT_MODE, a), (IMPORT_MODE, b)],
@@ -759,10 +732,10 @@ def test_mouse_drag_crosses_key_modes():
     assert lanes == [6, 7]   # kept one lane apart, pinned to the right edge
 
 
-def test_arrow_move_skips_collapsed_cells():
-    """Arrow-key vertical moves step through display space: from a shortened
-    measure's last visible cell the note jumps to the next measure's first cell,
-    not through the measure's hidden (collapsed) cells."""
+def test_arrow_move_steps_through_shortened_measure():
+    """Arrow-key vertical moves step one grid cell on the chart axis: from a
+    shortened measure's last cell the note lands on the next measure's first
+    cell (the axis has no hidden cells to cross)."""
     _app()
     p = Project(bpm=120, measures=8)
     p.measure_scales[3] = Fraction(24, 32)             # measure 3 shrunk to 24 cells
@@ -771,35 +744,34 @@ def test_arrow_move_skips_collapsed_cells():
     v.set_mode("edit")
     v.refresh()
 
-    n = Note(3, Fraction(23, 32), 0)                   # last visible cell
+    n = Note(p.position(3, Fraction(23, 32)), 0)       # last cell of measure 3
     p.charts[4].append(n)
     v.selection = {(4, n)}
     v._move_selection(0, 1)                            # up one cell
     moved = next(iter(v.selection))[1]
-    assert moved.measure == 4 and moved.pos == Fraction(0)
+    assert p.locate(moved.absolute) == (4, Fraction(0))
 
     v._move_selection(0, -1)                           # back down one cell
     moved = next(iter(v.selection))[1]
-    assert moved.measure == 3 and moved.pos == Fraction(23, 32)
+    assert p.locate(moved.absolute) == (3, Fraction(23, 32))
 
 
 def test_hit_flash_across_shortened_measure():
-    """A note in the first cell right after a shortened measure must still flash
-    when the playhead crosses it. The absolute position jumps at the boundary of
-    a collapsed measure, so hit detection judges the crossing in display space —
-    otherwise the jump looks like a seek and the flash is skipped (issue: a note
-    at measure 54 cell 0 after halving measure 53 never lit)."""
+    """A note in the first cell right after a shortened measure still flashes
+    when the playhead crosses it: the chart axis is continuous across the
+    boundary, so smooth playback never looks like a seek there."""
     _app()
     p = Project(bpm=120, measures=8)
-    p.charts[4].append(Note(4, Fraction(0), 0))    # first cell of measure 4
-    p.measure_scales[3] = Fraction(1, 2)           # halve the measure before it
+    p.measure_scales[3] = Fraction(1, 2)           # halve measure 3: axis [3, 3.5)
+    note = Note(p.position(4, Fraction(0)), 0)     # first cell of measure 4 = 3.5
+    p.charts[4].append(note)
     v = ChartView(p)
     v.refresh()
     v.set_live(True)
-    v.set_playhead(3.49)                           # inside collapsed measure 3
-    v.set_playhead(4.02)                           # into measure 4, past the note
+    v.set_playhead(3.45)                           # inside shortened measure 3
+    v.set_playhead(3.52)                           # into measure 4, past the note
     flashed = [n for (_mode, n) in v._hits]
-    assert any(n.measure == 4 and n.pos == Fraction(0) for n in flashed)
+    assert any(n.absolute == note.absolute for n in flashed)
 
 
 def test_colx_cache_tracks_layout():

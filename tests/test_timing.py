@@ -58,16 +58,17 @@ def test_variable_bpm():
 
 
 def test_variable_measure_length():
-    # 120 bpm -> 0.5 m/s -> 2 s per full measure. Halving measure 1 makes it take
-    # 1 s, so everything after it plays 1 s earlier and stays in sync.
+    # 120 bpm -> 0.5 m/s -> 2 s per full measure. Positions live on the chart
+    # axis (cumulative measure lengths), so with measure 1 halved, measure 2
+    # starts at axis 1.5 — and one axis unit is always 2 s at 120 bpm.
     p = Project(bpm=120.0)
     p.toggle_bgm(0, Fraction(0))
     p.measure_scales[1] = Fraction(1, 2)
     tm = TimeMap(p)
     assert abs(tm.audio_seconds(1.0) - 2.0) < 1e-9      # measure 1 starts at 2 s
-    assert abs(tm.audio_seconds(2.0) - 3.0) < 1e-9      # +1 s for the half measure
-    assert abs(tm.audio_seconds(3.0) - 5.0) < 1e-9      # then full 2 s measures
-    # A note at real offset 1/4 inside the half measure keeps that offset in time.
+    assert abs(tm.audio_seconds(1.5) - 3.0) < 1e-9      # measure 2 (axis 1.5) at 3 s
+    assert abs(tm.audio_seconds(2.5) - 5.0) < 1e-9      # measure 3 (axis 2.5) at 5 s
+    # A note at offset 1/4 inside the half measure keeps that offset in time.
     assert abs(tm.audio_seconds(1.25) - 2.5) < 1e-9
     for secs in (0.0, 2.5, 3.0, 7.0):
         assert abs(tm.audio_seconds(tm.chart_pos(secs)) - secs) < 1e-6
@@ -114,13 +115,13 @@ def test_bpm_at():
 def test_snapshot_restore():
     from slimbms.model import Note
     p = Project(bpm=120.0)
-    p.charts[4].append(Note(0, Fraction(0), 0))
+    p.charts[4].append(Note(Fraction(0), 0))
     p.bpm_changes[Fraction(2)] = 140.0
     p.stops[Fraction(1)] = Fraction(2)
     p.scrolls[Fraction(1)] = Fraction(2)
     p.speeds[Fraction(2)] = Fraction(3, 2)
     snap = p.snapshot()
-    p.charts[4].append(Note(1, Fraction(0), 1))
+    p.charts[4].append(Note(Fraction(1), 1))
     p.bpm_changes[Fraction(3)] = 90.0
     p.stops[Fraction(5)] = Fraction(1)
     p.scrolls[Fraction(6)] = Fraction(-1)

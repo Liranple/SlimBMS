@@ -73,21 +73,32 @@ def lanes_for(key_mode: int) -> int:
 class Note:
     """A single object at a snapped time position within a lane.
 
-    ``pos`` is the fractional position inside the measure in ``[0, 1)`` — e.g.
-    ``Fraction(1, 4)`` is the second beat of a 4/4 measure. Using an exact
-    :class:`~fractions.Fraction` means positions round-trip through BMS output
-    without floating-point drift.
+    ``start`` is the note's position on the chart axis: the distance from the
+    song start in scaled measure units (a full 4/4 measure is 1, a shortened
+    measure contributes only its length), so measure ``m`` occupies
+    ``[cum[m], cum[m] + measure_length(m))`` — see
+    :meth:`Project.cumulative_lengths`. Notes therefore keep their musical
+    (beat) position when a measure's length is edited; only the barlines move.
+    Which measure/cell a note falls in is derived via :meth:`Project.locate`.
+    Using exact :class:`~fractions.Fraction` values means positions round-trip
+    through BMS output without floating-point drift.
     """
 
-    measure: int
-    pos: Fraction
+    start: Fraction
     lane: int  # 0-based lane within its key mode; 0 for BGM objects
-    length: Fraction = Fraction(0)  # hold duration in measures; 0 = tap note
+    length: Fraction = Fraction(0)  # hold length on the chart axis; 0 = tap
+
+    def __post_init__(self):
+        # Normalise so every construction site yields the same field types
+        # (ints and Fractions hash/compare equal, but keep the stored form
+        # canonical for repr/debugging).
+        object.__setattr__(self, "start", Fraction(self.start))
+        object.__setattr__(self, "length", Fraction(self.length))
 
     @property
     def absolute(self) -> Fraction:
-        """Position measured in whole measures from the song start."""
-        return self.measure + self.pos
+        """The note's chart-axis position (alias of ``start``)."""
+        return self.start
 
     @property
     def is_long(self) -> bool:
@@ -96,8 +107,8 @@ class Note:
 
     @property
     def end_absolute(self) -> Fraction:
-        """Absolute position of the note's end (== ``absolute`` for taps)."""
-        return self.absolute + self.length
+        """Chart-axis position of the note's end (== ``start`` for taps)."""
+        return self.start + self.length
 
 
 # --------------------------------------------------------------------------- #
@@ -127,20 +138,21 @@ class Project:
         default_factory=lambda: {k: [] for k in ALL_MODES}
     )
     bgm: Set[Note] = field(default_factory=set)  # BGM objects (lane 0)
-    # Mid-song tempo changes: absolute chart position (measures) -> BPM. The
-    # base ``bpm`` applies before the first change.
+    # Mid-song tempo changes: chart-axis position -> BPM. The base ``bpm``
+    # applies before the first change.
     bpm_changes: Dict[Fraction, float] = field(default_factory=dict)
     # Per-measure length: a measure -> length multiplier in (0, 1], default 1.
-    # A shortened measure genuinely takes less time, so the audio, waveform,
-    # playhead and everything after it shift up together (this is BMS channel
-    # 02). A note keeps its offset ``pos`` within the (shorter) measure.
+    # A shortened measure genuinely takes less time (this is BMS channel 02).
+    # Notes store chart-axis positions, so editing a measure's length moves the
+    # barlines over the notes — every note keeps its musical (beat) position
+    # and simply re-derives which measure/cell it falls in.
     measure_scales: Dict[int, Fraction] = field(default_factory=dict)
-    # STOP sequences (BMS channel 09): absolute chart position (measures) ->
-    # freeze duration in BEATS. At a stop the scroll/playhead freeze for that
-    # many beats (at the BPM in effect) while the audio keeps playing — the
-    # classic "정지" gimmick. Held in beats so it's independent of measure length.
+    # STOP sequences (BMS channel 09): chart-axis position -> freeze duration
+    # in BEATS. At a stop the scroll/playhead freeze for that many beats (at
+    # the BPM in effect) while the audio keeps playing — the classic "정지"
+    # gimmick. Held in beats so it's independent of measure length.
     stops: Dict[Fraction, Fraction] = field(default_factory=dict)
-    # SCROLL (BMS channel SC) and SPEED (channel SP): absolute chart position ->
+    # SCROLL (BMS channel SC) and SPEED (channel SP): chart-axis position ->
     # a note-scroll VELOCITY multiplier (visual only — judgement/audio timing is
     # unchanged). SCROLL is a step change; SPEED interpolates between markers.
     # These are beatoraja/Qwilight extensions; the game renders the distortion.
@@ -256,8 +268,8 @@ class Project:
 
     def toggle_note(self, key_mode: int, measure: int, pos: Fraction, lane: int) -> bool:
         """Add the note if absent, remove it if present. Returns the new state
-        (``True`` = note now exists)."""
-        note = Note(measure, pos, lane)
+        (``True`` = note now exists). ``pos`` is the offset into ``measure``."""
+        note = Note(self.position(measure, pos), lane)
         chart = self.charts[key_mode]
         if note in chart:
             chart.remove(note)
@@ -284,7 +296,7 @@ class Project:
                 pass
 
     def toggle_bgm(self, measure: int, pos: Fraction) -> bool:
-        note = Note(measure, pos, 0)
+        note = Note(self.position(measure, pos), 0)
         if note in self.bgm:
             self.bgm.discard(note)
             return False

@@ -199,7 +199,7 @@ class PlaybackController:
         pos = self.win.audio.position()
         chart_pos = self._timemap.chart_pos(pos)
         # Stop at the end of the timeline (or audio).
-        if chart_pos >= self.win.project.measures or (
+        if chart_pos >= self._timemap.total or (
             self.win.audio.duration and pos >= self.win.audio.duration
         ):
             self.stop_play()
@@ -211,14 +211,6 @@ class PlaybackController:
                 self._last_beat = beat
         self.win.view.set_playhead(chart_pos)
         self._follow_playhead(chart_pos)
-
-    def _viewport_chart_pos(self) -> float:
-        """Chart position currently at the playhead line in the viewport."""
-        vbar = self.win.scroll.verticalScrollBar()
-        vp_h = self.win.scroll.viewport().height()
-        y_in_view = vbar.value() + vp_h * PLAYHEAD_VIEWPORT_FRACTION
-        absolute = self.win.project.measures - (y_in_view - self.win.view.v_pad) / self.win.view.measure_px
-        return max(0.0, absolute)
 
     def _follow_playhead(self, chart_pos: float) -> None:
         vbar = self.win.scroll.verticalScrollBar()

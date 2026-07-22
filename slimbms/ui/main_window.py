@@ -983,12 +983,13 @@ class MainWindow(QMainWindow):
             # rebuild the canvas and the scroll bar under the cursor each frame;
             # the release re-emits `changed`, so the fit happens once, after.
             return
+        cum = self.project.cumulative_lengths()
         highest = 0
         for chart in self.project.charts.values():
             for n in chart:
-                highest = max(highest, int(n.end_absolute))
+                highest = max(highest, self.project.locate(n.end_absolute, cum)[0])
         for n in self.project.bgm:
-            highest = max(highest, n.measure)
+            highest = max(highest, self.project.locate(n.absolute, cum)[0])
         need = highest + 4  # keep a few empty measures above for placing notes
         if self.audio.duration > 0:
             tm = TimeMap(self.project)
@@ -1119,10 +1120,7 @@ class MainWindow(QMainWindow):
     # -- tempo changes ------------------------------------------------------ #
 
     def _add_bpm_change(self) -> None:
-        from fractions import Fraction
-        grid = max(1, self.sb_g1.value())
-        cell = min(self.bpm_cell.value(), grid)   # never past one measure of cells
-        pos = Fraction(self.bpm_measure.value()) + Fraction(cell, grid)
+        pos = self._marker_pos(self.bpm_measure, self.bpm_cell)
         self.project.bpm_changes[pos] = float(self.bpm_value.value())
         self.view.changed.emit()   # marks dirty + schedules an undo entry
         self.view.update()
@@ -1156,10 +1154,7 @@ class MainWindow(QMainWindow):
     def _commit_bpm(self, target) -> bool:
         """Replace the edited BPM marker: remove the old one, add the new one
         from the inputs (so changing its position moves it)."""
-        from fractions import Fraction
-        grid = max(1, self.sb_g1.value())
-        cell = min(self.bpm_cell.value(), grid)
-        pos = Fraction(self.bpm_measure.value()) + Fraction(cell, grid)
+        pos = self._marker_pos(self.bpm_measure, self.bpm_cell)
         self.project.bpm_changes.pop(target, None)
         self.project.bpm_changes[pos] = float(self.bpm_value.value())
         self.view.changed.emit()
@@ -1169,9 +1164,7 @@ class MainWindow(QMainWindow):
 
     def _add_stop(self) -> None:
         from fractions import Fraction
-        grid = max(1, self.sb_g1.value())
-        cell = min(self.stop_cell.value(), grid)   # never past one measure of cells
-        pos = Fraction(self.stop_measure.value()) + Fraction(cell, grid)
+        pos = self._marker_pos(self.stop_measure, self.stop_cell)
         beats = Fraction(self.stop_beats.value()).limit_denominator(192)
         if beats <= 0:
             return
@@ -1220,16 +1213,17 @@ class MainWindow(QMainWindow):
     # -- 노트 속도 (시작 → 끝 구간 변속) ---------------------------------- #
 
     def _marker_pos(self, measure_box, cell_box):
+        """Chart-axis position for a sidebar (마디, 칸) input pair."""
         from fractions import Fraction
         grid = max(1, self.sb_g1.value())
         cell = min(cell_box.value(), grid)
-        return Fraction(measure_box.value()) + Fraction(cell, grid)
+        return self.project.position(measure_box.value(), Fraction(cell, grid))
 
     def _set_pos_inputs(self, measure_box, cell_box, pos) -> None:
         grid = max(1, self.sb_g1.value())
-        m = int(pos)
+        m, off = self.project.locate(pos)
         measure_box.setValue(m)
-        cell_box.setValue(int(round(float(pos - m) * grid)))
+        cell_box.setValue(int(round(float(off) * grid)))
 
     def _center_canvas(self, pos) -> None:
         vbar = self.scroll.verticalScrollBar()
@@ -1240,8 +1234,8 @@ class MainWindow(QMainWindow):
         """A position label shared by every marker list: '마디 18 · 칸 12'
         (or just '마디 18' at a measure start), with no grid denominator."""
         grid = max(1, self.sb_g1.value())
-        m = int(pos)
-        cell = int(round(float(pos - m) * grid))
+        m, off = self.project.locate(pos)
+        cell = int(round(float(off) * grid))
         return f"마디 {m}" if cell == 0 else f"마디 {m} · 칸 {cell}"
 
     def _add_marker_row(self, listw, left: str, right: str, userdata) -> None:

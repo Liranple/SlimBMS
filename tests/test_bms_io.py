@@ -34,15 +34,12 @@ def test_toggle_is_idempotent_pair():
 
 
 def test_measure_data_reduction():
-    # A single note at beat 0 -> length 1
-    notes = [Note(0, Fraction(0, 1), 0)]
-    assert bms_io._measure_data(notes) == "01"
-    # Note at 1/2 -> "0001"
-    notes = [Note(0, Fraction(1, 2), 0)]
-    assert bms_io._measure_data(notes) == "0001"
-    # Two notes at 0 and 1/2 -> both slots filled -> "0101"
-    notes = [Note(0, Fraction(0), 0), Note(0, Fraction(1, 2), 0)]
-    assert bms_io._measure_data(notes) == "0101"
+    # A single object at beat 0 -> length 1
+    assert bms_io._measure_data([Fraction(0, 1)]) == "01"
+    # Object at 1/2 -> "0001"
+    assert bms_io._measure_data([Fraction(1, 2)]) == "0001"
+    # Two objects at 0 and 1/2 -> both slots filled -> "0101"
+    assert bms_io._measure_data([Fraction(0), Fraction(1, 2)]) == "0101"
 
 
 def test_bms_export_contains_header_and_body():
@@ -80,8 +77,8 @@ def test_bms_import_lands_in_hinted_key_mode():
         text = bms_io.export_bms(p, km)
         back = bms_io.parse_bms(text)
         assert not back.charts[IMPORT_MODE], "hinted import should skip the import group"
-        orig = {(n.measure, n.pos, n.lane) for n in p.charts[km]}
-        got = {(n.measure, n.pos, n.lane) for n in back.charts[km]}
+        orig = {(n.absolute, n.lane) for n in p.charts[km]}
+        got = {(n.absolute, n.lane) for n in back.charts[km]}
         assert got == orig, f"key mode {km} note/lane mismatch"
         assert back.bgm == p.bgm
         assert back.title == p.title
@@ -232,11 +229,11 @@ def test_measure_length_channel02_export_and_roundtrip():
     p.toggle_bgm(0, Fraction(0))
     text = bms_io.export_bms(p, 4)
     assert "#00202:0.5" in text                   # measure-length line
-    # The note's data fraction is pos/len = (1/4)/(1/2) = 1/2 of the short measure.
+    # The note's data fraction is off/len = (1/4)/(1/2) = 1/2 of the short measure.
     back = bms_io.parse_bms(text)
     assert back.measure_scales.get(2) == Fraction(1, 2)
-    got = [n for n in back.charts[4] if n.measure == 2]
-    assert len(got) == 1 and got[0].pos == Fraction(1, 4)   # real offset preserved
+    got = [back.locate(n.absolute) for n in back.charts[4]]
+    assert got == [(2, Fraction(1, 4))]           # real offset preserved
 
 
 def test_import_honors_key_mode_command():
@@ -260,8 +257,8 @@ def test_keysoundless_bgm_and_notes_use_separate_slots():
     # Keysound-less: BGM object -> WAV01 (the song); chart notes -> silent 02
     # with no #WAV02 defined, so hitting a note makes no sound.
     p = Project(title="KS", bgm_file="song.ogg", measures=2)
-    p.bgm.add(Note(0, Fraction(0), 0))
-    p.charts[4].append(Note(0, Fraction(0), 0))   # tap on channel 11
+    p.bgm.add(Note(Fraction(0), 0))
+    p.charts[4].append(Note(Fraction(0), 0))      # tap on channel 11
     text = bms_io.export_bms(p, 4)
     assert "#WAV01 song.ogg" in text
     assert "#WAV02" not in text, "the note slot stays undefined (silent)"
@@ -275,7 +272,7 @@ def test_long_note_exports_on_ln_channel():
     # A 4K long note in lane 0 (channel 11 -> LN channel 51) spanning half a
     # measure emits a head at its start and a tail at its end on channel 51.
     p = Project(title="LN", bpm=120, measures=4)
-    p.charts[4].append(Note(0, Fraction(1, 4), 0, Fraction(1, 2)))  # head 1/4, tail 3/4
+    p.charts[4].append(Note(Fraction(1, 4), 0, Fraction(1, 2)))  # head 1/4, tail 3/4
     text = bms_io.export_bms(p, 4)
     assert "#LNTYPE 1" in text
     ln = [line for line in text.splitlines() if line.startswith("#00051:")]
@@ -290,7 +287,7 @@ def test_long_note_spanning_measures_pairs_back():
     # A long note crossing a measure boundary round-trips through export+import
     # (head/tail paired by time order) with its duration intact.
     p = Project(title="LN2", bpm=120, measures=8)
-    p.charts[6].append(Note(1, Fraction(1, 2), 2, Fraction(3, 4)))  # ends in measure 2
+    p.charts[6].append(Note(Fraction(3, 2), 2, Fraction(3, 4)))  # ends in measure 2
     text = bms_io.export_bms(p, 6)
     back = bms_io.parse_bms(text)
     longs = [n for n in back.charts[6] if n.is_long]
@@ -301,13 +298,100 @@ def test_long_note_spanning_measures_pairs_back():
 
 def test_slbms_roundtrip_preserves_length():
     p = Project(title="Hold", bpm=130, measures=4)
-    p.charts[6].append(Note(0, Fraction(0), 1, Fraction(1, 3)))  # long
-    p.charts[6].append(Note(1, Fraction(1, 4), 2))              # tap
+    p.charts[6].append(Note(Fraction(0), 1, Fraction(1, 3)))  # long
+    p.charts[6].append(Note(Fraction(5, 4), 2))               # tap
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "p.slbms")
         bms_io.save_project(p, path)
         back = bms_io.load_project(path)
     assert set(back.charts[6]) == set(p.charts[6]), "length must survive the JSON round-trip"
+
+
+def test_ln_across_scaled_measure_roundtrips():
+    # THE bug class this coordinate system exists to kill: a long note whose
+    # body crosses a shortened measure must keep its true (chart-axis) position
+    # and duration through both the .bms and the .slbms round-trips.
+    p = Project(title="LNS", bpm=120, measures=8)
+    p.measure_scales[2] = Fraction(1, 2)               # measure 2 is half length
+    # Head in the last cell of measure 1, tail in the first cell of measure 3:
+    # spans all of measure 2. Axis: head 2 - 1/16, length 1/16 + 1/2 + 1/16.
+    head = Fraction(2) - Fraction(1, 16)
+    length = Fraction(1, 16) + Fraction(1, 2) + Fraction(1, 16)
+    p.charts[4].append(Note(head, 0, length))
+
+    back = bms_io.parse_bms(bms_io.export_bms(p, 4))
+    longs = [n for n in back.charts[4] if n.is_long]
+    assert len(longs) == 1
+    assert (longs[0].absolute, longs[0].length) == (head, length)
+
+    back2 = bms_io.project_from_dict(bms_io.project_to_dict(p))
+    assert set(back2.charts[4]) == set(p.charts[4])
+
+
+def test_slbms_v4_writes_axis_offsets_and_version():
+    p = Project(title="V4", bpm=120, measures=8)
+    p.measure_scales[1] = Fraction(1, 2)
+    # A note in measure 2 (axis 3/2 + 1/4) and a marker on the axis.
+    p.charts[4].append(Note(Fraction(3, 2) + Fraction(1, 4), 0))
+    p.bpm_changes[Fraction(7, 4)] = 150.0
+    d = bms_io.project_to_dict(p)
+    assert d["version"] == 4
+    # Note rows carry (measure, in-measure offset): offset < that measure's
+    # length, never the legacy nominal position.
+    (row,) = d["charts"]["4"]
+    assert row[0] == 2 and Fraction(row[1], row[2]) == Fraction(1, 4)
+    assert d["bpm_changes"] == [[7, 4, 150.0]]
+    # And a v4 dict reloads to the identical project state.
+    back = bms_io.project_from_dict(d)
+    assert set(back.charts[4]) == set(p.charts[4])
+    assert back.bpm_changes == p.bpm_changes
+    assert back.measure_scales == p.measure_scales
+
+
+def test_slbms_v3_migration_folds_legacy_axis():
+    # v≤3 files stored measure + pos with every measure counted as length 1 and
+    # nominal long-note lengths. Loading must fold them onto the chart axis
+    # using the file's own measure scales.
+    data = {
+        "version": 3, "title": "Old", "bpm": 120, "measures": 8,
+        "measure_scales": [[1, 1, 2]],                # measure 1 is half length
+        "charts": {"4": [
+            [0, 1, 4, 0],                             # measure 0, pos 1/4 -> axis 1/4
+            [2, 1, 4, 1],                             # measure 2, pos 1/4 -> axis 3/2 + 1/4
+            [1, 3, 4, 2],                             # hidden tail (pos 3/4 >= 1/2) -> clamps to axis 3/2
+            # LN head measure 0 pos 3/4, nominal length 1/2: crosses the short
+            # measure boundary. True end = fold(1 + 1/4) = 1 + 1/4; axis length 1/2.
+            [0, 3, 4, 3, 1, 2],
+        ]},
+        # Two speed markers inside measure 1's hidden tail clamp to the same
+        # axis point; the later one must be nudged, keeping sort order (= ramp
+        # pairing) intact and losing nothing.
+        "speeds": [[1 * 4 + 3, 4, 2, 1], [1 * 8 + 7, 8, 1, 1]],
+    }
+    p = bms_io.project_from_dict(data)
+    notes = {(n.lane): n for n in p.charts[4]}
+    assert notes[0].absolute == Fraction(1, 4)
+    assert notes[1].absolute == Fraction(3, 2) + Fraction(1, 4)
+    assert notes[2].absolute == Fraction(3, 2)               # clamped to measure end
+    assert (notes[3].absolute, notes[3].length) == (Fraction(3, 4), Fraction(1, 2))
+    keys = sorted(p.speeds)
+    assert len(keys) == 2 and keys[0] == Fraction(3, 2)      # both clamp to 3/2...
+    assert keys[0] < keys[1] < Fraction(3, 2) + Fraction(1, 100)   # ...second nudged just after
+    assert [p.speeds[k] for k in keys] == [Fraction(2), Fraction(1)]
+
+
+def test_slbms_v3_ln_wholly_in_hidden_tail_carries_length():
+    # A v3 hold living entirely inside a hidden tail would fold to a point;
+    # the migration carries its nominal length instead (old reflow's rule).
+    data = {
+        "version": 3, "title": "Old", "bpm": 120, "measures": 8,
+        "measure_scales": [[1, 1, 4]],                # measure 1 is quarter length
+        "charts": {"4": [[1, 1, 2, 0, 1, 4]]},        # head pos 1/2, len 1/4 — all hidden
+    }
+    p = bms_io.project_from_dict(data)
+    (n,) = p.charts[4]
+    assert n.absolute == Fraction(5, 4)               # clamped to the measure end
+    assert n.length == Fraction(1, 4)                 # nominal length carried
 
 
 def test_slbms_v1_without_length_still_loads():
