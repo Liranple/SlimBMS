@@ -1278,17 +1278,49 @@ class MainWindow(QMainWindow):
             w.style().unpolish(w)
             w.style().polish(w)
 
-    def _write_scroll(self, sp, ep, sv, ev) -> None:
-        """Store either a ramp (two SPEED markers) or a single 순간 SCROLL step."""
+    def _write_scroll(self, sp, ep, sv, ev) -> bool:
+        """Store either a ramp (two SPEED markers) or a single 순간 SCROLL step.
+
+        Ramps live in one dict keyed by position and are paired back by sort
+        order, so two ramps sharing a boundary (e.g. 112~113 감속 + 113~124
+        가속) would collide on the shared key and corrupt the pairing. A new
+        endpoint landing exactly on a neighbouring ramp's opposite endpoint is
+        nudged inward by 1/192 measure — invisible on screen and in game, and
+        the shared value simply holds across the hair-thin gap. A genuinely
+        overlapping ramp (endpoint inside another ramp's span) is refused."""
+        from fractions import Fraction
         if ep is None:
             self.project.scrolls[sp] = sv
-        else:
-            self.project.speeds[sp] = sv
-            self.project.speeds[ep] = ev
+            return True
+        speeds = self.project.speeds
+        order = sorted(speeds)
+
+        def is_ramp_end(k) -> bool:
+            return order.index(k) % 2 == 1
+        step = Fraction(1, 192)
+        if sp in speeds and is_ramp_end(sp):
+            sp += step                       # butts against the previous ramp's end
+        if ep in speeds and not is_ramp_end(ep):
+            ep -= step                       # butts against the next ramp's start
+        # Any remaining contact corrupts the sort-order pairing: an endpoint
+        # still on an existing key, an existing marker inside the new span, or
+        # an endpoint inside an existing ramp's span.
+        clash = (sp in speeds or ep in speeds or sp >= ep
+                 or any(sp < k < ep for k in speeds)
+                 or any(rs < sp < re or rs < ep < re
+                        for rs, re, _sv, _ev in self.project.speed_ramps()))
+        if clash:
+            self.statusBar().showMessage(
+                "기존 변속 구간과 겹쳐서 추가할 수 없습니다.", 5000)
+            return False
+        speeds[sp] = sv
+        speeds[ep] = ev
+        return True
 
     def _add_scroll(self) -> None:
         sp, ep, sv, ev = self._scroll_from_inputs()
-        self._write_scroll(sp, ep, sv, ev)
+        if not self._write_scroll(sp, ep, sv, ev):
+            return
         self.view.changed.emit()
         self.view.update()
         self._refresh_scroll_list()
@@ -1302,8 +1334,12 @@ class MainWindow(QMainWindow):
 
     def _commit_scroll(self, target) -> bool:
         sp, ep, sv, ev = self._scroll_from_inputs()
+        before = (dict(self.project.scrolls), dict(self.project.speeds))
         self._remove_scroll_data(target)         # drop the edited entry first
-        self._write_scroll(sp, ep, sv, ev)
+        if not self._write_scroll(sp, ep, sv, ev):
+            # Refused (overlapping ramp): put the edited entry back untouched.
+            self.project.scrolls, self.project.speeds = before
+            return False
         self.view.changed.emit()
         self.view.update()
         self._refresh_scroll_list()

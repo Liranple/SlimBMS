@@ -196,6 +196,30 @@ def main() -> int:
     assert (win.scroll_measure.value(), win.scroll_value.value()) == (4, 2.0)
     assert (win.scroll_measure2.value(), win.scroll_value2.value()) == (8, 1.0)
 
+    # Two ramps sharing a boundary point (112~113 감속 + 113~124 가속) must both
+    # survive: the shared key is nudged 1/192 inward so the sort-order pairing
+    # stays intact. A genuinely overlapping ramp is refused (state untouched).
+    p.scrolls.clear()
+    p.speeds.clear()
+    set_scroll(4, 0, 0.8, 5, 0, 0.5)
+    win._add_scroll()
+    set_scroll(5, 0, 0.5, 8, 0, 1.0)          # starts exactly on ramp 1's end
+    win._add_scroll()
+    ramps = sorted(win.view._speed_ramps())
+    assert len(ramps) == 2, f"both ramps must survive, got {ramps}"
+    (s1, e1, v1a, v1b), (s2, e2, v2a, v2b) = ramps
+    assert (s1, e1) == (Fraction(4), Fraction(5))
+    assert Fraction(5) < s2 <= Fraction(5) + Fraction(1, 192) and e2 == Fraction(8), \
+        f"ramp 2 start must be nudged just past the boundary, got {s2}"
+    assert (v1a, v1b, v2a, v2b) == (Fraction(4, 5), Fraction(1, 2),
+                                    Fraction(1, 2), Fraction(1))
+    before_speeds = dict(p.speeds)
+    set_scroll(4, 16, 2.0, 6, 0, 3.0)         # overlaps ramp 1's span -> refused
+    win._add_scroll()
+    assert p.speeds == before_speeds, "an overlapping ramp must be refused"
+    p.scrolls.clear()
+    p.speeds.clear()
+
     # -- the timeline length follows the measure lengths -------------------- #
     # The song's length is real time, not a measure count: halving every measure
     # means each covers half as much music, so the timeline has to grow to still
