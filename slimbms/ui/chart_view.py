@@ -331,10 +331,9 @@ class ChartView(QWidget):
     def _apply_scale_drag(self, event: QMouseEvent) -> None:
         d = self._scale_drag
         # Measures stack upward from their number, so grabbing the number and
-        # pushing it up should collapse the measure: drag up = fewer cells.
-        # The delta is measured in *screen* coordinates: reflowing a note past
-        # the end of the timeline grows `project.measures`, and the resize
-        # scrolls the viewport — which would shift widget-local y under a
+        # pushing it up should shrink the measure: drag up = fewer cells.
+        # The delta is measured in *screen* coordinates: a resize can make the
+        # host scroll the viewport — which would shift widget-local y under a
         # stationary mouse and snap the measure back to full length.
         dy = event.globalPosition().y() - d["g0"]  # drag up = negative = shrink
         if not d["active"] and abs(dy) < 4:

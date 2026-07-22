@@ -892,8 +892,8 @@ class MainWindow(QMainWindow):
 
     def _refresh_marker_lists(self) -> None:
         """Re-sync the BPM / 정지 / 노트 속도 lists after the data changed behind
-        their backs (undo / redo, measure reflow). Any in-progress edit is
-        dropped since its target row may no longer exist."""
+        their backs (undo / redo). Any in-progress edit is dropped since its
+        target row may no longer exist."""
         if not hasattr(self, "_bpm_edit"):
             return
         for ctl in (self._bpm_edit, self._stop_edit, self._scroll_edit):
