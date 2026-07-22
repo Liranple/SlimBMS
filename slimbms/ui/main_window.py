@@ -364,7 +364,11 @@ class MainWindow(QMainWindow):
 
         def _mk_value(default):
             v = NoWheelDoubleSpinBox()
-            v.setRange(-64.0, 64.0)
+            # Wide range on purpose: rewind/fast-forward gimmicks (e.g. notes
+            # rising from below the judgement line) need to cancel the whole
+            # accumulated scroll in a few cells, which takes values in the
+            # hundreds. The game reads any #SCROLL value.
+            v.setRange(-1024.0, 1024.0)
             v.setDecimals(2)
             v.setSingleStep(0.25)
             v.setValue(default)
