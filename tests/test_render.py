@@ -263,14 +263,59 @@ def test_arrow_move_long_note_across_one_cell_measures():
     assert cur.measure > 72                            # actually got past the run
 
 
-def test_copy_paste_carries_measure_scales():
-    """Copying notes from shortened measures and pasting reproduces the measure
-    lengths on the pasted block (24-cell measures stay 24-cell), and pasting past
-    the current end still places the notes."""
+def test_paste_fills_free_space_in_clicked_measure():
+    """A single-measure block pasted into a measure whose top is full drops into
+    that same measure's free vertical space (top-down, first gap it fits) — here
+    cells 0–16 are taken, so the copy lands in cells 16–32."""
+    _app()
+    p = Project(bpm=120, measures=16)
+    step = Fraction(1, 32)
+    for i in range(16):                       # measure 5, cells 0..15 full
+        p.charts[4].append(Note(5, i * step, 0))
+    p.charts[4].append(Note(6, Fraction(0), 0))   # measure 6 has a note (like "46마디")
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v.refresh()
+    v.selection = {(4, n) for n in list(p.charts[4]) if n.measure == 5}
+    v._copy_selection(cut=False)
+
+    v._paste_anchor = 5.0                     # click measure 5, paste
+    v._paste()
+    assert all(n.measure == 5 for _m, n in v.selection)     # stayed in the clicked measure
+    assert sorted(n.pos for _m, n in v.selection) == [(16 + i) * step for i in range(16)]
+
+
+def test_paste_overlaps_in_place_when_no_room():
+    """When the block is taller than the free space left in the clicked measure,
+    it's duplicated in place (overlapping) at that measure — never pushed to an
+    empty measure elsewhere."""
+    _app()
+    p = Project(bpm=120, measures=16)
+    step = Fraction(1, 32)
+    for i in range(20):                       # cells 0..19 full → only 12 free < 20
+        p.charts[4].append(Note(5, i * step, 0))
+    v = ChartView(p)
+    v.set_grid_main(32)
+    v.refresh()
+    v.selection = {(4, n) for n in list(p.charts[4]) if n.measure == 5}
+    v._copy_selection(cut=False)
+    before = len(p.charts[4])
+
+    v._paste_anchor = 5.0
+    v._paste()
+    assert len(p.charts[4]) == before + 20                  # 20 duplicates added
+    assert all(n.measure == 5 for _m, n in v.selection)     # in the clicked measure
+    assert sorted(n.pos for _m, n in v.selection) == [i * step for i in range(20)]
+
+
+def test_paste_multi_measure_block_lands_at_clicked_measure():
+    """A block spanning several measures pastes at the clicked measure keeping
+    each note's measure offset — without carrying copied measure lengths or
+    hunting for empty measures."""
     _app()
     p = Project(bpm=120, measures=16)
     for m in (3, 4, 5):
-        p.measure_scales[m] = Fraction(24, 32)         # shrink to 24 cells
+        p.measure_scales[m] = Fraction(24, 32)     # copied from shortened measures
         p.charts[4].append(Note(m, Fraction(0), 0))
     v = ChartView(p)
     v.set_grid_main(32)
@@ -278,39 +323,20 @@ def test_copy_paste_carries_measure_scales():
     v.selection = {(4, n) for n in list(p.charts[4])}
     v._copy_selection(cut=False)
 
-    v._paste_anchor = 6.0
+    v._paste_anchor = 8.0
     v._paste()
-    pasted = sorted((n.measure, n.pos) for n in p.charts[4] if n.measure >= 6)
-    assert pasted == [(6, Fraction(0)), (7, Fraction(0)), (8, Fraction(0))]
-    # Pasted measures adopt the copied 24-cell length; the next measure stays full.
-    assert all(p.measure_length(m) == Fraction(24, 32) for m in (6, 7, 8))
-    assert p.measure_length(9) == Fraction(1)
-
-
-def test_paste_past_end_places_notes():
-    """Pasting when the timeline is too short still places the notes (the
-    timeline grows to fit) instead of silently failing."""
-    _app()
-    p = Project(bpm=120, measures=16)
-    p.charts[4] += [Note(14, Fraction(0), 0), Note(15, Fraction(0), 1)]
-    v = ChartView(p)
-    v.set_grid_main(16)
-    v.refresh()
-    v.selection = {(4, n) for n in list(p.charts[4])}
-    v._copy_selection(cut=False)
-    v._paste_anchor = 15.0        # not enough room before the end
-    v._paste()
-    assert len(v.selection) == 2  # notes were placed (into measures beyond 15)
-    assert max(n.measure for _m, n in v.selection) >= 16
+    pasted = sorted((n.measure, n.pos) for _m, n in v.selection)
+    assert pasted == [(8, Fraction(0)), (9, Fraction(0)), (10, Fraction(0))]
+    # Target measures keep their own (full) length — copied scales aren't applied.
+    assert all(p.measure_length(m) == Fraction(1) for m in (8, 9, 10))
 
 
 def test_paste_requests_focus_on_pasted_block():
-    """Pasting asks the window to scroll to the pasted block, so shortened
-    measures resizing the canvas can't leave the view somewhere else."""
+    """Pasting asks the window to scroll to the pasted block, so resizing the
+    canvas can't leave the view somewhere else."""
     _app()
     p = Project(bpm=120, measures=16)
     for m in (3, 4):
-        p.measure_scales[m] = Fraction(24, 32)
         p.charts[4].append(Note(m, Fraction(0), 0))
     v = ChartView(p)
     v.set_grid_main(32)
@@ -324,9 +350,66 @@ def test_paste_requests_focus_on_pasted_block():
     v._paste()
     assert len(seen) == 1
     lo, hi = seen[0]
-    # Covers the whole pasted block, ending at the (shortened) last measure's end.
+    # Block spans measures 8–9; focus covers through the end of measure 9.
     assert lo == 8.0
-    assert abs(hi - (9 + 24 / 32)) < 1e-9
+    assert abs(hi - 10.0) < 1e-9
+
+
+def test_alt_drag_copies_selection():
+    """Alt + mouse drag on a selected note leaves the original in place and drops
+    a moved duplicate (a plain drag would move it; Alt copies)."""
+    from PySide6.QtCore import Qt, QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+
+    _app()
+    p = Project(bpm=120, measures=8)
+    v = ChartView(p)
+    v.set_grid_main(16)
+    v.set_mode("edit")
+    v.refresh()
+    v.resize(1400, 3000)
+    v.measure_px = 160
+    n = Note(2, Fraction(0), 0)
+    p.charts[4].append(n)
+    x = v._col_x()[(4, 0)] + v.lane_w / 2
+    y = v.y_for(n.absolute)
+    # Alt-drag up one cell (10 px at measure_px 160 snaps to the 1/16 grid).
+    v.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, QPointF(x, y),
+                                  Qt.LeftButton, Qt.LeftButton, Qt.AltModifier))
+    v.mouseMoveEvent(QMouseEvent(QEvent.MouseMove, QPointF(x, y - 10),
+                                 Qt.NoButton, Qt.LeftButton, Qt.NoModifier))
+    v.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, QPointF(x, y - 10),
+                                    Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+    positions = sorted(nn.pos for nn in p.charts[4])
+    assert len(p.charts[4]) == 2                        # original + copy
+    assert positions == [Fraction(0), Fraction(1, 16)]  # original stayed, copy moved
+    # The copy (not the original) ends up selected for further nudging.
+    assert len(v.selection) == 1
+    assert next(iter(v.selection))[1].pos == Fraction(1, 16)
+
+
+def test_alt_click_without_drag_makes_no_copy():
+    """A bare Alt-click (no movement) on a note must not create a duplicate."""
+    from PySide6.QtCore import Qt, QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+
+    _app()
+    p = Project(bpm=120, measures=8)
+    v = ChartView(p)
+    v.set_grid_main(16)
+    v.set_mode("edit")
+    v.refresh()
+    v.resize(1400, 3000)
+    v.measure_px = 160
+    n = Note(2, Fraction(0), 0)
+    p.charts[4].append(n)
+    x = v._col_x()[(4, 0)] + v.lane_w / 2
+    y = v.y_for(n.absolute)
+    v.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, QPointF(x, y),
+                                  Qt.LeftButton, Qt.LeftButton, Qt.AltModifier))
+    v.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, QPointF(x, y),
+                                    Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+    assert len(p.charts[4]) == 1                        # no duplicate
 
 
 def test_reflow_moves_long_note_tail():

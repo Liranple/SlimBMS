@@ -1535,6 +1535,7 @@ class ChartView(QWidget):
         self._paste_anchor = self.absolute_at(y)
         self._overlap_warned = False   # a fresh interaction may warn again
         self._drag_shift = bool(event.modifiers() & Qt.ShiftModifier)
+        alt = bool(event.modifiers() & Qt.AltModifier)
         hit = self._note_at_point(col, y) if col is not None else None
 
         if hit is not None:
@@ -1542,8 +1543,11 @@ class ChartView(QWidget):
             # the grid; WITH Shift it's free placement (1px). A Shift press that
             # never drags falls back to the classic select-toggle (on release):
             # adding an unselected note now, removing a selected one on release.
+            # Holding ALT turns the drag into a *copy*: the originals stay put and
+            # a duplicate of the whole selection follows the cursor (Alt+Shift =
+            # free-placement copy). A copy without any movement leaves nothing.
             toggle = None
-            if self._drag_shift:
+            if self._drag_shift and not alt:
                 if hit not in self.selection:
                     self.selection = self.selection | {hit}   # shift-click adds
                 else:
@@ -1551,9 +1555,13 @@ class ChartView(QWidget):
             elif hit not in self.selection:
                 self.selection = {hit}
             self._move_drag = {"origs": list(self.selection),
-                               "placed": list(self.selection),
+                               # For a copy, nothing is "placed" yet — the
+                               # originals must never be lifted out; each step
+                               # only removes the previous step's duplicates.
+                               "placed": [] if alt else list(self.selection),
                                "px": x, "py": y, "moved": False,
-                               "free": self._drag_shift, "toggle": toggle}
+                               "free": self._drag_shift, "toggle": toggle,
+                               "copy": alt}
             self.update()
             return
         # Empty area → rubber-band selection.
@@ -1997,54 +2005,76 @@ class ChartView(QWidget):
         if cut:
             self._delete_selection()
 
-    def _measures_occupied(self, start: int, span: int, modes) -> bool:
-        """Whether any note (in the clipboard's modes) sits in measures
-        ``[start, start+span)``."""
-        for mode in modes:
-            for n in self._target_for(mode):
-                if start <= n.measure < start + span:
-                    return True
-        return False
+    def _paste_fit_offset(self, measure: int, items, modes):
+        """For a single-measure clipboard block, find the smallest grid-snapped
+        offset (measured from the top of ``measure``) at which the whole block
+        drops into free vertical space of that measure — without overlapping any
+        existing note of the same key modes and without spilling past the
+        measure's end. Returns the offset (Fraction) or ``None`` if it can't fit.
+
+        Occupancy is judged as a *vertical region* across all lanes (a tap fills
+        its one snap cell, a long note fills head→tail), matching how a measure
+        reads visually as "cells 0–16 are full, 16–32 are empty"."""
+        step = self.grid_main
+        mlen = self.project.measure_length(measure)
+        # The block's own footprint, normalised so its top sits at 0.
+        b_lo = min(pos for _mode, _mo, pos, _lane, _len in items)
+        block = [(pos - b_lo, pos - b_lo + max(length, step))
+                 for _mode, _mo, pos, _lane, length in items]
+        height = max(hi for _lo, hi in block)
+        # Everything already sitting in the target measure (same modes, any lane).
+        occ = [(n.pos, n.pos + max(n.length, step))
+               for mode in modes for n in self._target_for(mode)
+               if n.measure == measure]
+        delta = Fraction(0)
+        # Slide down cell by cell; the block must stay wholly inside the measure.
+        while delta + height <= mlen:
+            if not any(blo + delta < ohi and olo < bhi + delta
+                       for blo, bhi in block for olo, ohi in occ):
+                return delta
+            delta += step
+        return None
 
     def _paste(self) -> None:
         if not self._clipboard:
             return
-        span, items, scales = self._clipboard
+        span, items, _scales = self._clipboard
+        if not items:
+            return
         modes = {mode for mode, *_ in items}
-        # Start at the paste anchor's measure, then walk forward to the first run
-        # of ``span`` empty measures. Measures past the timeline's end are empty,
-        # so this always finds room; the timeline then grows to fit (autofit on
-        # the change signal) — pasting near the end no longer fails.
+        # Paste at the measure the user clicked — never search for empty measures
+        # elsewhere. A single-measure block first tries to slot into that
+        # measure's free vertical space (top-down, first gap it fits). If it
+        # doesn't fit — or the block spans several measures — it's duplicated in
+        # place at the clicked measure (keeping each note's measure offset and
+        # in-measure position), overlapping whatever is there for the user to
+        # nudge apart afterwards.
         start = max(0, int(max(0.0, self._paste_anchor)))
-        while self._measures_occupied(start, span, modes):
-            start += 1
+        delta = self._paste_fit_offset(start, items, modes) if span == 1 else None
         new_sel = set()
-        for mode, m_off, pos, lane, length in items:
-            note = Note(start + m_off, pos, lane, length)
-            self.project.add_object(mode, note)
-            new_sel.add((mode, note))
-        # Reproduce the copied block's measure lengths onto the pasted measures.
-        for m_off in range(span):
-            target = start + m_off
-            if m_off in scales:
-                self.project.measure_scales[target] = scales[m_off]
-            else:
-                self.project.measure_scales.pop(target, None)
+        if delta is not None:
+            b_lo = min(pos for _mode, _mo, pos, _lane, _len in items)
+            for mode, _m_off, pos, lane, length in items:
+                note = Note(start, (pos - b_lo) + delta, lane, length)
+                self.project.add_object(mode, note)
+                new_sel.add((mode, note))
+        else:
+            for mode, m_off, pos, lane, length in items:
+                note = Note(start + m_off, pos, lane, length)
+                self.project.add_object(mode, note)
+                new_sel.add((mode, note))
         if new_sel:
             self.selection = new_sel
-            # Changing measure_scales resizes the geometry: rebuild the per-measure
-            # display prefix (and note caches) so the pasted measures render at
-            # their new lengths instead of glitching at the stale ones.
+            # The block may land past the current end (the timeline then grows to
+            # fit on the change signal), so refresh caches/geometry and follow it.
             self._rebuild_caches()
             self._apply_size()
             self.changed.emit()
             self.update()
-            # Pasting can change the geometry underneath the viewport (the block
-            # may land past the end, and copied measure lengths resize measures),
-            # which otherwise leaves the scroll position pointing somewhere else
-            # entirely. Follow the pasted block instead.
+            lo_m = min(n.measure for _mode, n in new_sel)
+            hi_m = max(n.measure for _mode, n in new_sel)
             self.focus_requested.emit(
-                float(start), float(start + span - 1) + float(self.project.measure_length(start + span - 1)))
+                float(lo_m), float(hi_m) + float(self.project.measure_length(hi_m)))
 
 
 class LaneHeader(QWidget):
