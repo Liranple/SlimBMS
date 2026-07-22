@@ -148,10 +148,10 @@ QSpinBox[inactive="true"], QDoubleSpinBox[inactive="true"] {{
     color: {TEXT_DIM};
     border-color: {BORDER};
 }}
-/* The matching row tag: dim is already the hint default, so it's the *active*
-   state that brightens. Both selectors carry the #Hint id so they win over the
-   plain QLabel#Hint rule below. */
-QLabel#Hint[inactive="false"] {{ color: {TEXT}; }}
+/* The matching row tag: active matches the plain hint colour (so 시작/끝 read
+   as the same kind of label), inactive dims further. Both selectors carry the
+   #Hint id so they win over the plain QLabel#Hint rule below. */
+QLabel#Hint[inactive="false"] {{ color: {TEXT_DIM}; }}
 QLabel#Hint[inactive="true"] {{ color: {BORDER_STRONG}; }}
 QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{

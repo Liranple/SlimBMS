@@ -1238,12 +1238,13 @@ class MainWindow(QMainWindow):
         vbar.setValue(int(self.view.y_for(float(pos)) - vp_h / 2))
 
     def _loc(self, pos) -> str:
-        """A position label shared by every marker list: '마디 18 · 칸 12'
-        (or just '마디 18' at a measure start), with no grid denominator."""
+        """A position label shared by every marker list: '90:12' (마디:칸),
+        or just '90' at a measure start. Compact on purpose — ramp rows show
+        two of these plus a value range and must never collide with it."""
         grid = max(1, self.sb_g1.value())
         m, off = self.project.locate(pos)
         cell = int(round(float(off) * grid))
-        return f"마디 {m}" if cell == 0 else f"마디 {m} · 칸 {cell}"
+        return f"{m}" if cell == 0 else f"{m}:{cell}"
 
     def _add_marker_row(self, listw, left: str, right: str, userdata) -> None:
         """Add a two-column row (position | value) rendered by MarkerListDelegate
@@ -1324,8 +1325,8 @@ class MainWindow(QMainWindow):
             rows.append((float(pos), self._loc(pos), f"×{float(val):g}",
                          ("scroll", pos)))
         for sp, ep, sv, ev in self.view._speed_ramps():
-            rows.append((float(sp), f"{self._loc(sp)} ~ {self._loc(ep)}",
-                         f"×{float(sv):g} ~ ×{float(ev):g}", ("speed", sp, ep)))
+            rows.append((float(sp), f"{self._loc(sp)} → {self._loc(ep)}",
+                         f"×{float(sv):g} → ×{float(ev):g}", ("speed", sp, ep)))
         for _key, left, right, data in sorted(rows, key=lambda r: r[0], reverse=True):
             self._add_marker_row(self.scroll_list, left, right, data)
 

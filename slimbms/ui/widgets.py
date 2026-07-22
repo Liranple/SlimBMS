@@ -50,6 +50,11 @@ class MarkerListDelegate(QStyledItemDelegate):
         selected = bool(opt.state & QStyle.State_Selected)
         r = opt.rect.adjusted(11, 0, -11, 0)
         painter.save()
+        # The left column may never run under the right one: clip it to the
+        # space the value leaves free and elide with … when it still won't fit.
+        fm = painter.fontMetrics()
+        left_w = max(0, r.width() - fm.horizontalAdvance(right) - 8)
+        left = fm.elidedText(left, Qt.ElideRight, left_w)
         if selected:
             painter.setPen(opt.palette.color(QPalette.HighlightedText))
             painter.drawText(r, Qt.AlignLeft | Qt.AlignVCenter, left)

@@ -150,6 +150,7 @@ class ChartView(QWidget):
         self._scale_drag = None       # {measure, y0, start_cells, min_cells, active} while resizing a measure
         self._vprefix = [0.0]         # cumulative display heights per measure (built in _apply_size)
         self._vtotal = 0.0            # total display height in measure units
+        self._label_rows = []         # y rows taken by gimmick pills (per paint)
         # Undo/redo: snapshots of the project's editable state, coalesced by a
         # settle timer so bursts (drags, recording) collapse to one step.
         self._undo_stack = []
@@ -417,6 +418,7 @@ class ChartView(QWidget):
         clip = event.rect()
         self._vis_lo = clip.top() - 2
         self._vis_hi = clip.bottom() + 2
+        self._label_rows = []          # gimmick pills placed this paint (stacking)
         p.fillRect(clip, C_BG)
         self._paint_lane_backgrounds(p)
         self._paint_bpm_regions(p)
@@ -539,13 +541,19 @@ class ChartView(QWidget):
 
     def _marker_label(self, p: QPainter, y: int, text: str, col) -> None:
         """Draw a gimmick pill in the right-hand label strip, vertically centred
-        on the marker's line so it never covers a note lane."""
+        on the marker's line so it never covers a note lane. Pills that would
+        land on top of each other (e.g. a 순간 and a 선형 marker at the same
+        position) stack downward instead of hiding one another."""
         font = QFont()
         font.setPointSize(9)
         font.setBold(True)
         p.setFont(font)
         tw = p.fontMetrics().horizontalAdvance(text) + 12
-        tag = QRect(self._label_x(), y - 8, tw, 16)
+        ty = y - 8
+        while any(abs(ty - other) < 17 for other in self._label_rows):
+            ty += 17
+        self._label_rows.append(ty)
+        tag = QRect(self._label_x(), ty, tw, 16)
         p.setPen(Qt.NoPen)
         p.setBrush(col)
         p.drawRoundedRect(tag, 4, 4)

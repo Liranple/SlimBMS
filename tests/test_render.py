@@ -804,6 +804,25 @@ def test_hit_flash_across_shortened_measure():
     assert any(n.absolute == note.absolute for n in flashed)
 
 
+def test_marker_pills_stack_instead_of_overlapping():
+    """A 순간 and a 선형 marker at the same position must both show their pill
+    in the right-hand strip — stacked, not painted on top of each other."""
+    _app()
+    p = Project(bpm=120, measures=8)
+    p.scrolls[Fraction(2)] = Fraction(-1)             # 순간 at measure 2
+    p.speeds[Fraction(2)] = Fraction(2)               # 선형 ramp starting there too
+    p.speeds[Fraction(3)] = Fraction(1)
+    v = ChartView(p)
+    v.refresh()
+    v.resize(v._width, 1400)
+    pm = QPixmap(v._width, 1400)
+    v.render(pm)
+    rows = sorted(v._label_rows)
+    assert len(rows) >= 3                             # 순간 1 + 선형 2 pills drawn
+    assert all(b - a >= 17 for a, b in zip(rows, rows[1:])), \
+        f"pill rows must not overlap: {rows}"
+
+
 def test_colx_cache_tracks_layout():
     """The cached col_x lookup must stay consistent with the live columns after
     every layout change."""
