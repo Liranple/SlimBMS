@@ -8,6 +8,7 @@ BGM audio file placed on the BGM lane.
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Dict, List, Optional, Set
@@ -183,13 +184,45 @@ class Project:
         return ramps
 
     def cumulative_lengths(self):
-        """Prefix sums of measure lengths: ``out[m]`` is the total length of all
-        measures before ``m`` (so ``out[measures]`` is the whole song length in
-        measure units). Used to convert absolute chart positions to real time."""
+        """Prefix sums of measure lengths: ``out[m]`` is where measure ``m``
+        starts on the chart axis (so ``out[measures]`` is the whole song length
+        in measure units). This axis is the storage axis for positions."""
         out = [Fraction(0)]
         for m in range(self.measures):
             out.append(out[-1] + self.measure_length(m))
         return out
+
+    def total_length(self) -> Fraction:
+        """Whole timeline length on the chart axis (scaled measure units)."""
+        return self.cumulative_lengths()[-1]
+
+    def locate(self, a, cum=None):
+        """Split an axis position into ``(measure, offset)`` where measure ``m``
+        occupies ``[cum[m], cum[m] + measure_length(m))``. Positions past the
+        timeline extrapolate with full (length-1) virtual measures; negative
+        positions come back as ``(0, a)``. Pass a prebuilt ``cum`` when calling
+        in a loop to avoid recomputing the prefix sums per note."""
+        if cum is None:
+            cum = self.cumulative_lengths()
+        if a < 0:
+            return 0, a
+        total = cum[-1]
+        if a >= total:
+            extra = a - total
+            whole = int(extra)
+            return self.measures + whole, extra - whole
+        m = bisect.bisect_right(cum, a) - 1
+        m = max(0, min(self.measures - 1, m))
+        return m, a - cum[m]
+
+    def position(self, measure: int, offset, cum=None):
+        """Inverse of :meth:`locate`: axis position of ``offset`` into
+        ``measure`` (virtual full measures past the timeline end)."""
+        if cum is None:
+            cum = self.cumulative_lengths()
+        if measure >= self.measures:
+            return cum[-1] + (measure - self.measures) + offset
+        return cum[max(0, measure)] + offset
 
     # -- undo/redo snapshots ------------------------------------------------ #
 
