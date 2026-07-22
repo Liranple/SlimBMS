@@ -141,7 +141,7 @@ class Project:
     # Mid-song tempo changes: chart-axis position -> BPM. The base ``bpm``
     # applies before the first change.
     bpm_changes: Dict[Fraction, float] = field(default_factory=dict)
-    # Per-measure length: a measure -> length multiplier in (0, 1], default 1.
+    # Per-measure length: a measure -> length multiplier in (0, 2], default 1.
     # A shortened measure genuinely takes less time (this is BMS channel 02).
     # Notes store chart-axis positions, so editing a measure's length moves the
     # barlines over the notes — every note keeps its musical (beat) position

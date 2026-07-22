@@ -1077,15 +1077,17 @@ class MainWindow(QMainWindow):
         # Left box drives the snap grid; right box is the reference grid.
         self.view.set_grid_main(self.sb_g1.value())
         self.view.set_grid_sub(self.sb_g2.value())
-        # One measure holds exactly `스냅 격자` cells, so the BPM-change cell box
-        # caps at the snap-grid value (a bigger cell is clamped down to it).
+        # A full measure holds `스냅 격자` cells, and a stretched measure can go
+        # up to double that — so the marker cell boxes cap at twice the snap
+        # grid. (On the contiguous axis a cell past a measure's own end just
+        # addresses the next measure, so an over-shot value is still valid.)
         if hasattr(self, "bpm_cell"):
-            self.bpm_cell.setMaximum(self.sb_g1.value())
+            self.bpm_cell.setMaximum(self.sb_g1.value() * 2)
         if hasattr(self, "stop_cell"):
-            self.stop_cell.setMaximum(self.sb_g1.value())
+            self.stop_cell.setMaximum(self.sb_g1.value() * 2)
         if hasattr(self, "scroll_cell"):
-            self.scroll_cell.setMaximum(self.sb_g1.value())
-            self.scroll_cell2.setMaximum(self.sb_g1.value())
+            self.scroll_cell.setMaximum(self.sb_g1.value() * 2)
+            self.scroll_cell2.setMaximum(self.sb_g1.value() * 2)
 
     def _toggle_snap(self, on: bool) -> None:
         self.view.set_snap_on(on)
@@ -1213,10 +1215,11 @@ class MainWindow(QMainWindow):
     # -- 노트 속도 (시작 → 끝 구간 변속) ---------------------------------- #
 
     def _marker_pos(self, measure_box, cell_box):
-        """Chart-axis position for a sidebar (마디, 칸) input pair."""
+        """Chart-axis position for a sidebar (마디, 칸) input pair. Cells up to
+        2× the grid address a stretched (double-length) measure."""
         from fractions import Fraction
         grid = max(1, self.sb_g1.value())
-        cell = min(cell_box.value(), grid)
+        cell = min(cell_box.value(), grid * 2)
         return self.project.position(measure_box.value(), Fraction(cell, grid))
 
     def _set_pos_inputs(self, measure_box, cell_box, pos) -> None:

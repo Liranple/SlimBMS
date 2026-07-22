@@ -394,6 +394,26 @@ def test_slbms_v3_ln_wholly_in_hidden_tail_carries_length():
     assert n.length == Fraction(1, 4)                 # nominal length carried
 
 
+def test_long_measure_roundtrips():
+    # A measure stretched past full length (channel 02 > 1) round-trips through
+    # both formats, including a note placed in the extended region.
+    p = Project(title="Long", bpm=120, measures=8)
+    p.measure_scales[2] = Fraction(2)                 # 8/4 measure
+    n = Note(p.position(2, Fraction(3, 2)), 0)        # deep in the extension
+    ln = Note(p.position(2, Fraction(7, 4)), 1, Fraction(1, 2))  # tail crosses into 3
+    p.charts[4].extend([n, ln])
+    text = bms_io.export_bms(p, 4)
+    assert "#00202:2" in text
+    back = bms_io.parse_bms(text)
+    assert back.measure_scales.get(2) == Fraction(2)
+    assert {(x.absolute, x.length) for x in back.charts[4]} == \
+        {(n.absolute, n.length), (ln.absolute, ln.length)}
+
+    back2 = bms_io.project_from_dict(bms_io.project_to_dict(p))
+    assert set(back2.charts[4]) == set(p.charts[4])
+    assert back2.measure_scales == p.measure_scales
+
+
 def test_slbms_v1_without_length_still_loads():
     # Old files store 4-field note rows (no length) — they must load as taps.
     data = {

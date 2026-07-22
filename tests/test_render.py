@@ -89,6 +89,36 @@ def test_measure_scale_geometry():
     assert len(list(v._grid_line_ys(v.grid_main, 1, 2))) == 31   # 32 cells
 
 
+def test_measure_stretch_geometry_and_cap():
+    """A measure can now stretch past full length (up to 2×): it gains height
+    and grid cells, notes place into the extended region, and resizing still
+    never touches note data. The drag cap clamps at double length."""
+    _app()
+    p = Project(bpm=120, measures=8)
+    v = ChartView(p)
+    v.measure_px = 150
+    v.set_grid_main(32)
+    full_h = v.height()
+    v._set_measure_cells(2, 48)                       # 1.5× measure
+    assert p.measure_scales[2] == Fraction(3, 2)
+    assert v.height() == full_h + v.measure_px // 2   # gained half a measure
+    assert len(list(v._grid_line_ys(v.grid_main, 2, 3))) == 47   # 48 cells
+    # A note in the extended region (cell 40 of 48) is a normal axis position.
+    n = Note(p.position(2, Fraction(40, 32)), 0)
+    p.charts[4].append(n)
+    v.refresh()
+    assert p.locate(n.absolute) == (2, Fraction(40, 32))
+    # Shrinking the measure back re-buckets it into measure 3 — data unchanged.
+    v._set_measure_cells(2, 32)
+    assert p.charts[4] == [n]
+    assert p.locate(n.absolute) == (3, Fraction(8, 32))
+    # The resize cap: a runaway drag clamps at double length, floor at 1 cell.
+    v._set_measure_cells(2, 500)
+    assert p.measure_scales[2] == Fraction(2)
+    v._set_measure_cells(2, 0)
+    assert p.measure_scales[2] == Fraction(1, 32)
+
+
 def test_measure_scale_keeps_note_positions():
     """Resizing a measure moves only the barlines: every note keeps its
     chart-axis position and length — including its on-screen distance from the

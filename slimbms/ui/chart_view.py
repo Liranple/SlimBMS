@@ -341,7 +341,9 @@ class ChartView(QWidget):
         d["active"] = True
         cell_px = max(1.0, self.measure_px * float(self.grid_main))
         cells = d["start_cells"] + int(round(dy / cell_px))
-        cells = max(d["min_cells"], min(self._base_cells(), cells))
+        # A measure can stretch up to double length (8/4) — the chart axis is
+        # scale-agnostic, the cap just keeps a slipped drag from ballooning it.
+        cells = max(d["min_cells"], min(self._base_cells() * 2, cells))
         if cells != self._current_cells(d["measure"]):
             # Notes store chart-axis positions, so resizing a measure moves
             # only the barlines — every note stays put on screen by itself.
@@ -350,12 +352,12 @@ class ChartView(QWidget):
 
     def _set_measure_cells(self, m: int, cells: int) -> None:
         base = self._base_cells()
-        # A measure can shrink all the way to a single cell. Notes keep their
-        # chart-axis positions, so shrinking just moves the later barlines up
-        # over them — notes formerly in this measure's tail simply derive as
-        # belonging to the next measure now.
-        cells = max(1, min(base, cells))
-        if cells >= base:
+        # A measure can shrink to a single cell or stretch to double length.
+        # Notes keep their chart-axis positions, so resizing just moves the
+        # later barlines over them — notes around the seam simply derive as
+        # belonging to a neighbouring measure now.
+        cells = max(1, min(base * 2, cells))
+        if cells == base:
             self.project.measure_scales.pop(m, None)
         else:
             self.project.measure_scales[m] = Fraction(cells) * self.grid_main
