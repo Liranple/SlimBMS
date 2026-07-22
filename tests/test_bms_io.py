@@ -394,6 +394,56 @@ def test_slbms_v3_ln_wholly_in_hidden_tail_carries_length():
     assert n.length == Fraction(1, 4)                 # nominal length carried
 
 
+def test_back_to_back_long_notes_never_scramble_pairing():
+    # LNTYPE 1 pairs a lane's endpoint stream in time order, so a tail sharing
+    # a slot with the next head used to collapse into one marker and scramble
+    # every later pair in the lane (in-game: a long note stretching to some
+    # far-away endpoint). Export clips such a tail 1/192 short instead.
+    gap = Fraction(1, 192)
+    p = Project(title="B2B", bpm=120, measures=8)
+    p.charts[4] += [Note(Fraction(2), 0, Fraction(1, 4)),      # 2 .. 9/4
+                    Note(Fraction(9, 4), 0, Fraction(1, 4)),   # 9/4 .. 5/2
+                    Note(Fraction(5, 2), 0, Fraction(1, 4)),   # 5/2 .. 11/4
+                    Note(Fraction(4), 0, Fraction(1, 2))]      # later, untouched
+    back = bms_io.parse_bms(bms_io.export_bms(p, 4))
+    got = sorted((n.absolute, n.end_absolute) for n in back.charts[4] if n.is_long)
+    assert got == [(Fraction(2), Fraction(9, 4) - gap),
+                   (Fraction(9, 4), Fraction(5, 2) - gap),
+                   (Fraction(5, 2), Fraction(11, 4)),
+                   (Fraction(4), Fraction(9, 2))]
+
+
+def test_overlapping_long_notes_clip_instead_of_scrambling():
+    # Same-lane overlaps can't exist in-game; export clips the earlier tail to
+    # just before the next head (heads stay exact, nothing scrambles). Exact
+    # duplicates collapse to one; a hold fully swallowed by the next becomes a
+    # tap so the endpoint parity holds.
+    gap = Fraction(1, 192)
+    p = Project(title="OVL", bpm=120, measures=8)
+    p.charts[4] += [Note(Fraction(2), 0, Fraction(1)),         # 2 .. 3
+                    Note(Fraction(5, 2), 0, Fraction(1))]      # 5/2 .. 7/2 overlaps
+    back = bms_io.parse_bms(bms_io.export_bms(p, 4))
+    got = sorted((n.absolute, n.end_absolute) for n in back.charts[4] if n.is_long)
+    assert got == [(Fraction(2), Fraction(5, 2) - gap),
+                   (Fraction(5, 2), Fraction(7, 2))]
+
+    p2 = Project(title="DUP", bpm=120, measures=8)
+    p2.charts[4] += [Note(Fraction(2), 0, Fraction(1, 2)),
+                     Note(Fraction(2), 0, Fraction(1, 2))]     # exact duplicate
+    back2 = bms_io.parse_bms(bms_io.export_bms(p2, 4))
+    assert sorted((n.absolute, n.end_absolute) for n in back2.charts[4]) == \
+        [(Fraction(2), Fraction(5, 2))]
+
+    p3 = Project(title="SWAL", bpm=120, measures=8)
+    p3.charts[4] += [Note(Fraction(2), 0, Fraction(1, 8)),     # swallowed: same head,
+                     Note(Fraction(2), 0, Fraction(1, 2))]     # longer twin wins
+    back3 = bms_io.parse_bms(bms_io.export_bms(p3, 4))
+    longs3 = [(n.absolute, n.end_absolute) for n in back3.charts[4] if n.is_long]
+    taps3 = [n.absolute for n in back3.charts[4] if not n.is_long]
+    assert longs3 == [(Fraction(2), Fraction(5, 2))]
+    assert taps3 == [Fraction(2)]                              # degraded to a tap
+
+
 def test_long_measure_roundtrips():
     # A measure stretched past full length (channel 02 > 1) round-trips through
     # both formats, including a note placed in the extended region.

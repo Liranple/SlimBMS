@@ -257,14 +257,36 @@ def export_bms(project: Project, key_mode: int) -> str:
     chart = project.charts[key_mode]
     taps_by: Dict[int, Dict[int, list]] = {}   # measure -> lane -> [offset]
     ln_by: Dict[int, Dict[int, list]] = {}     # measure -> lane -> [offset]
+    lane_longs: Dict[int, list] = {}           # lane -> [(head, tail)]
     for n in chart:
-        m, off = project.locate(n.absolute, cum)
         if n.is_long:
-            ln_by.setdefault(m, {}).setdefault(n.lane, []).append(off)
-            tm, toff = project.locate(n.end_absolute, cum)
-            ln_by.setdefault(tm, {}).setdefault(n.lane, []).append(toff)
+            lane_longs.setdefault(n.lane, []).append((n.absolute, n.end_absolute))
         else:
+            m, off = project.locate(n.absolute, cum)
             taps_by.setdefault(m, {}).setdefault(n.lane, []).append(off)
+
+    # LNTYPE 1 rebuilds a lane's holds by pairing its 5x-channel endpoint
+    # stream in time order, so endpoints must be strictly separated: a tail
+    # sharing a position with the next head would collapse into one marker and
+    # scramble every later pair in the lane (the in-game symptom: a long note
+    # suddenly spanning to some far-away endpoint). Sanitise per lane — exact
+    # duplicates collapse to one, and a tail touching or overlapping the next
+    # head is clipped a hair short of it. A hold fully swallowed by the next
+    # one (an overlap the editor already flags red) degrades to a tap.
+    LN_GAP = Fraction(1, 192)
+    for lane, longs in lane_longs.items():
+        spans = sorted(set(longs))
+        for i, (head, tail) in enumerate(spans):
+            if i + 1 < len(spans):
+                tail = min(tail, spans[i + 1][0] - LN_GAP)
+            if tail <= head:
+                m, off = project.locate(head, cum)
+                taps_by.setdefault(m, {}).setdefault(lane, []).append(off)
+                continue
+            m, off = project.locate(head, cum)
+            ln_by.setdefault(m, {}).setdefault(lane, []).append(off)
+            tm, toff = project.locate(tail, cum)
+            ln_by.setdefault(tm, {}).setdefault(lane, []).append(toff)
 
     for measure in range(project.measures):
         rows: List[str] = []
